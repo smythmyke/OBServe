@@ -65,6 +65,18 @@
 | `reqwest` | Gemini API HTTP client |
 | `tray-icon` | System tray integration |
 
+## Prerequisites
+
+**Installed:**
+- Node.js v22.18.0
+- npm 10.9.3
+
+**Not yet installed (required before Phase 1):**
+- Rust toolchain (rustup + cargo) — https://rustup.rs
+- Tauri CLI — `cargo install create-tauri-app` then `cargo install tauri-cli`
+- Visual Studio C++ Build Tools (required by Rust on Windows)
+- WebView2 (usually pre-installed on Windows 10/11)
+
 ## Features Roadmap
 
 ### Phase 1: Foundation
