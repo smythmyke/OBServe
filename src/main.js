@@ -15,9 +15,90 @@ const draggingSliders = new Set();
 let sysResourceInterval = null;
 
 const PREFERRED_DEVICES_KEY = 'observe-preferred-devices';
+const VIEW_PREFS_KEY = 'observe-view-prefs';
 let allDevices = [];
 let selectedOutputId = null;
 let selectedInputId = null;
+let viewMode = 'audio-video';
+let viewComplexity = 'simple';
+let isConnected = false;
+
+const VISIBILITY_MATRIX = {
+  'audio': {
+    'simple':   ['audio-devices', 'ai'],
+    'advanced': ['audio-devices', 'mixer', 'routing', 'preflight', 'ai'],
+  },
+  'audio-video': {
+    'simple':   ['audio-devices', 'scenes', 'stream-record', 'ai'],
+    'advanced': ['audio-devices', 'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
+  },
+  'video': {
+    'simple':   ['scenes', 'stream-record', 'ai'],
+    'advanced': ['scenes', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
+  },
+};
+
+const CONNECTION_REQUIRED_PANELS = new Set([
+  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system',
+]);
+
+function applyPanelVisibility() {
+  const allowed = VISIBILITY_MATRIX[viewMode]?.[viewComplexity] || [];
+  document.querySelectorAll('[data-panel]').forEach(el => {
+    const panelName = el.dataset.panel;
+    const inMatrix = allowed.includes(panelName);
+    const needsConn = CONNECTION_REQUIRED_PANELS.has(panelName);
+    el.hidden = !(inMatrix && (!needsConn || isConnected));
+  });
+}
+
+function updateToolbarActiveState() {
+  document.querySelectorAll('.toggle-btn[data-mode]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === viewMode);
+  });
+  document.querySelectorAll('.toggle-btn[data-complexity]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.complexity === viewComplexity);
+  });
+}
+
+function loadViewPrefs() {
+  try {
+    const raw = localStorage.getItem(VIEW_PREFS_KEY);
+    if (raw) {
+      const prefs = JSON.parse(raw);
+      if (prefs.mode) viewMode = prefs.mode;
+      if (prefs.complexity) viewComplexity = prefs.complexity;
+    }
+  } catch (_) {}
+}
+
+function saveViewPrefs() {
+  localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify({ mode: viewMode, complexity: viewComplexity }));
+}
+
+function initToolbar() {
+  loadViewPrefs();
+  updateToolbarActiveState();
+  applyPanelVisibility();
+
+  document.querySelectorAll('.toggle-btn[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      viewMode = btn.dataset.mode;
+      saveViewPrefs();
+      updateToolbarActiveState();
+      applyPanelVisibility();
+    });
+  });
+
+  document.querySelectorAll('.toggle-btn[data-complexity]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      viewComplexity = btn.dataset.complexity;
+      saveViewPrefs();
+      updateToolbarActiveState();
+      applyPanelVisibility();
+    });
+  });
+}
 
 function debounce(fn, ms) {
   let timer;
@@ -48,6 +129,8 @@ function setupEventListeners() {
     if (!draggingSliders.has(inputName)) {
       updateMixerItem(inputName);
     }
+    updateObsKnob('input', inputName);
+    updateObsKnob('output', inputName);
   });
 
   listen('obs://input-mute-changed', (e) => {
@@ -56,6 +139,8 @@ function setupEventListeners() {
       obsState.inputs[inputName].muted = inputMuted;
     }
     updateMixerItem(inputName);
+    updateObsKnob('input', inputName);
+    updateObsKnob('output', inputName);
   });
 
   listen('obs://current-scene-changed', (e) => {
@@ -129,8 +214,8 @@ function setupEventListeners() {
   listen('audio://peak-levels', (e) => {
     const { levels } = e.payload;
     for (const { deviceId, peak } of levels) {
-      if (deviceId === selectedOutputId) updateGauge('output-gauge-fill', peak);
-      if (deviceId === selectedInputId) updateGauge('input-gauge-fill', peak);
+      if (deviceId === selectedOutputId) updatePeakGauge('output-peak-fill', peak);
+      if (deviceId === selectedInputId) updatePeakGauge('input-peak-fill', peak);
     }
   });
 
@@ -191,6 +276,10 @@ function renderFullState() {
   if (!obsState) return;
   renderScenes();
   renderAudioMixer();
+  renderObsKnob('input');
+  renderObsKnob('output');
+  renderFilterKnobs('input');
+  renderFilterKnobs('output');
   updateStatsUI(obsState.stats);
   updateStreamRecordUI();
   renderVideoSettings();
@@ -204,18 +293,49 @@ function renderScenes() {
     const cls = s.name === current ? 'active' : '';
     return `<li class="${cls}">${s.name}</li>`;
   }).join('');
+  renderScenesPanel(scenes, current);
+}
+
+function renderScenesPanel(scenes, current) {
+  const grid = $('#scenes-grid');
+  if (!grid) return;
+  grid.innerHTML = scenes.map(s => {
+    const cls = s.name === current ? 'scene-btn active' : 'scene-btn';
+    return `<button class="${cls}" data-scene="${esc(s.name)}">${esc(s.name)}</button>`;
+  }).join('');
+}
+
+function bindScenesPanelEvents() {
+  $('#scenes-grid').addEventListener('click', (e) => {
+    const btn = e.target.closest('.scene-btn');
+    if (!btn) return;
+    const sceneName = btn.dataset.scene;
+    invoke('set_current_scene', { sceneName }).catch(err => {
+      showFrameDropAlert('Scene switch failed: ' + err);
+    });
+  });
+}
+
+function getWidgetMatchedNames() {
+  const names = new Set();
+  const inputMatched = matchObsInputsToDevice('input', selectedInputId);
+  const outputMatched = matchObsInputsToDevice('output', selectedOutputId);
+  for (const m of inputMatched) names.add(m.name);
+  for (const m of outputMatched) names.add(m.name);
+  return names;
 }
 
 function renderAudioMixer() {
   if (!obsState) return;
+  const widgetNames = getWidgetMatchedNames();
   const inputs = Object.values(obsState.inputs || {})
-    .filter(i => AUDIO_KINDS.some(k => i.kind.includes(k) || k.includes(i.kind)));
+    .filter(i => AUDIO_KINDS.some(k => i.kind.includes(k) || k.includes(i.kind)))
+    .filter(i => !widgetNames.has(i.name));
 
   const container = $('#mixer-list');
 
   if (inputs.length === 0) {
     container.innerHTML = '<p style="color:#8892b0;font-size:13px;">No audio inputs found.</p>';
-    $('#mixer-panel').hidden = false;
     return;
   }
 
@@ -233,7 +353,6 @@ function renderAudioMixer() {
     </div>`;
   }).join('');
 
-  $('#mixer-panel').hidden = false;
   bindMixerEvents();
 }
 
@@ -320,18 +439,41 @@ function updateStatsUI(stats) {
 
 function updateStreamRecordUI() {
   if (!obsState) return;
+  const streamActive = obsState.streamStatus && obsState.streamStatus.active;
+  const recordActive = obsState.recordStatus && obsState.recordStatus.active;
+  const recordPaused = obsState.recordStatus && obsState.recordStatus.paused;
+
   const streamEl = $('#obs-stream-status');
   const recordEl = $('#obs-record-status');
   if (streamEl) {
-    const active = obsState.streamStatus && obsState.streamStatus.active;
-    streamEl.textContent = active ? 'LIVE' : 'Off';
-    streamEl.className = active ? 'status-active' : 'status-inactive';
+    streamEl.textContent = streamActive ? 'LIVE' : 'Off';
+    streamEl.className = streamActive ? 'status-active' : 'status-inactive';
   }
   if (recordEl) {
-    const active = obsState.recordStatus && obsState.recordStatus.active;
-    const paused = obsState.recordStatus && obsState.recordStatus.paused;
-    recordEl.textContent = paused ? 'Paused' : (active ? 'Recording' : 'Off');
-    recordEl.className = active ? 'status-active' : 'status-inactive';
+    recordEl.textContent = recordPaused ? 'Paused' : (recordActive ? 'Recording' : 'Off');
+    recordEl.className = recordActive ? 'status-active' : 'status-inactive';
+  }
+
+  const streamBtn = $('#btn-toggle-stream');
+  const recordBtn = $('#btn-toggle-record');
+  if (streamBtn) {
+    streamBtn.textContent = streamActive ? 'Stop Stream' : 'Start Stream';
+    streamBtn.classList.toggle('live', streamActive);
+  }
+  if (recordBtn) {
+    recordBtn.textContent = recordActive ? 'Stop Record' : 'Start Record';
+    recordBtn.classList.toggle('recording', recordActive);
+  }
+
+  const srStreamStatus = $('#sr-stream-status');
+  const srRecordStatus = $('#sr-record-status');
+  if (srStreamStatus) {
+    srStreamStatus.textContent = streamActive ? 'Stream: LIVE' : 'Stream: Off';
+    srStreamStatus.classList.toggle('active', streamActive);
+  }
+  if (srRecordStatus) {
+    srRecordStatus.textContent = recordPaused ? 'Record: Paused' : (recordActive ? 'Record: Recording' : 'Record: Off');
+    srRecordStatus.classList.toggle('active', recordActive);
   }
 }
 
@@ -369,21 +511,19 @@ function populateSettingsForm(settings) {
 // --- Connection UI ---
 
 function setConnectedUI(status) {
+  isConnected = true;
   const badge = $('#connection-badge');
   badge.textContent = 'Connected';
   badge.className = 'badge connected';
   $('#btn-connect').disabled = true;
   $('#btn-disconnect').disabled = false;
-  $('#obs-info-panel').hidden = false;
-  $('#preflight-panel').hidden = false;
-  $('#system-panel').hidden = false;
   $('#connection-error').hidden = true;
 
   if (status.obs_version) {
     $('#obs-version').textContent = status.obs_version;
   }
 
-  $('#routing-panel').hidden = false;
+  applyPanelVisibility();
 
   loadSystemResources();
   loadDisplays();
@@ -393,26 +533,32 @@ function setConnectedUI(status) {
 }
 
 function setDisconnectedUI() {
+  isConnected = false;
   const badge = $('#connection-badge');
   badge.textContent = 'Disconnected';
   badge.className = 'badge disconnected';
   $('#btn-connect').disabled = false;
   $('#btn-disconnect').disabled = true;
-  $('#obs-info-panel').hidden = true;
-  $('#mixer-panel').hidden = true;
   $('#mixer-list').innerHTML = '';
-  $('#preflight-panel').hidden = true;
   $('#preflight-results').innerHTML = '';
   $('#preflight-summary').hidden = true;
-  $('#routing-panel').hidden = true;
   $('#routing-results').innerHTML = '';
-  $('#system-panel').hidden = true;
   $('#display-list').innerHTML = '';
+  $('#scenes-grid').innerHTML = '';
   if (sysResourceInterval) {
     clearInterval(sysResourceInterval);
     sysResourceInterval = null;
   }
   obsState = null;
+  const inputObsCol = document.getElementById('input-obs-knob-col');
+  const outputObsCol = document.getElementById('output-obs-knob-col');
+  if (inputObsCol) inputObsCol.hidden = true;
+  if (outputObsCol) outputObsCol.hidden = true;
+  const inputFilterKnobs = document.getElementById('input-filter-knobs');
+  const outputFilterKnobs = document.getElementById('output-filter-knobs');
+  if (inputFilterKnobs) inputFilterKnobs.innerHTML = '';
+  if (outputFilterKnobs) outputFilterKnobs.innerHTML = '';
+  applyPanelVisibility();
 }
 
 // --- Audio Devices with Gauge + Knob Widgets ---
@@ -421,11 +567,165 @@ const debouncedSetWindowsVolume = debounce((deviceId, volume) => {
   invoke('set_windows_volume', { deviceId, volume }).catch(() => {});
 }, 50);
 
-function updateGauge(elementId, peak) {
+const debouncedSetFilterSettings = debounce((sourceName, filterName, settings) => {
+  invoke('set_source_filter_settings', { sourceName, filterName, filterSettings: settings }).catch(() => {});
+}, 100);
+
+const FILTER_KNOB_CONFIG = {
+  'gain_filter':               { label: 'Gain',   param: 'db',              min: -30,  max: 30, step: 0.5, fmt: v => `${v} dB` },
+  'noise_gate_filter':         { label: 'Gate',   param: 'open_threshold',  min: -96,  max: 0,  step: 1,   fmt: v => `${v} dB` },
+  'compressor_filter':         { label: 'Comp',   param: 'ratio',           min: 1,    max: 32, step: 0.5, fmt: v => `${v}:1` },
+  'limiter_filter':            { label: 'Limit',  param: 'threshold',       min: -30,  max: 0,  step: 0.5, fmt: v => `${v} dB` },
+  'expander_filter':           { label: 'Expand', param: 'ratio',           min: 1,    max: 32, step: 0.5, fmt: v => `${v}:1` },
+  'noise_suppress_filter_v2':  { label: 'Denoise',param: 'suppress_level',  min: -60,  max: 0,  step: 1,   fmt: v => `${v} dB` },
+};
+
+function matchObsInputsToDevice(deviceType, windowsDeviceId) {
+  if (!obsState || !obsState.inputs) return [];
+  const obsKind = deviceType === 'input' ? 'input_capture' : 'output_capture';
+  const kindMatches = Object.values(obsState.inputs).filter(input =>
+    input.kind.includes(obsKind)
+  );
+  if (kindMatches.length === 0) return [];
+
+  if (windowsDeviceId) {
+    const isDefault = allDevices.find(d => d.id === windowsDeviceId && d.is_default);
+    const exact = kindMatches.filter(input => {
+      if (input.deviceId === windowsDeviceId) return true;
+      if ((input.deviceId === 'default' || input.deviceId === '') && isDefault) return true;
+      return false;
+    });
+    if (exact.length > 0) return exact;
+  }
+
+  // Fallback: no device ID match — return first OBS input of matching kind
+  return [kindMatches[0]];
+}
+
+function renderObsKnob(type) {
+  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
+  const matched = matchObsInputsToDevice(type, deviceId);
+  const col = document.getElementById(`${type}-obs-knob-col`);
+  const knob = document.getElementById(`${type}-obs-knob`);
+  const dbLabel = document.getElementById(`${type}-obs-db`);
+  const muteBtn = document.getElementById(`${type}-obs-mute`);
+  const nameLabel = document.getElementById(`${type}-obs-name`);
+
+  if (matched.length === 0 || !isConnected) {
+    if (col) col.hidden = true;
+    return;
+  }
+
+  const input = matched[0];
+  if (col) col.hidden = false;
+  if (knob) knob.setValue(input.volumeDb);
+  if (dbLabel) dbLabel.textContent = (input.volumeDb <= -100 ? '-inf' : input.volumeDb.toFixed(1)) + ' dB';
+  if (muteBtn) {
+    muteBtn.classList.toggle('muted', input.muted);
+    muteBtn.textContent = input.muted ? 'MUTED' : 'Mute';
+  }
+  if (nameLabel) nameLabel.innerHTML = `&#10077;${esc(input.name)}&#10078;`;
+}
+
+function updateObsKnob(type, inputName) {
+  if (!obsState || !obsState.inputs[inputName]) return;
+  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
+  const matched = matchObsInputsToDevice(type, deviceId);
+  if (matched.length === 0 || matched[0].name !== inputName) return;
+
+  const input = obsState.inputs[inputName];
+  const knob = document.getElementById(`${type}-obs-knob`);
+  const dbLabel = document.getElementById(`${type}-obs-db`);
+  const muteBtn = document.getElementById(`${type}-obs-mute`);
+
+  if (knob) knob.setValue(input.volumeDb);
+  if (dbLabel) dbLabel.textContent = (input.volumeDb <= -100 ? '-inf' : input.volumeDb.toFixed(1)) + ' dB';
+  if (muteBtn) {
+    muteBtn.classList.toggle('muted', input.muted);
+    muteBtn.textContent = input.muted ? 'MUTED' : 'Mute';
+  }
+}
+
+function renderFilterKnobs(type) {
+  const container = document.getElementById(`${type}-filter-knobs`);
+  if (!container) return;
+
+  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
+  const matched = matchObsInputsToDevice(type, deviceId);
+
+  if (matched.length === 0 || !isConnected) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const input = matched[0];
+  const filters = (input.filters || []).filter(f => f.enabled);
+  const knobFilters = filters.filter(f => FILTER_KNOB_CONFIG[f.kind]);
+
+  if (knobFilters.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = knobFilters.map(f => {
+    const cfg = FILTER_KNOB_CONFIG[f.kind];
+    const val = (f.settings && f.settings[cfg.param] !== undefined) ? f.settings[cfg.param] : cfg.min;
+    return `<div class="filter-knob-item">
+      <span class="filter-knob-label">${cfg.label}</span>
+      <webaudio-knob min="${cfg.min}" max="${cfg.max}" step="${cfg.step}" value="${val}"
+        diameter="40" colors="#8892b0;#0a0a1a;#0f3460"
+        data-source="${esc(input.name)}" data-filter="${esc(f.name)}" data-param="${cfg.param}"></webaudio-knob>
+      <span class="filter-knob-value">${cfg.fmt(Number(val).toFixed(cfg.step < 1 ? 1 : 0))}</span>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('webaudio-knob').forEach(knob => {
+    knob.addEventListener('input', (e) => {
+      const source = e.target.dataset.source;
+      const filter = e.target.dataset.filter;
+      const param = e.target.dataset.param;
+      const value = parseFloat(e.target.value);
+      const valueLabel = e.target.parentElement.querySelector('.filter-knob-value');
+      const kind = knobFilters.find(f => f.name === filter)?.kind;
+      const cfg = kind ? FILTER_KNOB_CONFIG[kind] : null;
+      if (valueLabel && cfg) {
+        valueLabel.textContent = cfg.fmt(Number(value).toFixed(cfg.step < 1 ? 1 : 0));
+      }
+      debouncedSetFilterSettings(source, filter, { [param]: value });
+    });
+  });
+}
+
+function updateGauge(elementId, fraction) {
   const el = document.getElementById(elementId);
   if (!el) return;
-  el.style.strokeDashoffset = 282.74 * (1 - peak);
-  el.style.stroke = peak > 0.85 ? '#e94560' : peak > 0.6 ? '#e9c845' : '#4ecca3';
+  const clamped = Math.max(0, Math.min(1, fraction));
+  el.style.strokeDashoffset = 282.74 * (1 - clamped);
+  if (clamped > 0.85) {
+    el.style.stroke = '#e94560';
+  } else if (clamped > 0.7) {
+    el.style.stroke = '#e9c845';
+  } else if (clamped > 0.4) {
+    el.style.stroke = '#4ecca3';
+  } else {
+    el.style.stroke = '#0f7460';
+  }
+}
+
+function updatePeakGauge(elementId, linearPeak) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const scaled = Math.sqrt(Math.max(0, Math.min(1, linearPeak)));
+  el.style.strokeDashoffset = 230.38 * (1 - scaled);
+  if (scaled > 0.9) {
+    el.style.stroke = '#e94560';
+  } else if (scaled > 0.7) {
+    el.style.stroke = '#00e5ff';
+  } else if (scaled > 0.3) {
+    el.style.stroke = '#00bcd4';
+  } else {
+    el.style.stroke = '#1a6a8a';
+  }
 }
 
 function loadPreferredDevices() {
@@ -495,6 +795,7 @@ async function loadWidgetVolume(type) {
       muteBtn.classList.toggle('muted', vol.muted);
       muteBtn.textContent = vol.muted ? 'MUTED' : 'Mute';
     }
+    updateGauge(`${type}-gauge-fill`, vol.volume);
   } catch (_) {}
 }
 
@@ -520,6 +821,9 @@ async function loadAudioDevices() {
       populateDeviceSelect('output-device-select', outputs, selectedOutputId);
       loadWidgetVolume('output');
       updatePreferredBtnState('output');
+      const outDev = outputs.find(d => d.id === selectedOutputId);
+      const outHw = document.getElementById('output-hw-name');
+      if (outHw && outDev) outHw.textContent = outDev.name;
       $('#output-widget').hidden = false;
     } else {
       $('#output-widget').hidden = true;
@@ -530,6 +834,9 @@ async function loadAudioDevices() {
       populateDeviceSelect('input-device-select', inputs, selectedInputId);
       loadWidgetVolume('input');
       updatePreferredBtnState('input');
+      const inDev = inputs.find(d => d.id === selectedInputId);
+      const inHw = document.getElementById('input-hw-name');
+      if (inHw && inDev) inHw.textContent = inDev.name;
       $('#input-widget').hidden = false;
     } else {
       $('#input-widget').hidden = true;
@@ -550,6 +857,7 @@ function bindDeviceWidgetEvents() {
       const pct = Math.round(e.target.value);
       const label = document.getElementById('output-vol-pct');
       if (label) label.textContent = pct + '%';
+      updateGauge('output-gauge-fill', pct / 100);
       if (selectedOutputId) debouncedSetWindowsVolume(selectedOutputId, pct / 100);
     });
   }
@@ -559,6 +867,7 @@ function bindDeviceWidgetEvents() {
       const pct = Math.round(e.target.value);
       const label = document.getElementById('input-vol-pct');
       if (label) label.textContent = pct + '%';
+      updateGauge('input-gauge-fill', pct / 100);
       if (selectedInputId) debouncedSetWindowsVolume(selectedInputId, pct / 100);
     });
   }
@@ -587,14 +896,22 @@ function bindDeviceWidgetEvents() {
     selectedOutputId = e.target.value;
     loadWidgetVolume('output');
     updatePreferredBtnState('output');
-    updateGauge('output-gauge-fill', 0);
+    const outDev = allDevices.find(d => d.id === selectedOutputId);
+    const outHw = document.getElementById('output-hw-name');
+    if (outHw && outDev) outHw.textContent = outDev.name;
+    renderObsKnob('output');
+    renderFilterKnobs('output');
   });
 
   $('#input-device-select').addEventListener('change', (e) => {
     selectedInputId = e.target.value;
     loadWidgetVolume('input');
     updatePreferredBtnState('input');
-    updateGauge('input-gauge-fill', 0);
+    const inDev = allDevices.find(d => d.id === selectedInputId);
+    const inHw = document.getElementById('input-hw-name');
+    if (inHw && inDev) inHw.textContent = inDev.name;
+    renderObsKnob('input');
+    renderFilterKnobs('input');
   });
 
   $('#output-preferred-btn').addEventListener('click', () => {
@@ -603,6 +920,41 @@ function bindDeviceWidgetEvents() {
 
   $('#input-preferred-btn').addEventListener('click', () => {
     if (selectedInputId) togglePreferred('input', selectedInputId);
+  });
+
+  // OBS knob events
+  const inputObsKnob = document.getElementById('input-obs-knob');
+  const outputObsKnob = document.getElementById('output-obs-knob');
+
+  if (inputObsKnob) {
+    inputObsKnob.addEventListener('input', (e) => {
+      const volumeDb = parseFloat(e.target.value);
+      const dbLabel = document.getElementById('input-obs-db');
+      if (dbLabel) dbLabel.textContent = (volumeDb <= -100 ? '-inf' : volumeDb.toFixed(1)) + ' dB';
+      const matched = matchObsInputsToDevice('input', selectedInputId);
+      if (matched.length > 0) debouncedSetVolume(matched[0].name, volumeDb);
+    });
+  }
+
+  if (outputObsKnob) {
+    outputObsKnob.addEventListener('input', (e) => {
+      const volumeDb = parseFloat(e.target.value);
+      const dbLabel = document.getElementById('output-obs-db');
+      if (dbLabel) dbLabel.textContent = (volumeDb <= -100 ? '-inf' : volumeDb.toFixed(1)) + ' dB';
+      const matched = matchObsInputsToDevice('output', selectedOutputId);
+      if (matched.length > 0) debouncedSetVolume(matched[0].name, volumeDb);
+    });
+  }
+
+  // OBS mute button events
+  $('#input-obs-mute').addEventListener('click', () => {
+    const matched = matchObsInputsToDevice('input', selectedInputId);
+    if (matched.length > 0) invoke('toggle_input_mute', { inputName: matched[0].name }).catch(() => {});
+  });
+
+  $('#output-obs-mute').addEventListener('click', () => {
+    const matched = matchObsInputsToDevice('output', selectedOutputId);
+    if (matched.length > 0) invoke('toggle_input_mute', { inputName: matched[0].name }).catch(() => {});
   });
 }
 
@@ -846,6 +1198,13 @@ $('#btn-preflight-record').addEventListener('click', () => runPreflight('record'
 $('#btn-preflight-stream').addEventListener('click', () => runPreflight('stream'));
 $('#btn-check-routing').addEventListener('click', checkRouting);
 $('#btn-apply-setup').addEventListener('click', applyRecommendedSetup);
+
+$('#btn-toggle-stream').addEventListener('click', () => {
+  invoke('toggle_stream').catch(err => showFrameDropAlert('Stream toggle failed: ' + err));
+});
+$('#btn-toggle-record').addEventListener('click', () => {
+  invoke('toggle_record').catch(err => showFrameDropAlert('Record toggle failed: ' + err));
+});
 
 // --- AI Chat ---
 
@@ -1126,6 +1485,8 @@ const initialSettings = loadSettings();
 populateSettingsForm(initialSettings);
 setupEventListeners();
 bindDeviceWidgetEvents();
+bindScenesPanelEvents();
+initToolbar();
 loadAudioDevices();
 
 (async () => {

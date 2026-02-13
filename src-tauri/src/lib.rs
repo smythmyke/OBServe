@@ -73,8 +73,13 @@ pub fn run() {
             commands::undo_last_action,
             commands::set_gemini_api_key,
             commands::check_ai_status,
+            commands::set_current_scene,
+            commands::toggle_stream,
+            commands::toggle_record,
             commands::launch_obs,
             commands::is_obs_running,
+            commands::set_source_filter_settings,
+            commands::rename_input,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

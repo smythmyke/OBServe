@@ -36,9 +36,34 @@
     </div>
   </header>
 
+  <div id="toolbar" class="toolbar">
+    <div class="toolbar-group">
+      <span class="toolbar-label">Mode</span>
+      <button class="toggle-btn" data-mode="audio">Audio</button>
+      <button class="toggle-btn active" data-mode="audio-video">Audio + Video</button>
+      <button class="toggle-btn" data-mode="video">Video</button>
+    </div>
+    <div class="toolbar-group">
+      <span class="toolbar-label">Detail</span>
+      <button class="toggle-btn active" data-complexity="simple">Simple</button>
+      <button class="toggle-btn" data-complexity="advanced">Advanced</button>
+    </div>
+  </div>
+
   <main>
 
-    <section class="panel" id="preflight-panel" hidden>
+    <section class="panel" id="routing-panel" data-panel="routing" hidden>
+      <div class="routing-header">
+        <h2>Audio Routing</h2>
+        <div class="routing-buttons">
+          <button class="btn-secondary" id="btn-check-routing">Check Routing</button>
+          <button id="btn-apply-setup" disabled>One-Click Setup</button>
+        </div>
+      </div>
+      <div id="routing-results"></div>
+    </section>
+
+    <section class="panel" id="preflight-panel" data-panel="preflight" hidden>
       <div class="preflight-header">
         <h2>Pre-Flight Check</h2>
         <div class="preflight-buttons">
@@ -56,18 +81,206 @@
       <div id="preflight-results"></div>
     </section>
 
-    <section class="panel" id="routing-panel" hidden>
-      <div class="routing-header">
-        <h2>Audio Routing</h2>
-        <div class="routing-buttons">
-          <button class="btn-secondary" id="btn-check-routing">Check Routing</button>
-          <button id="btn-apply-setup" disabled>One-Click Setup</button>
-        </div>
+    <section class="panel" id="stream-record-panel" data-panel="stream-record" hidden>
+      <h2>Stream &amp; Record</h2>
+      <div class="stream-record-buttons">
+        <button class="sr-btn" id="btn-toggle-stream">Start Stream</button>
+        <button class="sr-btn" id="btn-toggle-record">Start Record</button>
       </div>
-      <div id="routing-results"></div>
+      <div class="stream-record-status">
+        <span id="sr-stream-status" class="sr-status">Stream: Off</span>
+        <span id="sr-record-status" class="sr-status">Record: Off</span>
+      </div>
     </section>
 
-    <section class="panel" id="ai-panel">
+    <section class="panel" id="scenes-panel" data-panel="scenes" hidden>
+      <h2>Scenes</h2>
+      <div id="scenes-grid" class="scenes-grid"></div>
+    </section>
+
+    <section class="panel" id="obs-info-panel" data-panel="obs-info" hidden>
+      <h2>OBS Info</h2>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">Version</span>
+          <span id="obs-version">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Active FPS</span>
+          <span id="obs-fps">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">CPU (OBS)</span>
+          <span id="obs-cpu">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Memory (OBS)</span>
+          <span id="obs-memory">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Stream</span>
+          <span id="obs-stream-status">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Record</span>
+          <span id="obs-record-status">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Canvas</span>
+          <span id="obs-canvas-res">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Output</span>
+          <span id="obs-output-res">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Dropped Frames</span>
+          <span id="obs-dropped-frames">&mdash;</span>
+        </div>
+      </div>
+
+      <h3>Scenes</h3>
+      <ul id="scene-list" class="scene-list"></ul>
+    </section>
+
+    <section class="panel" id="system-panel" data-panel="system" hidden>
+      <h2>System Resources</h2>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">CPU (System)</span>
+          <span id="sys-cpu">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">RAM</span>
+          <span id="sys-ram">&mdash;</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Disk Free</span>
+          <span id="sys-disk">&mdash;</span>
+        </div>
+      </div>
+      <h3>Displays</h3>
+      <ul id="display-list" class="scene-list"></ul>
+    </section>
+
+    <section class="panel" id="audio-panel" data-panel="audio-devices">
+      <h2>Audio Devices</h2>
+      <div id="audio-devices-loading">Loading devices...</div>
+      <p id="audio-error" class="error" hidden></p>
+
+      <div id="audio-device-widgets" hidden>
+        <div class="device-widget" id="input-widget">
+          <div class="widget-header">
+            <div class="widget-name-left">
+              <span class="fat-quote-name accent-red">&#10077;My Mic&#10078;</span>
+              <span class="hw-device-name" id="input-hw-name"></span>
+            </div>
+            <span class="flow-arrow">&rarr;</span>
+            <div class="widget-name-right">
+              <span class="fat-quote-name accent-muted" id="input-obs-name">&#10077;Aux&#10078;</span>
+            </div>
+          </div>
+
+          <div class="device-widget-top">
+            <select class="device-select" id="input-device-select"></select>
+            <button class="preferred-btn" id="input-preferred-btn" title="Set as preferred">&#9734;</button>
+          </div>
+
+          <div class="dual-knob-row">
+            <div class="knob-col">
+              <div class="gauge-knob-container">
+                <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
+                  <circle class="gauge-track" cx="60" cy="60" r="54"/>
+                  <circle class="gauge-fill" id="input-gauge-fill" cx="60" cy="60" r="54"/>
+                  <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
+                  <circle class="gauge-fill peak-fill" id="input-peak-fill" cx="60" cy="60" r="44"/>
+                </svg>
+                <div class="knob-overlay">
+                  <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
+                    diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
+                </div>
+              </div>
+              <div class="knob-info">
+                <span class="device-vol-pct" id="input-vol-pct">--%</span>
+                <button class="device-mute-btn" id="input-mute-btn">Mute</button>
+              </div>
+            </div>
+
+            <span class="flow-arrow-mid">&rarr;</span>
+
+            <div class="knob-col" id="input-obs-knob-col" hidden>
+              <webaudio-knob id="input-obs-knob" min="-100" max="26" step="0.1" value="0"
+                diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
+              <div class="knob-info">
+                <span class="obs-vol-db" id="input-obs-db">-- dB</span>
+                <button class="obs-mute-btn" id="input-obs-mute">Mute</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="filter-knobs" id="input-filter-knobs"></div>
+        </div>
+
+        <div class="device-widget" id="output-widget">
+          <div class="widget-header">
+            <div class="widget-name-left">
+              <span class="fat-quote-name accent-green" id="output-obs-name">&#10077;Desktop Audio&#10078;</span>
+            </div>
+            <span class="flow-arrow">&rarr;</span>
+            <div class="widget-name-right">
+              <span class="fat-quote-name accent-muted">&#10077;My Speakers&#10078;</span>
+              <span class="hw-device-name" id="output-hw-name"></span>
+            </div>
+          </div>
+
+          <div class="device-widget-top">
+            <select class="device-select" id="output-device-select"></select>
+            <button class="preferred-btn" id="output-preferred-btn" title="Set as preferred">&#9734;</button>
+          </div>
+
+          <div class="dual-knob-row">
+            <div class="knob-col" id="output-obs-knob-col" hidden>
+              <webaudio-knob id="output-obs-knob" min="-100" max="26" step="0.1" value="0"
+                diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
+              <div class="knob-info">
+                <span class="obs-vol-db" id="output-obs-db">-- dB</span>
+                <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
+              </div>
+            </div>
+
+            <span class="flow-arrow-mid">&rarr;</span>
+
+            <div class="knob-col">
+              <div class="gauge-knob-container">
+                <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
+                  <circle class="gauge-track" cx="60" cy="60" r="54"/>
+                  <circle class="gauge-fill" id="output-gauge-fill" cx="60" cy="60" r="54"/>
+                  <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
+                  <circle class="gauge-fill peak-fill" id="output-peak-fill" cx="60" cy="60" r="44"/>
+                </svg>
+                <div class="knob-overlay">
+                  <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
+                    diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
+                </div>
+              </div>
+              <div class="knob-info">
+                <span class="device-vol-pct" id="output-vol-pct">--%</span>
+                <button class="device-mute-btn" id="output-mute-btn">Mute</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="filter-knobs" id="output-filter-knobs"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="mixer-panel" data-panel="mixer" hidden>
+      <h2>OBS Audio Mixer</h2>
+      <div id="mixer-list"></div>
+    </section>
+
+    <section class="panel" id="ai-panel" data-panel="ai">
       <div class="ai-header">
         <h2>OBServer AI</h2>
         <div class="ai-header-buttons">
@@ -123,131 +336,6 @@
       </div>
     </section>
 
-    <section class="panel" id="obs-info-panel" hidden>
-      <h2>OBS Info</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">Version</span>
-          <span id="obs-version">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Active FPS</span>
-          <span id="obs-fps">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">CPU (OBS)</span>
-          <span id="obs-cpu">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Memory (OBS)</span>
-          <span id="obs-memory">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Stream</span>
-          <span id="obs-stream-status">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Record</span>
-          <span id="obs-record-status">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Canvas</span>
-          <span id="obs-canvas-res">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Output</span>
-          <span id="obs-output-res">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Dropped Frames</span>
-          <span id="obs-dropped-frames">&mdash;</span>
-        </div>
-      </div>
-
-      <h3>Scenes</h3>
-      <ul id="scene-list" class="scene-list"></ul>
-    </section>
-
-    <section class="panel" id="system-panel" hidden>
-      <h2>System Resources</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">CPU (System)</span>
-          <span id="sys-cpu">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">RAM</span>
-          <span id="sys-ram">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Disk Free</span>
-          <span id="sys-disk">&mdash;</span>
-        </div>
-      </div>
-      <h3>Displays</h3>
-      <ul id="display-list" class="scene-list"></ul>
-    </section>
-
-    <section class="panel" id="mixer-panel" hidden>
-      <h2>OBS Audio Mixer</h2>
-      <div id="mixer-list"></div>
-    </section>
-
-    <section class="panel" id="audio-panel">
-      <h2>Audio Devices</h2>
-      <div id="audio-devices-loading">Loading devices...</div>
-      <p id="audio-error" class="error" hidden></p>
-
-      <div id="audio-device-widgets" hidden>
-        <div class="device-widget" id="output-widget">
-          <h3>Output Device</h3>
-          <div class="device-widget-top">
-            <select class="device-select" id="output-device-select"></select>
-            <button class="preferred-btn" id="output-preferred-btn" title="Set as preferred">&#9734;</button>
-          </div>
-          <div class="device-widget-body">
-            <div class="gauge-knob-container">
-              <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
-                <circle class="gauge-track" cx="60" cy="60" r="54"/>
-                <circle class="gauge-fill" id="output-gauge-fill" cx="60" cy="60" r="54"/>
-              </svg>
-              <div class="knob-overlay">
-                <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
-                  diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-              </div>
-            </div>
-            <div class="device-info-col">
-              <span class="device-vol-pct" id="output-vol-pct">--%</span>
-              <button class="device-mute-btn" id="output-mute-btn">Mute</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="device-widget" id="input-widget">
-          <h3>Input Device</h3>
-          <div class="device-widget-top">
-            <select class="device-select" id="input-device-select"></select>
-            <button class="preferred-btn" id="input-preferred-btn" title="Set as preferred">&#9734;</button>
-          </div>
-          <div class="device-widget-body">
-            <div class="gauge-knob-container">
-              <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
-                <circle class="gauge-track" cx="60" cy="60" r="54"/>
-                <circle class="gauge-fill" id="input-gauge-fill" cx="60" cy="60" r="54"/>
-              </svg>
-              <div class="knob-overlay">
-                <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
-                  diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-              </div>
-            </div>
-            <div class="device-info-col">
-              <span class="device-vol-pct" id="input-vol-pct">--%</span>
-              <button class="device-mute-btn" id="input-mute-btn">Mute</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
   </main>
 
   <div id="alert-toast" class="alert-toast">

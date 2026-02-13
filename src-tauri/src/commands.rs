@@ -209,6 +209,44 @@ pub async fn remove_source_filter(
 }
 
 #[tauri::command]
+pub async fn set_source_filter_settings(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    source_name: String,
+    filter_name: String,
+    filter_settings: Value,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetSourceFilterSettings",
+        Some(json!({
+            "sourceName": source_name,
+            "filterName": filter_name,
+            "filterSettings": filter_settings,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_input(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+    new_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetInputName",
+        Some(json!({
+            "inputName": input_name,
+            "newInputName": new_name,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_windows_volume(
     device_id: String,
 ) -> Result<audio::DeviceVolume, String> {
@@ -573,6 +611,40 @@ pub async fn check_ai_status(
 ) -> Result<bool, String> {
     let client = gemini.read().await;
     Ok(client.is_some())
+}
+
+// --- Scene & Output Control Commands ---
+
+#[tauri::command]
+pub async fn set_current_scene(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetCurrentProgramScene",
+        Some(json!({ "sceneName": scene_name })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_stream(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("ToggleStream", None).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_record(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("ToggleRecord", None).await?;
+    Ok(())
 }
 
 // --- OBS Launcher Commands ---

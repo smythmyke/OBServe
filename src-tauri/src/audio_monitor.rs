@@ -45,7 +45,7 @@ fn start_peak_meter_polling(app_handle: AppHandle) {
             let handle = app_handle.clone();
             let result = tokio::task::spawn_blocking(poll_all_peak_meters).await;
             if let Ok(Ok(levels)) = result {
-                if levels.iter().any(|l| l.peak > 0.01) {
+                if levels.iter().any(|l| l.peak > 0.001) {
                     use tauri::Emitter;
                     let _ = handle.emit(
                         "audio://peak-levels",

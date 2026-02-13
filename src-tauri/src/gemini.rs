@@ -133,6 +133,26 @@ impl GeminiClient {
     }
 }
 
+fn match_hw_device(kind: &str, device_id: &str, devices: &[AudioDevice]) -> String {
+    let is_input = kind.contains("input_capture");
+    let is_output = kind.contains("output_capture");
+    if !is_input && !is_output {
+        return String::new();
+    }
+    let target_type = if is_input { "input" } else { "output" };
+    let matched = if device_id == "default" || device_id.is_empty() {
+        devices
+            .iter()
+            .find(|d| d.device_type == target_type && d.is_default)
+    } else {
+        devices.iter().find(|d| d.id == device_id)
+    };
+    match matched {
+        Some(d) => format!(", hw: \"{}\"", d.name),
+        None => String::new(),
+    }
+}
+
 fn build_system_prompt(state: &ObsState, devices: &[AudioDevice]) -> String {
     let mut prompt = String::from(
         r#"You are OBServer AI, an expert sound engineer and OBS Studio assistant. You help creators control their audio, video, scenes, and streaming setup through natural conversation.
@@ -151,6 +171,12 @@ Users speak casually. Map their words to the correct OBS input or source:
 - "screen", "display", "monitor" → source with kind "monitor_capture" or "display_capture"
 - "chat", "alerts", "overlay" → browser_source or image sources with matching names
 When multiple matches exist, prefer the one in the current scene. If still ambiguous, ask the user.
+
+### UI Labels
+The app labels the user's input device as ❝My Mic❞ and output device as ❝My Speakers❞.
+These are the Windows hardware devices. OBS inputs (like "Mic/Aux", "Desktop Audio") are
+shown alongside these with their own quoted names. Users may refer to either layer.
+When referencing devices in responses, use these names to match what the user sees.
 
 ### Relative Adjustments
 When users say relative terms, apply these dB offsets to the CURRENT volume:
@@ -225,9 +251,10 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
     }
     for (name, input) in &state.inputs {
         let muted = if input.muted { " [MUTED]" } else { "" };
+        let hw_annotation = match_hw_device(&input.kind, &input.device_id, devices);
         prompt.push_str(&format!(
-            "- **\"{}\"** — kind: `{}`, volume: {:.1}dB, monitor: `{}`{}\n",
-            name, input.kind, input.volume_db, input.monitor_type, muted
+            "- **\"{}\"** — kind: `{}`, volume: {:.1}dB, monitor: `{}`{}{}\n",
+            name, input.kind, input.volume_db, input.monitor_type, muted, hw_annotation
         ));
         if !input.filters.is_empty() {
             for f in &input.filters {
