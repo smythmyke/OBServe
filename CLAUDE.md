@@ -70,36 +70,34 @@
 **Installed:**
 - Node.js v22.18.0
 - npm 10.9.3
-
-**Not yet installed (required before Phase 1):**
-- Rust toolchain (rustup + cargo) — https://rustup.rs
-- Tauri CLI — `cargo install create-tauri-app` then `cargo install tauri-cli`
-- Visual Studio C++ Build Tools (required by Rust on Windows)
-- WebView2 (usually pre-installed on Windows 10/11)
+- Rust 1.93.1 (stable-x86_64-pc-windows-msvc)
+- Tauri CLI v2 (via npm @tauri-apps/cli)
+- Visual Studio C++ Build Tools
+- WebView2
 
 ## Features Roadmap
 
 ### Phase 1: Foundation
-- [ ] Tauri project scaffold
-- [ ] OBS WebSocket connection (connect, auth, basic commands)
-- [ ] Windows audio device enumeration
-- [ ] System tray with connection status
-- [ ] Basic dashboard UI (connection status, audio devices)
+- [x] Tauri project scaffold
+- [x] OBS WebSocket connection (connect, auth, basic commands)
+- [x] Windows audio device enumeration
+- [x] System tray with connection status
+- [x] Basic dashboard UI (connection status, audio devices)
 
 ### Phase 2: Audio Intelligence
-- [ ] Real-time audio level monitoring from OBS
-- [ ] Device routing recommendations
-- [ ] One-click audio setup (mic → input, desktop → capture, headphones → monitoring)
-- [ ] Auto-configuration of OBS audio settings
-- [ ] OBS config file reading/writing (when OBS is closed)
+- [x] Real-time audio level monitoring from OBS
+- [x] Device routing recommendations
+- [x] One-click audio setup (mic → input, desktop → capture, headphones → monitoring)
+- [x] Auto-configuration of OBS audio settings
+- [x] OBS config file reading/writing (when OBS is closed)
 
 ### Phase 3: Pre-Flight & Monitoring
-- [ ] Pre-recording/streaming checklist
-- [ ] Resolution/bitrate/encoder analysis
-- [ ] Real-time encoding stats dashboard
-- [ ] Dropped frame alerts
-- [ ] System resource monitoring (CPU, GPU, RAM, disk space)
-- [ ] Screen/display enumeration
+- [x] Pre-recording/streaming checklist
+- [x] Resolution/bitrate/encoder analysis
+- [x] Real-time encoding stats dashboard
+- [x] Dropped frame alerts
+- [x] System resource monitoring (CPU, GPU, RAM, disk space)
+- [x] Screen/display enumeration
 
 ### Phase 4: AI Integration
 - [ ] Gemini API connection
