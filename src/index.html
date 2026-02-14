@@ -7,336 +7,469 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header>
-    <h1>OBServe</h1>
-    <div class="header-controls">
-      <p id="connection-error" class="header-error" hidden></p>
-      <button id="btn-connect" class="btn-header">Connect</button>
-      <button id="btn-disconnect" class="btn-header btn-header-disconnect" disabled>Disconnect</button>
-      <button id="btn-settings" class="settings-btn" title="Settings">&#9881;</button>
-      <span id="connection-badge" class="badge disconnected">Disconnected</span>
-    </div>
-    <div id="settings-dropdown" class="settings-dropdown">
-      <div class="settings-row">
-        <label>Host <input type="text" id="obs-host" value="localhost"></label>
-      </div>
-      <div class="settings-row">
-        <label>Port <input type="number" id="obs-port" value="4455"></label>
-      </div>
-      <div class="settings-row">
-        <label>Password <input type="password" id="obs-password" placeholder="(optional)"></label>
-      </div>
-      <div class="settings-row">
-        <label>Gemini API Key <input type="password" id="gemini-api-key" placeholder="(for AI features)"></label>
-      </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="auto-launch-obs"> Launch OBS on startup</label>
-      </div>
-      <button id="btn-save-settings">Save</button>
-    </div>
-  </header>
+  <div class="rack-frame">
 
-  <div id="toolbar" class="toolbar">
-    <div class="toolbar-group">
-      <span class="toolbar-label">Mode</span>
-      <button class="toggle-btn" data-mode="audio">Audio</button>
-      <button class="toggle-btn active" data-mode="audio-video">Audio + Video</button>
-      <button class="toggle-btn" data-mode="video">Video</button>
+    <div class="wood-panel">
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div>
     </div>
-    <div class="toolbar-group">
-      <span class="toolbar-label">Detail</span>
-      <button class="toggle-btn active" data-complexity="simple">Simple</button>
-      <button class="toggle-btn" data-complexity="advanced">Advanced</button>
+
+    <div class="rack-body">
+
+      <div class="title-module" data-tauri-drag-region>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <h1>OBServe</h1>
+
+        <div class="grip-strip" data-tauri-drag-region>
+          <div class="grip-ridges" data-tauri-drag-region></div>
+        </div>
+
+        <div class="title-center">
+          <div class="toolbar-group">
+            <span class="toolbar-label">Mode</span>
+            <button class="toggle-btn" data-mode="audio">Audio</button>
+            <button class="toggle-btn active" data-mode="audio-video">A+V</button>
+            <button class="toggle-btn" data-mode="video">Video</button>
+          </div>
+          <div class="toolbar-group">
+            <span class="toolbar-label">Detail</span>
+            <button class="toggle-btn active" data-complexity="simple">Simple</button>
+            <button class="toggle-btn" data-complexity="advanced">Advanced</button>
+          </div>
+        </div>
+
+        <div class="title-right">
+          <p id="connection-error" class="header-error" hidden></p>
+          <button id="btn-connect" class="hw-btn">Connect</button>
+          <button id="btn-disconnect" class="hw-btn" disabled>Disconnect</button>
+          <span class="led" id="connection-led"></span>
+          <span id="connection-badge" class="badge disconnected">Disconnected</span>
+          <button id="btn-settings" class="settings-btn" title="Settings">&#9881;</button>
+          <div class="window-controls">
+            <button class="win-btn" id="win-minimize" title="Minimize"><span class="win-icon">&#x2014;</span></button>
+            <button class="win-btn" id="win-maximize" title="Maximize"><span class="win-icon">&#x25A1;</span></button>
+            <button class="win-btn" id="win-close" title="Close"><span class="win-icon">&#x2715;</span></button>
+          </div>
+        </div>
+
+        <div id="settings-dropdown" class="settings-dropdown">
+          <div class="settings-row">
+            <label>Host <input type="text" id="obs-host" value="localhost"></label>
+          </div>
+          <div class="settings-row">
+            <label>Port <input type="number" id="obs-port" value="4455"></label>
+          </div>
+          <div class="settings-row">
+            <label>Password <input type="password" id="obs-password" placeholder="(optional)"></label>
+          </div>
+          <div class="settings-row">
+            <label>Gemini API Key <input type="password" id="gemini-api-key" placeholder="(for AI features)"></label>
+          </div>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="auto-launch-obs"> Launch OBS on startup</label>
+          </div>
+          <div class="toggle-row">
+            <label><input type="checkbox" id="enable-voice-input" checked> Enable voice input</label>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-label">Panels</div>
+          <div id="panel-toggles" class="panel-toggles"></div>
+          <button id="btn-save-settings">Save</button>
+        </div>
+      </div>
+
+      <section class="module panel" id="routing-panel" data-panel="routing" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Audio Routing</span>
+        <div class="routing-header">
+          <h2>Audio Routing</h2>
+          <div class="routing-buttons">
+            <button class="btn-secondary" id="btn-check-routing">Check Routing</button>
+            <button id="btn-apply-setup" disabled>One-Click Setup</button>
+          </div>
+        </div>
+        <div id="routing-results"></div>
+      </section>
+
+      <section class="module panel" id="preflight-panel" data-panel="preflight" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Pre-Flight</span>
+        <div class="preflight-header">
+          <h2>Pre-Flight Check</h2>
+          <div class="preflight-buttons">
+            <button class="btn-secondary" id="btn-preflight-record">Check for Recording</button>
+            <button class="btn-secondary" id="btn-preflight-stream">Check for Streaming</button>
+          </div>
+        </div>
+        <div id="preflight-summary" hidden>
+          <div class="pf-summary-bar">
+            <span class="pf-count pass" id="pf-pass">0 pass</span>
+            <span class="pf-count warn" id="pf-warn">0 warn</span>
+            <span class="pf-count fail" id="pf-fail">0 fail</span>
+          </div>
+        </div>
+        <div id="preflight-results"></div>
+      </section>
+
+      <section class="module panel" id="stream-record-panel" data-panel="stream-record" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Stream &amp; Record</span>
+        <h2>Stream &amp; Record</h2>
+        <div class="stream-record-buttons">
+          <button class="sr-btn" id="btn-toggle-stream">Start Stream</button>
+          <button class="sr-btn" id="btn-toggle-record">Start Record</button>
+        </div>
+        <div class="stream-record-status">
+          <span id="sr-stream-status" class="sr-status">Stream: Off</span>
+          <span id="sr-record-status" class="sr-status">Record: Off</span>
+        </div>
+      </section>
+
+      <section class="module panel" id="scenes-panel" data-panel="scenes" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Scenes</span>
+        <h2>Scenes</h2>
+        <div id="scenes-grid" class="scenes-grid"></div>
+      </section>
+
+      <section class="module panel" id="obs-info-panel" data-panel="obs-info" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">OBS Info</span>
+        <h2>OBS Info</h2>
+        <div class="info-grid">
+          <div class="info-item">
+            <span class="info-label">Version</span>
+            <span id="obs-version">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Active FPS</span>
+            <span id="obs-fps">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">CPU (OBS)</span>
+            <span id="obs-cpu">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Memory (OBS)</span>
+            <span id="obs-memory">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Stream</span>
+            <span id="obs-stream-status">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Record</span>
+            <span id="obs-record-status">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Canvas</span>
+            <span id="obs-canvas-res">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Output</span>
+            <span id="obs-output-res">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Dropped Frames</span>
+            <span id="obs-dropped-frames">&mdash;</span>
+          </div>
+        </div>
+
+        <h3>Scenes</h3>
+        <ul id="scene-list" class="scene-list"></ul>
+      </section>
+
+      <section class="module panel" id="system-panel" data-panel="system" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">System</span>
+        <h2>System Resources</h2>
+        <div class="info-grid">
+          <div class="info-item">
+            <span class="info-label">CPU (System)</span>
+            <span id="sys-cpu">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">RAM</span>
+            <span id="sys-ram">&mdash;</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Disk Free</span>
+            <span id="sys-disk">&mdash;</span>
+          </div>
+        </div>
+        <h3>Displays</h3>
+        <ul id="display-list" class="scene-list"></ul>
+      </section>
+
+      <section class="module panel" id="audio-panel" data-panel="audio-devices">
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Audio Devices</span>
+        <h2>Audio Devices</h2>
+        <div id="audio-devices-loading">Loading devices...</div>
+        <p id="audio-error" class="error" hidden></p>
+
+        <div id="audio-device-widgets" hidden>
+          <div class="device-widget" id="input-widget">
+            <div class="widget-header">
+              <div class="widget-name-left">
+                <span class="fat-quote-name accent-red">&#10077;My Mic&#10078;</span>
+                <span class="hw-device-name" id="input-hw-name"></span>
+              </div>
+              <span class="flow-arrow">&rarr;</span>
+              <div class="widget-name-right">
+                <span class="fat-quote-name accent-muted" id="input-obs-name">&#10077;Aux&#10078;</span>
+              </div>
+            </div>
+
+            <div class="device-widget-top">
+              <select class="device-select" id="input-device-select"></select>
+              <button class="preferred-btn" id="input-preferred-btn" title="Set as preferred">&#9734;</button>
+            </div>
+
+            <div class="dual-knob-row">
+              <div class="knob-col">
+                <div class="gauge-knob-container">
+                  <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
+                    <circle class="gauge-track" cx="60" cy="60" r="54"/>
+                    <circle class="gauge-fill" id="input-gauge-fill" cx="60" cy="60" r="54"/>
+                    <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
+                    <circle class="gauge-fill peak-fill" id="input-peak-fill" cx="60" cy="60" r="44"/>
+                  </svg>
+                  <div class="knob-overlay">
+                    <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
+                      diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+                  </div>
+                </div>
+                <div class="knob-info">
+                  <span class="device-vol-pct" id="input-vol-pct">--%</span>
+                  <div class="knob-btn-row">
+                    <button class="device-mute-btn" id="input-mute-btn">Mute</button>
+                    <button class="monitor-btn" id="input-monitor-btn" title="Monitor Off">MON</button>
+                    <span class="led led-off" id="input-monitor-led"></span>
+                  </div>
+                </div>
+              </div>
+
+              <span class="flow-arrow-mid">&rarr;</span>
+
+              <div class="knob-col" id="input-obs-knob-col" hidden>
+                <webaudio-knob id="input-obs-knob" min="-100" max="26" step="0.1" value="0"
+                  diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+                <div class="knob-info">
+                  <span class="obs-vol-db" id="input-obs-db">-- dB</span>
+                  <button class="obs-mute-btn" id="input-obs-mute">Mute</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="filter-knobs" id="input-filter-knobs"></div>
+            <div class="cal-trigger-row">
+              <button class="btn-secondary" id="btn-calibrate-mic" title="Calibrate microphone">Calibrate</button>
+              <span class="cal-status" id="cal-last-run"></span>
+            </div>
+          </div>
+
+          <div class="device-widget" id="output-widget">
+            <div class="widget-header">
+              <div class="widget-name-left">
+                <span class="fat-quote-name accent-green" id="output-obs-name">&#10077;Desktop Audio&#10078;</span>
+              </div>
+              <span class="flow-arrow">&rarr;</span>
+              <div class="widget-name-right">
+                <span class="fat-quote-name accent-muted">&#10077;My Speakers&#10078;</span>
+                <span class="hw-device-name" id="output-hw-name"></span>
+              </div>
+            </div>
+
+            <div class="device-widget-top">
+              <select class="device-select" id="output-device-select"></select>
+              <button class="preferred-btn" id="output-preferred-btn" title="Set as preferred">&#9734;</button>
+            </div>
+
+            <div class="dual-knob-row">
+              <div class="knob-col" id="output-obs-knob-col" hidden>
+                <webaudio-knob id="output-obs-knob" min="-100" max="26" step="0.1" value="0"
+                  diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+                <div class="knob-info">
+                  <span class="obs-vol-db" id="output-obs-db">-- dB</span>
+                  <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
+                </div>
+              </div>
+
+              <span class="flow-arrow-mid">&rarr;</span>
+
+              <div class="knob-col">
+                <div class="gauge-knob-container">
+                  <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
+                    <circle class="gauge-track" cx="60" cy="60" r="54"/>
+                    <circle class="gauge-fill" id="output-gauge-fill" cx="60" cy="60" r="54"/>
+                    <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
+                    <circle class="gauge-fill peak-fill" id="output-peak-fill" cx="60" cy="60" r="44"/>
+                  </svg>
+                  <div class="knob-overlay">
+                    <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
+                      diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+                  </div>
+                </div>
+                <div class="knob-info">
+                  <span class="device-vol-pct" id="output-vol-pct">--%</span>
+                  <button class="device-mute-btn" id="output-mute-btn">Mute</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="filter-knobs" id="output-filter-knobs"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="module panel" id="calibration-panel" data-panel="calibration" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Mic Calibration</span>
+        <div class="cal-header">
+          <h2>Audio Calibration Wizard</h2>
+          <button class="btn-secondary" id="btn-cal-cancel">Cancel</button>
+        </div>
+        <div class="cal-progress-bar">
+          <div class="cal-progress-steps" id="cal-progress-steps"></div>
+          <div class="cal-progress-track"><div class="cal-progress-fill" id="cal-progress-fill"></div></div>
+        </div>
+        <div class="cal-content" id="cal-content"></div>
+        <div class="cal-existing-warning" id="cal-existing-warning" hidden>
+          <p>This source already has filters. What would you like to do?</p>
+          <div class="cal-warning-buttons">
+            <button class="hw-btn" id="btn-cal-replace">Replace All</button>
+            <button class="hw-btn" id="btn-cal-keep">Keep Both</button>
+            <button class="hw-btn" id="btn-cal-cancel-apply">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="module panel" id="mixer-panel" data-panel="mixer" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Mixer</span>
+        <h2>OBS Audio Mixer</h2>
+        <div id="mixer-list"></div>
+      </section>
+
+      <section class="module panel" id="filters-panel" data-panel="filters" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Signal Chain</span>
+        <div class="signal-chain-toolbar">
+          <h2>Signal Chain</h2>
+          <div class="signal-chain-actions">
+            <div class="sc-preset-dropdown-wrap">
+              <button class="btn-secondary" id="btn-sc-presets">Smart Presets &#9662;</button>
+              <div class="sc-preset-dropdown" id="sc-preset-dropdown" hidden></div>
+            </div>
+            <button class="btn-secondary" id="btn-sc-new-group">+ New Group</button>
+          </div>
+        </div>
+        <div id="sc-replace-dialog" class="sc-dialog" hidden>
+          <p>Preset groups already exist. Add alongside or replace?</p>
+          <div class="sc-dialog-buttons">
+            <button class="hw-btn" id="btn-sc-add">Add</button>
+            <button class="hw-btn" id="btn-sc-replace">Replace</button>
+            <button class="hw-btn" id="btn-sc-cancel-preset">Cancel</button>
+          </div>
+        </div>
+        <div id="sc-newgroup-dialog" class="sc-dialog" hidden>
+          <label>Group Name: <input type="text" id="sc-newgroup-name" maxlength="30"></label>
+          <div class="sc-dialog-buttons">
+            <button class="hw-btn" id="btn-sc-create-group">Create</button>
+            <button class="hw-btn" id="btn-sc-cancel-group">Cancel</button>
+          </div>
+        </div>
+        <div id="filters-chain-list"></div>
+      </section>
+
+      <section class="module panel" id="ai-panel" data-panel="ai">
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">AI Assistant</span>
+        <div class="ai-header">
+          <h2>OBServer AI</h2>
+          <div class="ai-header-buttons">
+            <button class="btn-secondary btn-help" id="btn-ai-help" title="What can I ask?">?</button>
+          </div>
+        </div>
+        <div id="ai-help-overlay" class="ai-help-overlay" hidden>
+          <div class="ai-help-content">
+            <div class="ai-help-title">What can OBServer AI do?</div>
+            <div class="ai-help-section">
+              <div class="ai-help-label">Audio Control</div>
+              <div class="ai-help-examples">
+                "Turn down the music"<br>
+                "My mic is too quiet"<br>
+                "Mute desktop audio"
+              </div>
+            </div>
+            <div class="ai-help-section">
+              <div class="ai-help-label">Audio Engineering</div>
+              <div class="ai-help-examples">
+                "Add a noise gate to my mic"<br>
+                "Set up a compressor for voice"<br>
+                "There's echo on my stream"
+              </div>
+            </div>
+            <div class="ai-help-section">
+              <div class="ai-help-label">Scene &amp; Streaming</div>
+              <div class="ai-help-examples">
+                "Switch to my gameplay scene"<br>
+                "Start recording"<br>
+                "What's my current setup?"
+              </div>
+            </div>
+            <div class="ai-help-section">
+              <div class="ai-help-label">Smart Presets</div>
+              <div class="ai-help-examples">
+                Use <b>Smart Presets</b> on the Signal Chain panel:<br>
+                Tutorial, Gaming, Podcast, Music/DJ,<br>
+                Broadcast, ASMR, Noisy Room, Just Chatting, Singing
+              </div>
+            </div>
+            <button class="btn-secondary ai-help-close" id="btn-ai-help-close">Got it</button>
+          </div>
+        </div>
+        <div id="ai-no-key" class="ai-notice">Enter your Gemini API key in Settings to enable OBServer AI.</div>
+        <div id="ai-chat" hidden>
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Ask OBServer AI anything...">
+            <button id="btn-voice" class="voice-btn" title="Voice input (or hold Ctrl+Space)">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+            </button>
+            <button id="btn-chat-send">Send</button>
+          </div>
+        </div>
+      </section>
+
     </div>
+
+    <div class="wood-panel right">
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div><div class="wood-screw"></div>
+      <div class="wood-screw"></div>
+    </div>
+
   </div>
-
-  <main>
-
-    <section class="panel" id="routing-panel" data-panel="routing" hidden>
-      <div class="routing-header">
-        <h2>Audio Routing</h2>
-        <div class="routing-buttons">
-          <button class="btn-secondary" id="btn-check-routing">Check Routing</button>
-          <button id="btn-apply-setup" disabled>One-Click Setup</button>
-        </div>
-      </div>
-      <div id="routing-results"></div>
-    </section>
-
-    <section class="panel" id="preflight-panel" data-panel="preflight" hidden>
-      <div class="preflight-header">
-        <h2>Pre-Flight Check</h2>
-        <div class="preflight-buttons">
-          <button class="btn-secondary" id="btn-preflight-record">Check for Recording</button>
-          <button class="btn-secondary" id="btn-preflight-stream">Check for Streaming</button>
-        </div>
-      </div>
-      <div id="preflight-summary" hidden>
-        <div class="pf-summary-bar">
-          <span class="pf-count pass" id="pf-pass">0 pass</span>
-          <span class="pf-count warn" id="pf-warn">0 warn</span>
-          <span class="pf-count fail" id="pf-fail">0 fail</span>
-        </div>
-      </div>
-      <div id="preflight-results"></div>
-    </section>
-
-    <section class="panel" id="stream-record-panel" data-panel="stream-record" hidden>
-      <h2>Stream &amp; Record</h2>
-      <div class="stream-record-buttons">
-        <button class="sr-btn" id="btn-toggle-stream">Start Stream</button>
-        <button class="sr-btn" id="btn-toggle-record">Start Record</button>
-      </div>
-      <div class="stream-record-status">
-        <span id="sr-stream-status" class="sr-status">Stream: Off</span>
-        <span id="sr-record-status" class="sr-status">Record: Off</span>
-      </div>
-    </section>
-
-    <section class="panel" id="scenes-panel" data-panel="scenes" hidden>
-      <h2>Scenes</h2>
-      <div id="scenes-grid" class="scenes-grid"></div>
-    </section>
-
-    <section class="panel" id="obs-info-panel" data-panel="obs-info" hidden>
-      <h2>OBS Info</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">Version</span>
-          <span id="obs-version">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Active FPS</span>
-          <span id="obs-fps">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">CPU (OBS)</span>
-          <span id="obs-cpu">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Memory (OBS)</span>
-          <span id="obs-memory">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Stream</span>
-          <span id="obs-stream-status">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Record</span>
-          <span id="obs-record-status">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Canvas</span>
-          <span id="obs-canvas-res">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Output</span>
-          <span id="obs-output-res">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Dropped Frames</span>
-          <span id="obs-dropped-frames">&mdash;</span>
-        </div>
-      </div>
-
-      <h3>Scenes</h3>
-      <ul id="scene-list" class="scene-list"></ul>
-    </section>
-
-    <section class="panel" id="system-panel" data-panel="system" hidden>
-      <h2>System Resources</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">CPU (System)</span>
-          <span id="sys-cpu">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">RAM</span>
-          <span id="sys-ram">&mdash;</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">Disk Free</span>
-          <span id="sys-disk">&mdash;</span>
-        </div>
-      </div>
-      <h3>Displays</h3>
-      <ul id="display-list" class="scene-list"></ul>
-    </section>
-
-    <section class="panel" id="audio-panel" data-panel="audio-devices">
-      <h2>Audio Devices</h2>
-      <div id="audio-devices-loading">Loading devices...</div>
-      <p id="audio-error" class="error" hidden></p>
-
-      <div id="audio-device-widgets" hidden>
-        <div class="device-widget" id="input-widget">
-          <div class="widget-header">
-            <div class="widget-name-left">
-              <span class="fat-quote-name accent-red">&#10077;My Mic&#10078;</span>
-              <span class="hw-device-name" id="input-hw-name"></span>
-            </div>
-            <span class="flow-arrow">&rarr;</span>
-            <div class="widget-name-right">
-              <span class="fat-quote-name accent-muted" id="input-obs-name">&#10077;Aux&#10078;</span>
-            </div>
-          </div>
-
-          <div class="device-widget-top">
-            <select class="device-select" id="input-device-select"></select>
-            <button class="preferred-btn" id="input-preferred-btn" title="Set as preferred">&#9734;</button>
-          </div>
-
-          <div class="dual-knob-row">
-            <div class="knob-col">
-              <div class="gauge-knob-container">
-                <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
-                  <circle class="gauge-track" cx="60" cy="60" r="54"/>
-                  <circle class="gauge-fill" id="input-gauge-fill" cx="60" cy="60" r="54"/>
-                  <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
-                  <circle class="gauge-fill peak-fill" id="input-peak-fill" cx="60" cy="60" r="44"/>
-                </svg>
-                <div class="knob-overlay">
-                  <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
-                    diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-                </div>
-              </div>
-              <div class="knob-info">
-                <span class="device-vol-pct" id="input-vol-pct">--%</span>
-                <button class="device-mute-btn" id="input-mute-btn">Mute</button>
-              </div>
-            </div>
-
-            <span class="flow-arrow-mid">&rarr;</span>
-
-            <div class="knob-col" id="input-obs-knob-col" hidden>
-              <webaudio-knob id="input-obs-knob" min="-100" max="26" step="0.1" value="0"
-                diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-              <div class="knob-info">
-                <span class="obs-vol-db" id="input-obs-db">-- dB</span>
-                <button class="obs-mute-btn" id="input-obs-mute">Mute</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="filter-knobs" id="input-filter-knobs"></div>
-        </div>
-
-        <div class="device-widget" id="output-widget">
-          <div class="widget-header">
-            <div class="widget-name-left">
-              <span class="fat-quote-name accent-green" id="output-obs-name">&#10077;Desktop Audio&#10078;</span>
-            </div>
-            <span class="flow-arrow">&rarr;</span>
-            <div class="widget-name-right">
-              <span class="fat-quote-name accent-muted">&#10077;My Speakers&#10078;</span>
-              <span class="hw-device-name" id="output-hw-name"></span>
-            </div>
-          </div>
-
-          <div class="device-widget-top">
-            <select class="device-select" id="output-device-select"></select>
-            <button class="preferred-btn" id="output-preferred-btn" title="Set as preferred">&#9734;</button>
-          </div>
-
-          <div class="dual-knob-row">
-            <div class="knob-col" id="output-obs-knob-col" hidden>
-              <webaudio-knob id="output-obs-knob" min="-100" max="26" step="0.1" value="0"
-                diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-              <div class="knob-info">
-                <span class="obs-vol-db" id="output-obs-db">-- dB</span>
-                <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
-              </div>
-            </div>
-
-            <span class="flow-arrow-mid">&rarr;</span>
-
-            <div class="knob-col">
-              <div class="gauge-knob-container">
-                <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
-                  <circle class="gauge-track" cx="60" cy="60" r="54"/>
-                  <circle class="gauge-fill" id="output-gauge-fill" cx="60" cy="60" r="54"/>
-                  <circle class="gauge-track peak-track" cx="60" cy="60" r="44"/>
-                  <circle class="gauge-fill peak-fill" id="output-peak-fill" cx="60" cy="60" r="44"/>
-                </svg>
-                <div class="knob-overlay">
-                  <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
-                    diameter="80" colors="#4ecca3;#0a0a1a;#0f3460"></webaudio-knob>
-                </div>
-              </div>
-              <div class="knob-info">
-                <span class="device-vol-pct" id="output-vol-pct">--%</span>
-                <button class="device-mute-btn" id="output-mute-btn">Mute</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="filter-knobs" id="output-filter-knobs"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" id="mixer-panel" data-panel="mixer" hidden>
-      <h2>OBS Audio Mixer</h2>
-      <div id="mixer-list"></div>
-    </section>
-
-    <section class="panel" id="ai-panel" data-panel="ai">
-      <div class="ai-header">
-        <h2>OBServer AI</h2>
-        <div class="ai-header-buttons">
-          <button class="btn-secondary btn-help" id="btn-ai-help" title="What can I ask?">?</button>
-          <button class="btn-secondary" id="btn-presets">Smart Presets</button>
-        </div>
-      </div>
-      <div id="ai-help-overlay" class="ai-help-overlay" hidden>
-        <div class="ai-help-content">
-          <div class="ai-help-title">What can OBServer AI do?</div>
-          <div class="ai-help-section">
-            <div class="ai-help-label">Audio Control</div>
-            <div class="ai-help-examples">
-              "Turn down the music"<br>
-              "My mic is too quiet"<br>
-              "Mute desktop audio"
-            </div>
-          </div>
-          <div class="ai-help-section">
-            <div class="ai-help-label">Audio Engineering</div>
-            <div class="ai-help-examples">
-              "Add a noise gate to my mic"<br>
-              "Set up a compressor for voice"<br>
-              "There's echo on my stream"
-            </div>
-          </div>
-          <div class="ai-help-section">
-            <div class="ai-help-label">Scene &amp; Streaming</div>
-            <div class="ai-help-examples">
-              "Switch to my gameplay scene"<br>
-              "Start recording"<br>
-              "What's my current setup?"
-            </div>
-          </div>
-          <div class="ai-help-section">
-            <div class="ai-help-label">Smart Presets</div>
-            <div class="ai-help-examples">
-              Click <b>Smart Presets</b> for one-click profiles:<br>
-              Tutorial, Gaming, Podcast, Music/DJ
-            </div>
-          </div>
-          <button class="btn-secondary ai-help-close" id="btn-ai-help-close">Got it</button>
-        </div>
-      </div>
-      <div id="ai-no-key" class="ai-notice">Enter your Gemini API key in Settings to enable OBServer AI.</div>
-      <div id="ai-chat" hidden>
-        <div id="chat-messages" class="chat-messages"></div>
-        <div id="preset-bar" class="preset-bar" hidden></div>
-        <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="Ask OBServer AI anything...">
-          <button id="btn-chat-send">Send</button>
-        </div>
-      </div>
-    </section>
-
-  </main>
 
   <div id="alert-toast" class="alert-toast">
     <span id="alert-toast-msg"></span>

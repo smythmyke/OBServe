@@ -3,6 +3,12 @@ const { listen } = window.__TAURI__.event;
 
 const $ = (sel) => document.querySelector(sel);
 
+// Debug logging — set to false to silence
+const SC_DEBUG = true;
+function scLog(...args) { if (SC_DEBUG) console.log('[SC]', ...args); }
+function scWarn(...args) { if (SC_DEBUG) console.warn('[SC]', ...args); }
+function scErr(...args) { console.error('[SC]', ...args); }
+
 const AUDIO_KINDS = [
   'wasapi_input_capture', 'wasapi_output_capture',
   'pulse_input_capture', 'pulse_output_capture',
@@ -22,6 +28,36 @@ let selectedInputId = null;
 let viewMode = 'audio-video';
 let viewComplexity = 'simple';
 let isConnected = false;
+let voiceState = 'IDLE'; // IDLE | LISTENING | PROCESSING
+let recognition = null;
+let pttActive = false;
+
+const CALIBRATION_KEY = 'observe-calibration';
+const CAL_FILTER_PREFIX = 'OBServe Cal';
+const CAL_STEPS = ['prep', 'silence', 'normal', 'loud', 'analysis', 'results', 'applied'];
+const CAL_SCRIPTS = {
+  normal: "Welcome to my stream. Today we're going to explore some interesting topics and have a great time together.",
+  loud: "OH MY GOD, DID YOU SEE THAT?! THAT WAS ABSOLUTELY INCREDIBLE! LET'S GO!"
+};
+
+const calibration = {
+  step: null, audioCtx: null, stream: null, analyser: null,
+  timeDomainBuf: null, intervalId: null, samples: [],
+  measurements: {}, recommendations: null, obsSourceName: null, echoWarning: false,
+};
+
+const SIGNAL_CHAIN_GROUPS_KEY = 'observe-signal-chain-groups';
+const GROUP_TYPES = {
+  filters:     { addFilter: true,  removeFilter: true,  removeGroup: false, reorderGroup: false },
+  preset:      { addFilter: false, removeFilter: false, removeGroup: true,  reorderGroup: true  },
+  calibration: { addFilter: false, removeFilter: false, removeGroup: true,  reorderGroup: true  },
+  custom:      { addFilter: true,  removeFilter: true,  removeGroup: true,  reorderGroup: true  },
+};
+
+let cachedPresets = null;
+let dragData = null;
+let pendingPresetId = null;
+let pendingHighlight = null; // { type: 'group'|'filter', groupId?, source?, filterName? }
 
 const VISIBILITY_MATRIX = {
   'audio': {
@@ -44,12 +80,16 @@ const CONNECTION_REQUIRED_PANELS = new Set([
 
 function applyPanelVisibility() {
   const allowed = VISIBILITY_MATRIX[viewMode]?.[viewComplexity] || [];
+  const states = loadPanelStates();
   document.querySelectorAll('[data-panel]').forEach(el => {
     const panelName = el.dataset.panel;
+    if (panelName === 'filters' || panelName === 'calibration') return;
+    if (states[panelName]?.removed) { el.hidden = true; return; }
     const inMatrix = allowed.includes(panelName);
     const needsConn = CONNECTION_REQUIRED_PANELS.has(panelName);
     el.hidden = !(inMatrix && (!needsConn || isConnected));
   });
+  updateModuleShading();
 }
 
 function updateToolbarActiveState() {
@@ -191,7 +231,8 @@ function setupEventListeners() {
     setDisconnectedUI();
   });
 
-  listen('obs://filters-changed', () => {
+  listen('obs://filters-changed', (ev) => {
+    scLog('obs://filters-changed event received:', ev?.payload);
     refreshFullState();
   });
 
@@ -261,13 +302,25 @@ function setupEventListeners() {
     showFrameDropAlert(`${deviceName} disconnected — affects: ${inputs}`);
     checkRouting();
   });
+
+  listen('voice://ptt-start', () => {
+    if (!pttActive) { pttActive = true; startListening(); }
+  });
+  listen('voice://ptt-stop', () => {
+    if (pttActive) { pttActive = false; stopListening(); }
+  });
 }
 
 async function refreshFullState() {
+  scLog('refreshFullState() called');
   try {
     obsState = await invoke('get_obs_state');
+    scLog('refreshFullState() got state, inputs:', Object.keys(obsState?.inputs || {}));
+    for (const [name, inp] of Object.entries(obsState?.inputs || {})) {
+      if (inp.filters?.length) scLog(`  ${name}: ${inp.filters.length} filters:`, inp.filters.map(f => f.name));
+    }
     renderFullState();
-  } catch (_) {}
+  } catch (e) { scErr('refreshFullState() error:', e); }
 }
 
 // --- UI Rendering ---
@@ -280,9 +333,11 @@ function renderFullState() {
   renderObsKnob('output');
   renderFilterKnobs('input');
   renderFilterKnobs('output');
+  renderFiltersModule();
   updateStatsUI(obsState.stats);
   updateStreamRecordUI();
   renderVideoSettings();
+  updateMonitorUI();
 }
 
 function renderScenes() {
@@ -301,7 +356,8 @@ function renderScenesPanel(scenes, current) {
   if (!grid) return;
   grid.innerHTML = scenes.map(s => {
     const cls = s.name === current ? 'scene-btn active' : 'scene-btn';
-    return `<button class="${cls}" data-scene="${esc(s.name)}">${esc(s.name)}</button>`;
+    const ledCls = s.name === current ? 'led led-amber' : 'led led-off';
+    return `<div class="scene-col"><button class="${cls}" data-scene="${esc(s.name)}">${esc(s.name)}</button><span class="${ledCls}" style="width:6px;height:6px;"></span></div>`;
   }).join('');
 }
 
@@ -486,7 +542,7 @@ function esc(str) {
 // --- Settings Persistence ---
 
 const SETTINGS_KEY = 'observe-settings';
-const DEFAULTS = { host: 'localhost', port: 4455, password: '', autoLaunchObs: false, geminiApiKey: '' };
+const DEFAULTS = { host: 'localhost', port: 4455, password: '', autoLaunchObs: false, geminiApiKey: '', enableVoiceInput: true };
 
 function loadSettings() {
   try {
@@ -506,6 +562,7 @@ function populateSettingsForm(settings) {
   $('#obs-password').value = settings.password;
   $('#auto-launch-obs').checked = settings.autoLaunchObs;
   $('#gemini-api-key').value = settings.geminiApiKey || '';
+  $('#enable-voice-input').checked = settings.enableVoiceInput !== false;
 }
 
 // --- Connection UI ---
@@ -515,6 +572,8 @@ function setConnectedUI(status) {
   const badge = $('#connection-badge');
   badge.textContent = 'Connected';
   badge.className = 'badge connected';
+  const led = $('#connection-led');
+  if (led) led.className = 'led led-green';
   $('#btn-connect').disabled = true;
   $('#btn-disconnect').disabled = false;
   $('#connection-error').hidden = true;
@@ -524,6 +583,7 @@ function setConnectedUI(status) {
   }
 
   applyPanelVisibility();
+  updateModuleShading();
 
   loadSystemResources();
   loadDisplays();
@@ -537,6 +597,8 @@ function setDisconnectedUI() {
   const badge = $('#connection-badge');
   badge.textContent = 'Disconnected';
   badge.className = 'badge disconnected';
+  const led = $('#connection-led');
+  if (led) led.className = 'led led-off';
   $('#btn-connect').disabled = false;
   $('#btn-disconnect').disabled = true;
   $('#mixer-list').innerHTML = '';
@@ -558,7 +620,15 @@ function setDisconnectedUI() {
   const outputFilterKnobs = document.getElementById('output-filter-knobs');
   if (inputFilterKnobs) inputFilterKnobs.innerHTML = '';
   if (outputFilterKnobs) outputFilterKnobs.innerHTML = '';
+  const filtersPanel = document.getElementById('filters-panel');
+  if (filtersPanel) { filtersPanel.hidden = true; }
+  const filtersChainList = document.getElementById('filters-chain-list');
+  if (filtersChainList) filtersChainList.innerHTML = '';
+  if (calibration.step) cancelCalibration();
+  const calPanel = document.getElementById('calibration-panel');
+  if (calPanel) calPanel.hidden = true;
   applyPanelVisibility();
+  updateModuleShading();
 }
 
 // --- Audio Devices with Gauge + Knob Widgets ---
@@ -578,6 +648,56 @@ const FILTER_KNOB_CONFIG = {
   'limiter_filter':            { label: 'Limit',  param: 'threshold',       min: -30,  max: 0,  step: 0.5, fmt: v => `${v} dB` },
   'expander_filter':           { label: 'Expand', param: 'ratio',           min: 1,    max: 32, step: 0.5, fmt: v => `${v}:1` },
   'noise_suppress_filter_v2':  { label: 'Denoise',param: 'suppress_level',  min: -60,  max: 0,  step: 1,   fmt: v => `${v} dB` },
+};
+
+const FILTER_DEFAULTS = {
+  'noise_gate_filter': {
+    label: 'Noise Gate',
+    defaults: { open_threshold: -26, close_threshold: -32, attack_time: 25, hold_time: 200, release_time: 150 },
+    knobs: [
+      { param: 'open_threshold', label: 'Open', min: -96, max: 0, step: 1, fmt: v => `${v} dB` },
+      { param: 'close_threshold', label: 'Close', min: -96, max: 0, step: 1, fmt: v => `${v} dB` },
+    ]
+  },
+  'noise_suppress_filter_v2': {
+    label: 'Noise Suppression',
+    defaults: { suppress_level: -30 },
+    knobs: [
+      { param: 'suppress_level', label: 'Suppress', min: -60, max: 0, step: 1, fmt: v => `${v} dB` },
+    ]
+  },
+  'compressor_filter': {
+    label: 'Compressor',
+    defaults: { ratio: 4.0, threshold: -18.0, attack_time: 6, release_time: 60, output_gain: 0.0 },
+    knobs: [
+      { param: 'ratio', label: 'Ratio', min: 1, max: 32, step: 0.5, fmt: v => `${v}:1` },
+      { param: 'threshold', label: 'Thresh', min: -60, max: 0, step: 0.5, fmt: v => `${v} dB` },
+      { param: 'output_gain', label: 'Gain', min: -30, max: 30, step: 0.5, fmt: v => `${v} dB` },
+    ]
+  },
+  'limiter_filter': {
+    label: 'Limiter',
+    defaults: { threshold: -6.0, release_time: 60 },
+    knobs: [
+      { param: 'threshold', label: 'Thresh', min: -30, max: 0, step: 0.5, fmt: v => `${v} dB` },
+      { param: 'release_time', label: 'Release', min: 1, max: 1000, step: 1, fmt: v => `${v}ms` },
+    ]
+  },
+  'gain_filter': {
+    label: 'Gain',
+    defaults: { db: 0.0 },
+    knobs: [
+      { param: 'db', label: 'Gain', min: -30, max: 30, step: 0.5, fmt: v => `${v} dB` },
+    ]
+  },
+  'expander_filter': {
+    label: 'Expander',
+    defaults: { ratio: 4.0, threshold: -40.0, attack_time: 10, release_time: 50 },
+    knobs: [
+      { param: 'ratio', label: 'Ratio', min: 1, max: 32, step: 0.5, fmt: v => `${v}:1` },
+      { param: 'threshold', label: 'Thresh', min: -96, max: 0, step: 1, fmt: v => `${v} dB` },
+    ]
+  },
 };
 
 function matchObsInputsToDevice(deviceType, windowsDeviceId) {
@@ -647,52 +767,702 @@ function updateObsKnob(type, inputName) {
 }
 
 function renderFilterKnobs(type) {
+  // Filter knobs now live in the Signal Chain panel — clear the old audio device area
   const container = document.getElementById(`${type}-filter-knobs`);
-  if (!container) return;
+  if (container) container.innerHTML = '';
+}
 
-  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
-  const matched = matchObsInputsToDevice(type, deviceId);
+// --- Signal Chain Group State ---
 
-  if (matched.length === 0 || !isConnected) {
-    container.innerHTML = '';
+function loadGroups(sourceName) {
+  try {
+    const all = JSON.parse(localStorage.getItem(SIGNAL_CHAIN_GROUPS_KEY) || '{}');
+    return all[sourceName] || [];
+  } catch (_) { return []; }
+}
+
+function saveGroups(sourceName, groups) {
+  try {
+    const all = JSON.parse(localStorage.getItem(SIGNAL_CHAIN_GROUPS_KEY) || '{}');
+    all[sourceName] = groups;
+    localStorage.setItem(SIGNAL_CHAIN_GROUPS_KEY, JSON.stringify(all));
+  } catch (_) {}
+}
+
+function getKnownPresetPrefixes() {
+  if (!cachedPresets) return [];
+  return cachedPresets.map(p => p.filterPrefix);
+}
+
+function reconstructGroups(sourceName) {
+  const saved = loadGroups(sourceName);
+  const input = obsState?.inputs?.[sourceName];
+  const obsFilters = (input?.filters || []).map(f => f.name);
+  const obsFilterSet = new Set(obsFilters);
+  scLog('reconstructGroups:', sourceName, '| saved groups:', saved.length, '| OBS filters:', obsFilters);
+
+  // Remove stale filter names from saved groups
+  for (const g of saved) {
+    g.filterNames = g.filterNames.filter(n => obsFilterSet.has(n));
+  }
+
+  // Collect all claimed filter names
+  const claimed = new Set();
+  for (const g of saved) {
+    for (const n of g.filterNames) claimed.add(n);
+  }
+
+  // Find unclaimed filters
+  const unclaimed = obsFilters.filter(n => !claimed.has(n));
+
+  // Auto-detect unclaimed by prefix
+  const presetPrefixes = getKnownPresetPrefixes();
+  const calUnclaimed = [];
+  const presetUnclaimed = {};
+  const generalUnclaimed = [];
+
+  for (const name of unclaimed) {
+    if (name.startsWith(CAL_FILTER_PREFIX + ' ')) {
+      calUnclaimed.push(name);
+    } else {
+      let matched = false;
+      for (const prefix of presetPrefixes) {
+        if (name.startsWith(prefix + ' ')) {
+          if (!presetUnclaimed[prefix]) presetUnclaimed[prefix] = [];
+          presetUnclaimed[prefix].push(name);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) generalUnclaimed.push(name);
+    }
+  }
+
+  // Ensure "Filters" group at index 0
+  let filtersGroup = saved.find(g => g.type === 'filters');
+  if (!filtersGroup) {
+    filtersGroup = { id: 'filters-' + Date.now(), name: 'Filters', type: 'filters', filterPrefix: '', filterNames: [], bypassed: false };
+    saved.unshift(filtersGroup);
+  } else {
+    const idx = saved.indexOf(filtersGroup);
+    if (idx > 0) { saved.splice(idx, 1); saved.unshift(filtersGroup); }
+  }
+
+  // Add general unclaimed to Filters group
+  for (const name of generalUnclaimed) {
+    if (!filtersGroup.filterNames.includes(name)) filtersGroup.filterNames.push(name);
+  }
+
+  // Auto-create calibration group for unclaimed cal filters
+  if (calUnclaimed.length > 0) {
+    let calGroup = saved.find(g => g.type === 'calibration');
+    if (!calGroup) {
+      calGroup = { id: 'cal-' + Date.now(), name: 'Calibration', type: 'calibration', filterPrefix: CAL_FILTER_PREFIX, filterNames: [], bypassed: false };
+      saved.push(calGroup);
+    }
+    for (const name of calUnclaimed) {
+      if (!calGroup.filterNames.includes(name)) calGroup.filterNames.push(name);
+    }
+  }
+
+  // Auto-create preset groups for unclaimed preset filters
+  for (const [prefix, names] of Object.entries(presetUnclaimed)) {
+    let group = saved.find(g => g.filterPrefix === prefix && (g.type === 'preset' || g.type === 'custom'));
+    if (!group) {
+      const preset = cachedPresets?.find(p => p.filterPrefix === prefix);
+      group = { id: 'preset-' + Date.now() + '-' + prefix.replace(/\s/g, ''), name: preset?.name || prefix, type: 'preset', filterPrefix: prefix, filterNames: [], bypassed: false };
+      saved.push(group);
+    }
+    for (const name of names) {
+      if (!group.filterNames.includes(name)) group.filterNames.push(name);
+    }
+  }
+
+  // Remove empty non-filters groups
+  const cleaned = saved.filter(g => g.type === 'filters' || g.filterNames.length > 0);
+
+  saveGroups(sourceName, cleaned);
+  return cleaned;
+}
+
+function addGroupFromPreset(sourceName, presetName, filterPrefix, filterNames) {
+  scLog('addGroupFromPreset:', sourceName, presetName, filterPrefix, filterNames);
+  const groups = loadGroups(sourceName);
+  const id = 'preset-' + Date.now() + '-' + filterPrefix.replace(/\s/g, '');
+  groups.push({ id, name: presetName, type: 'preset', filterPrefix, filterNames: [...filterNames], bypassed: false });
+  saveGroups(sourceName, groups);
+  scLog('addGroupFromPreset: saved groups now:', groups.length);
+  return id;
+}
+
+function addCustomGroup(sourceName, groupName) {
+  const groups = loadGroups(sourceName);
+  const id = 'custom-' + Date.now();
+  groups.push({ id, name: groupName, type: 'custom', filterPrefix: groupName, filterNames: [], bypassed: false });
+  saveGroups(sourceName, groups);
+  return id;
+}
+
+async function removeGroup(sourceName, groupId) {
+  scLog('removeGroup:', sourceName, groupId);
+  const groups = loadGroups(sourceName);
+  const group = groups.find(g => g.id === groupId);
+  if (!group) { scWarn('removeGroup: group not found'); return; }
+  scLog('removeGroup: removing', group.filterNames.length, 'filters:', group.filterNames);
+  for (const filterName of group.filterNames) {
+    try { await invoke('remove_source_filter', { sourceName, filterName }); } catch (e) { scErr('removeGroup: remove filter error:', e); }
+  }
+  saveGroups(sourceName, groups.filter(g => g.id !== groupId));
+  scLog('removeGroup: calling refreshFullState...');
+  await refreshFullState();
+  scLog('removeGroup: done');
+}
+
+async function bypassGroup(sourceName, groupId) {
+  scLog('bypassGroup:', sourceName, groupId);
+  const groups = loadGroups(sourceName);
+  const group = groups.find(g => g.id === groupId);
+  if (!group) { scWarn('bypassGroup: group not found'); return; }
+  group.bypassed = !group.bypassed;
+  saveGroups(sourceName, groups);
+  // Optimistic UI update
+  const groupEl = document.querySelector(`.signal-chain-group[data-group-id="${groupId}"][data-group-source="${CSS.escape(sourceName)}"]`);
+  if (groupEl) {
+    groupEl.classList.toggle('group-bypassed', group.bypassed);
+    const led = groupEl.querySelector('.group-led');
+    if (led) led.classList.toggle('on', !group.bypassed);
+    // Update individual toggle states within the group
+    groupEl.querySelectorAll('.filter-toggle-switch').forEach(toggle => {
+      toggle.classList.toggle('on', !group.bypassed);
+      toggle.dataset.fcEnabled = String(!group.bypassed);
+    });
+    groupEl.querySelectorAll('.filter-card').forEach(card => {
+      card.classList.toggle('disabled', group.bypassed);
+    });
+  }
+  for (const filterName of group.filterNames) {
+    try { await invoke('set_source_filter_enabled', { sourceName, filterName, enabled: !group.bypassed }); } catch (_) {}
+  }
+}
+
+async function moveFilterBetweenGroups(sourceName, filterName, fromGroupId, toGroupId, insertIdx) {
+  const groups = loadGroups(sourceName);
+  const fromGroup = groups.find(g => g.id === fromGroupId);
+  const toGroup = groups.find(g => g.id === toGroupId);
+  if (!fromGroup || !toGroup) return;
+
+  // Convert preset/calibration to custom if needed
+  if (toGroup.type === 'preset' || toGroup.type === 'calibration') {
+    toGroup.type = 'custom';
+    toGroup.name += ' (Custom)';
+  }
+
+  // Remove from source group
+  fromGroup.filterNames = fromGroup.filterNames.filter(n => n !== filterName);
+
+  // Rename filter with new prefix
+  const newPrefix = toGroup.filterPrefix;
+  const oldName = filterName;
+  let baseName = filterName;
+  // Strip old prefix
+  if (fromGroup.filterPrefix && filterName.startsWith(fromGroup.filterPrefix + ' ')) {
+    baseName = filterName.slice(fromGroup.filterPrefix.length + 1);
+  }
+  const newName = newPrefix ? `${newPrefix} ${baseName}` : baseName;
+
+  if (newName !== oldName) {
+    try { await invoke('set_source_filter_name', { sourceName, filterName: oldName, newFilterName: newName }); } catch (_) {}
+  }
+
+  // Insert into target group
+  if (insertIdx >= 0 && insertIdx < toGroup.filterNames.length) {
+    toGroup.filterNames.splice(insertIdx, 0, newName);
+  } else {
+    toGroup.filterNames.push(newName);
+  }
+
+  saveGroups(sourceName, groups);
+  await syncFilterOrderToObs(sourceName);
+  await refreshFullState();
+}
+
+async function reorderGroupFilter(sourceName, groupId, fromIdx, toIdx) {
+  const groups = loadGroups(sourceName);
+  const group = groups.find(g => g.id === groupId);
+  if (!group) return;
+  const [moved] = group.filterNames.splice(fromIdx, 1);
+  group.filterNames.splice(toIdx, 0, moved);
+  saveGroups(sourceName, groups);
+  await syncFilterOrderToObs(sourceName);
+}
+
+async function reorderGroups(sourceName, newGroupOrder) {
+  saveGroups(sourceName, newGroupOrder);
+  await syncFilterOrderToObs(sourceName);
+  renderFiltersModule();
+}
+
+function convertGroupToCustom(sourceName, groupId) {
+  const groups = loadGroups(sourceName);
+  const group = groups.find(g => g.id === groupId);
+  if (!group || group.type === 'custom' || group.type === 'filters') return;
+  group.type = 'custom';
+  group.name += ' (Custom)';
+  saveGroups(sourceName, groups);
+}
+
+async function syncFilterOrderToObs(sourceName) {
+  const groups = loadGroups(sourceName);
+  let globalIdx = 0;
+  for (const group of groups) {
+    for (const filterName of group.filterNames) {
+      try { await invoke('set_source_filter_index', { sourceName, filterName, filterIndex: globalIdx }); } catch (_) {}
+      globalIdx++;
+    }
+  }
+}
+
+// --- Signal Chain Rendering ---
+
+function renderFilterCard(input, f, groupType, idx, totalInGroup) {
+  const cfg = FILTER_DEFAULTS[f.kind];
+  const label = cfg ? cfg.label : f.kind;
+  const disabledClass = f.enabled ? '' : ' disabled';
+  const toggleClass = f.enabled ? ' on' : '';
+  const canDrag = true;
+  const canRemove = GROUP_TYPES[groupType]?.removeFilter;
+
+  let knobsHtml = '';
+  if (cfg && cfg.knobs) {
+    knobsHtml = cfg.knobs.map(k => {
+      const val = (f.settings && f.settings[k.param] !== undefined) ? f.settings[k.param] : (cfg.defaults[k.param] || k.min);
+      return `<div class="filter-card-knob-item">
+        <span class="filter-card-knob-label">${k.label}</span>
+        <webaudio-knob min="${k.min}" max="${k.max}" step="${k.step}" value="${val}"
+          diameter="34" colors="#8a6a28;#0c0a06;#2a2620"
+          data-fc-source="${esc(input.name)}" data-fc-filter="${esc(f.name)}" data-fc-param="${k.param}"></webaudio-knob>
+        <span class="filter-card-knob-value">${k.fmt(Number(val).toFixed(k.step < 1 ? 1 : 0))}</span>
+      </div>`;
+    }).join('');
+  }
+
+  const arrowHtml = idx < totalInGroup - 1 ? '<div class="filter-chain-arrow">&rarr;</div>' : '';
+
+  return `<div class="filter-card${disabledClass}" data-source="${esc(input.name)}" data-filter="${esc(f.name)}" draggable="${canDrag}">
+    <div class="filter-card-header">
+      <span class="filter-card-name" title="${esc(f.name)}">${esc(label)}</span>
+      <div class="filter-toggle-switch${toggleClass}" data-fc-toggle-source="${esc(input.name)}" data-fc-toggle-filter="${esc(f.name)}" data-fc-enabled="${f.enabled}" title="${f.enabled ? 'Disable' : 'Enable'}"></div>
+      ${canRemove ? `<button class="filter-remove-btn" data-fc-remove-source="${esc(input.name)}" data-fc-remove-filter="${esc(f.name)}" title="Remove filter">&times;</button>` : ''}
+    </div>
+    <div class="filter-card-knobs">${knobsHtml}</div>
+  </div>${arrowHtml}`;
+}
+
+function renderGroup(input, group) {
+  const typeConfig = GROUP_TYPES[group.type] || GROUP_TYPES.custom;
+  const bypassed = group.bypassed ? ' group-bypassed' : '';
+  const ledClass = group.bypassed ? '' : ' on';
+
+  const handleHtml = typeConfig.reorderGroup
+    ? `<span class="group-drag-handle" title="Drag to reorder">&#9776;</span>` : '';
+  const removeHtml = typeConfig.removeGroup
+    ? `<button class="group-remove-btn" data-group-remove="${group.id}" data-group-source="${esc(input.name)}" title="Remove group">&times;</button>` : '';
+  const addFilterHtml = typeConfig.addFilter
+    ? `<div class="group-add-filter-btn" data-fc-add-source="${esc(input.name)}" data-group-add-filter="${group.id}">+ Add Filter
+        <div class="add-filter-dropdown">
+          ${Object.entries(FILTER_DEFAULTS).map(([kind, cfg]) =>
+            `<button class="add-filter-option" data-fc-add-kind="${kind}" data-fc-add-to="${esc(input.name)}" data-fc-add-group="${group.id}">${cfg.label}</button>`
+          ).join('')}
+        </div>
+      </div>` : '';
+
+  const filterMap = {};
+  for (const f of (input.filters || [])) filterMap[f.name] = f;
+
+  const filtersHtml = group.filterNames.map((fname, idx) => {
+    const f = filterMap[fname];
+    if (!f) return '';
+    return renderFilterCard(input, f, group.type, idx, group.filterNames.length);
+  }).join('');
+
+  const emptyMsg = group.filterNames.length === 0
+    ? `<div class="group-empty-msg">No filters — drag here or add one</div>` : '';
+
+  const groupDraggable = typeConfig.reorderGroup ? ' draggable="false"' : '';
+  return `<div class="signal-chain-group${bypassed}"${groupDraggable} data-group-id="${group.id}" data-group-type="${group.type}" data-group-source="${esc(input.name)}">
+    <div class="group-header">
+      ${handleHtml}
+      <span class="group-name">${esc(group.name)}</span>
+      ${addFilterHtml}
+      <span class="group-led${ledClass}" data-group-bypass="${group.id}" data-group-source="${esc(input.name)}" title="${group.bypassed ? 'Enable group' : 'Bypass group'}"></span>
+      ${removeHtml}
+    </div>
+    <div class="group-filter-row" data-drop-zone="${group.id}" data-drop-source="${esc(input.name)}">
+      ${filtersHtml}${emptyMsg}
+    </div>
+  </div>`;
+}
+
+function renderFiltersModule() {
+  const panel = $('#filters-panel');
+  const container = $('#filters-chain-list');
+  if (!panel || !container) { scWarn('renderFiltersModule: panel or container missing'); return; }
+
+  if (!obsState || !obsState.inputs) {
+    scWarn('renderFiltersModule: no obsState/inputs, hiding panel');
+    panel.hidden = true;
+    updateModuleShading();
     return;
   }
 
-  const input = matched[0];
-  const filters = (input.filters || []).filter(f => f.enabled);
-  const knobFilters = filters.filter(f => FILTER_KNOB_CONFIG[f.kind]);
+  const inputsWithFilters = Object.values(obsState.inputs)
+    .filter(i => i.filters && i.filters.length > 0);
 
-  if (knobFilters.length === 0) {
-    container.innerHTML = '';
+  scLog('renderFiltersModule: inputsWithFilters:', inputsWithFilters.map(i => `${i.name}(${i.filters.length} filters)`));
+
+  if (inputsWithFilters.length === 0) {
+    scLog('renderFiltersModule: no inputs with filters, hiding panel');
+    panel.hidden = true;
+    updateModuleShading();
     return;
   }
 
-  container.innerHTML = knobFilters.map(f => {
-    const cfg = FILTER_KNOB_CONFIG[f.kind];
-    const val = (f.settings && f.settings[cfg.param] !== undefined) ? f.settings[cfg.param] : cfg.min;
-    return `<div class="filter-knob-item">
-      <span class="filter-knob-label">${cfg.label}</span>
-      <webaudio-knob min="${cfg.min}" max="${cfg.max}" step="${cfg.step}" value="${val}"
-        diameter="40" colors="#8892b0;#0a0a1a;#0f3460"
-        data-source="${esc(input.name)}" data-filter="${esc(f.name)}" data-param="${cfg.param}"></webaudio-knob>
-      <span class="filter-knob-value">${cfg.fmt(Number(val).toFixed(cfg.step < 1 ? 1 : 0))}</span>
+  const wasHidden = panel.hidden;
+  panel.hidden = false;
+
+  container.innerHTML = inputsWithFilters.map(input => {
+    const groups = reconstructGroups(input.name);
+    scLog('renderFiltersModule:', input.name, '→', groups.length, 'groups:', groups.map(g => `${g.name}(${g.type},${g.filterNames.length} filters:[${g.filterNames.join(',')}])`));
+    const groupsHtml = groups.map(g => renderGroup(input, g)).join('');
+
+    return `<div class="filter-chain-source" data-source-name="${esc(input.name)}">
+      <div class="filter-chain-header">
+        <span class="filter-chain-source-name">${esc(input.name)}</span>
+      </div>
+      ${groupsHtml}
     </div>`;
   }).join('');
 
-  container.querySelectorAll('webaudio-knob').forEach(knob => {
-    knob.addEventListener('input', (e) => {
-      const source = e.target.dataset.source;
-      const filter = e.target.dataset.filter;
-      const param = e.target.dataset.param;
-      const value = parseFloat(e.target.value);
-      const valueLabel = e.target.parentElement.querySelector('.filter-knob-value');
-      const kind = knobFilters.find(f => f.name === filter)?.kind;
-      const cfg = kind ? FILTER_KNOB_CONFIG[kind] : null;
-      if (valueLabel && cfg) {
-        valueLabel.textContent = cfg.fmt(Number(value).toFixed(cfg.step < 1 ? 1 : 0));
+  bindFilterChainEvents();
+  bindDragDropEvents();
+
+  if (wasHidden) updateModuleShading();
+
+  // Highlight newly added group or filter
+  if (pendingHighlight) {
+    const hl = pendingHighlight;
+    pendingHighlight = null;
+    requestAnimationFrame(() => {
+      let el = null;
+      if (hl.type === 'group' && hl.groupId) {
+        el = container.querySelector(`.signal-chain-group[data-group-id="${hl.groupId}"]`);
+      } else if (hl.type === 'filter' && hl.filterName) {
+        el = container.querySelector(`.filter-card[data-source="${CSS.escape(hl.source)}"][data-filter="${CSS.escape(hl.filterName)}"]`);
       }
-      debouncedSetFilterSettings(source, filter, { [param]: value });
+      if (el) {
+        el.classList.add('sc-highlight-new');
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        el.addEventListener('animationend', () => el.classList.remove('sc-highlight-new'), { once: true });
+      }
     });
+  }
+}
+
+function generateFilterName(sourceName, filterKind) {
+  const cfg = FILTER_DEFAULTS[filterKind];
+  const baseName = cfg ? cfg.label : filterKind;
+  if (!obsState || !obsState.inputs[sourceName]) return baseName;
+  const existing = (obsState.inputs[sourceName].filters || []).map(f => f.name);
+  if (!existing.includes(baseName)) return baseName;
+  let n = 2;
+  while (existing.includes(`${baseName} ${n}`)) n++;
+  return `${baseName} ${n}`;
+}
+
+let filterChainDelegated = false;
+
+function bindFilterChainEvents() {
+  const container = $('#filters-chain-list');
+  if (!container) return;
+
+  // Use event delegation — bind once on container, never re-bind
+  if (filterChainDelegated) return;
+  filterChainDelegated = true;
+
+  container.addEventListener('click', (e) => {
+    // Toggle switch
+    const toggle = e.target.closest('.filter-toggle-switch');
+    if (toggle) {
+      const sourceName = toggle.dataset.fcToggleSource;
+      const filterName = toggle.dataset.fcToggleFilter;
+      const currentlyEnabled = toggle.dataset.fcEnabled === 'true';
+      const newEnabled = !currentlyEnabled;
+      // Optimistic UI update
+      toggle.classList.toggle('on', newEnabled);
+      toggle.dataset.fcEnabled = String(newEnabled);
+      toggle.title = newEnabled ? 'Disable' : 'Enable';
+      const card = toggle.closest('.filter-card');
+      if (card) card.classList.toggle('disabled', !newEnabled);
+      invoke('set_source_filter_enabled', {
+        sourceName, filterName, enabled: newEnabled
+      }).catch(err => {
+        // Revert on failure
+        toggle.classList.toggle('on', currentlyEnabled);
+        toggle.dataset.fcEnabled = String(currentlyEnabled);
+        toggle.title = currentlyEnabled ? 'Disable' : 'Enable';
+        if (card) card.classList.toggle('disabled', currentlyEnabled);
+        showFrameDropAlert('Toggle failed: ' + err);
+      });
+      return;
+    }
+
+    // Filter remove button
+    const removeBtn = e.target.closest('.filter-remove-btn');
+    if (removeBtn) {
+      const sourceName = removeBtn.dataset.fcRemoveSource;
+      const filterName = removeBtn.dataset.fcRemoveFilter;
+      invoke('remove_source_filter', { sourceName, filterName })
+        .catch(err => showFrameDropAlert('Remove failed: ' + err));
+      return;
+    }
+
+    // Group bypass LED
+    const led = e.target.closest('.group-led[data-group-bypass]');
+    if (led) {
+      bypassGroup(led.dataset.groupSource, led.dataset.groupBypass);
+      return;
+    }
+
+    // Group remove button
+    const groupRemove = e.target.closest('.group-remove-btn[data-group-remove]');
+    if (groupRemove) {
+      removeGroup(groupRemove.dataset.groupSource, groupRemove.dataset.groupRemove);
+      return;
+    }
+
+    // Add filter option
+    const addOpt = e.target.closest('.add-filter-option');
+    if (addOpt) {
+      e.stopPropagation();
+      const sourceName = addOpt.dataset.fcAddTo;
+      const filterKind = addOpt.dataset.fcAddKind;
+      const cfg = FILTER_DEFAULTS[filterKind];
+      const filterName = generateFilterName(sourceName, filterKind);
+      const filterSettings = cfg ? { ...cfg.defaults } : {};
+      const dropdown = addOpt.closest('.add-filter-dropdown');
+      if (dropdown) dropdown.classList.remove('open');
+      pendingHighlight = { type: 'filter', source: sourceName, filterName };
+      invoke('create_source_filter', { sourceName, filterName, filterKind, filterSettings })
+        .catch(err => { pendingHighlight = null; showFrameDropAlert('Add filter failed: ' + err); });
+      return;
+    }
+
+    // Add filter dropdown toggle
+    const addBtn = e.target.closest('.group-add-filter-btn, .add-filter-btn');
+    if (addBtn) {
+      const dropdown = addBtn.querySelector('.add-filter-dropdown');
+      if (!dropdown) return;
+      document.querySelectorAll('.add-filter-dropdown.open').forEach(d => {
+        if (d !== dropdown) d.classList.remove('open');
+      });
+      dropdown.classList.toggle('open');
+      e.stopPropagation();
+      return;
+    }
+  });
+
+  container.addEventListener('input', (e) => {
+    const knob = e.target.closest('webaudio-knob[data-fc-source]');
+    if (!knob) return;
+    const source = knob.dataset.fcSource;
+    const filter = knob.dataset.fcFilter;
+    const param = knob.dataset.fcParam;
+    const value = parseFloat(knob.value);
+    const valueLabel = knob.parentElement?.querySelector('.filter-card-knob-value');
+    if (valueLabel) {
+      const inputData = obsState?.inputs?.[source];
+      const filterData = inputData?.filters?.find(f => f.name === filter);
+      const cfg = filterData ? FILTER_DEFAULTS[filterData.kind] : null;
+      const knobCfg = cfg?.knobs?.find(k => k.param === param);
+      if (knobCfg) {
+        valueLabel.textContent = knobCfg.fmt(Number(value).toFixed(knobCfg.step < 1 ? 1 : 0));
+      }
+    }
+    debouncedSetFilterSettings(source, filter, { [param]: value });
+  });
+}
+
+function calculateDropIndex(zone, clientX) {
+  const cards = zone.querySelectorAll('.filter-card');
+  if (cards.length === 0) return 0;
+  for (let i = 0; i < cards.length; i++) {
+    const rect = cards[i].getBoundingClientRect();
+    const mid = rect.left + rect.width / 2;
+    if (clientX < mid) return i;
+  }
+  return cards.length;
+}
+
+let dragDropDelegated = false;
+
+function bindDragDropEvents() {
+  const container = $('#filters-chain-list');
+  if (!container || dragDropDelegated) return;
+  dragDropDelegated = true;
+
+  // Prevent drag from swallowing clicks on interactive elements inside draggable cards
+  container.addEventListener('mousedown', (e) => {
+    // Enable group dragging only when grabbing the handle
+    const handle = e.target.closest('.group-drag-handle');
+    if (handle) {
+      const groupEl = handle.closest('.signal-chain-group');
+      if (groupEl) {
+        groupEl.setAttribute('draggable', 'true');
+        const restore = () => {
+          groupEl.setAttribute('draggable', 'false');
+          document.removeEventListener('mouseup', restore);
+        };
+        document.addEventListener('mouseup', restore);
+      }
+      return;
+    }
+
+    const interactive = e.target.closest('.filter-toggle-switch, .filter-remove-btn, .group-led, .group-remove-btn, .group-add-filter-btn, .add-filter-option');
+    if (interactive) {
+      const card = e.target.closest('.filter-card[draggable]');
+      if (card) {
+        card.removeAttribute('draggable');
+        const restore = () => {
+          card.setAttribute('draggable', 'true');
+          document.removeEventListener('mouseup', restore);
+        };
+        document.addEventListener('mouseup', restore);
+      }
+    }
+  });
+
+  // Delegated dragstart
+  container.addEventListener('dragstart', (e) => {
+    // Filter card drag
+    const card = e.target.closest('.filter-card[draggable="true"]');
+    if (card) {
+      const sourceName = card.dataset.source;
+      const filterName = card.dataset.filter;
+      const groupEl = card.closest('.signal-chain-group');
+      const groupId = groupEl?.dataset.groupId;
+      dragData = { type: 'filter', sourceName, filterName, groupId };
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', filterName);
+      return;
+    }
+
+    // Group drag (initiated from handle via mousedown)
+    const groupEl = e.target.closest('.signal-chain-group[draggable="true"]');
+    if (groupEl) {
+      const sourceName = groupEl.dataset.groupSource;
+      const groupId = groupEl.dataset.groupId;
+      dragData = { type: 'group', sourceName, groupId };
+      groupEl.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', groupId);
+      return;
+    }
+  });
+
+  // Delegated dragend
+  container.addEventListener('dragend', () => {
+    container.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    container.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    container.querySelectorAll('.drag-over-group').forEach(el => el.classList.remove('drag-over-group'));
+    // Reset group draggable state
+    container.querySelectorAll('.signal-chain-group[draggable="true"]').forEach(el => el.setAttribute('draggable', 'false'));
+    dragData = null;
+  });
+
+  // Delegated dragover
+  container.addEventListener('dragover', (e) => {
+    if (!dragData) return;
+
+    if (dragData.type === 'filter') {
+      const zone = e.target.closest('.group-filter-row[data-drop-zone]');
+      if (zone && dragData.sourceName === zone.dataset.dropSource) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        zone.classList.add('drag-over');
+      }
+      return;
+    }
+
+    if (dragData.type === 'group') {
+      const groupEl = e.target.closest('.signal-chain-group[data-group-type]');
+      if (groupEl && dragData.sourceName === groupEl.dataset.groupSource && groupEl.dataset.groupType !== 'filters') {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        groupEl.classList.add('drag-over-group');
+      }
+      return;
+    }
+  });
+
+  // Delegated dragleave
+  container.addEventListener('dragleave', (e) => {
+    const zone = e.target.closest('.group-filter-row[data-drop-zone]');
+    if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove('drag-over');
+    const groupEl = e.target.closest('.signal-chain-group');
+    if (groupEl && !groupEl.contains(e.relatedTarget)) groupEl.classList.remove('drag-over-group');
+  });
+
+  // Delegated drop
+  container.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (!dragData) { scWarn('drop: no dragData'); return; }
+    scLog('drop: dragData=', dragData);
+
+    if (dragData.type === 'filter') {
+      const zone = e.target.closest('.group-filter-row[data-drop-zone]');
+      if (!zone) { scWarn('drop: no drop zone found'); return; }
+      zone.classList.remove('drag-over');
+      const sourceName = dragData.sourceName;
+      const filterName = dragData.filterName;
+      const fromGroupId = dragData.groupId;
+      const toGroupId = zone.dataset.dropZone;
+      const insertIdx = calculateDropIndex(zone, e.clientX);
+
+      if (fromGroupId === toGroupId) {
+        const groups = loadGroups(sourceName);
+        const group = groups.find(g => g.id === fromGroupId);
+        if (!group) return;
+        const fromIdx = group.filterNames.indexOf(filterName);
+        if (fromIdx < 0) return;
+        const adjustedIdx = insertIdx > fromIdx ? insertIdx - 1 : insertIdx;
+        reorderGroupFilter(sourceName, fromGroupId, fromIdx, adjustedIdx);
+      } else {
+        moveFilterBetweenGroups(sourceName, filterName, fromGroupId, toGroupId, insertIdx);
+      }
+      dragData = null;
+      return;
+    }
+
+    if (dragData.type === 'group') {
+      const groupEl = e.target.closest('.signal-chain-group[data-group-type]');
+      if (!groupEl) return;
+      groupEl.classList.remove('drag-over-group');
+      const sourceName = dragData.sourceName;
+      const draggedGroupId = dragData.groupId;
+      const targetGroupId = groupEl.dataset.groupId;
+      if (draggedGroupId === targetGroupId) return;
+
+      const groups = loadGroups(sourceName);
+      const fromIdx = groups.findIndex(g => g.id === draggedGroupId);
+      const toIdx = groups.findIndex(g => g.id === targetGroupId);
+      if (fromIdx < 0 || toIdx < 0 || toIdx === 0) return;
+      const [moved] = groups.splice(fromIdx, 1);
+      groups.splice(toIdx, 0, moved);
+      reorderGroups(sourceName, groups);
+      dragData = null;
+      return;
+    }
   });
 }
 
@@ -702,13 +1472,13 @@ function updateGauge(elementId, fraction) {
   const clamped = Math.max(0, Math.min(1, fraction));
   el.style.strokeDashoffset = 282.74 * (1 - clamped);
   if (clamped > 0.85) {
-    el.style.stroke = '#e94560';
+    el.style.stroke = '#cc4444';
   } else if (clamped > 0.7) {
-    el.style.stroke = '#e9c845';
+    el.style.stroke = '#d4a040';
   } else if (clamped > 0.4) {
-    el.style.stroke = '#4ecca3';
+    el.style.stroke = '#5aaa5a';
   } else {
-    el.style.stroke = '#0f7460';
+    el.style.stroke = '#3a6a3a';
   }
 }
 
@@ -718,13 +1488,13 @@ function updatePeakGauge(elementId, linearPeak) {
   const scaled = Math.sqrt(Math.max(0, Math.min(1, linearPeak)));
   el.style.strokeDashoffset = 230.38 * (1 - scaled);
   if (scaled > 0.9) {
-    el.style.stroke = '#e94560';
+    el.style.stroke = '#cc4444';
   } else if (scaled > 0.7) {
-    el.style.stroke = '#00e5ff';
+    el.style.stroke = '#d4a040';
   } else if (scaled > 0.3) {
-    el.style.stroke = '#00bcd4';
+    el.style.stroke = '#5aaa5a';
   } else {
-    el.style.stroke = '#1a6a8a';
+    el.style.stroke = '#2a4a2a';
   }
 }
 
@@ -912,6 +1682,7 @@ function bindDeviceWidgetEvents() {
     if (inHw && inDev) inHw.textContent = inDev.name;
     renderObsKnob('input');
     renderFilterKnobs('input');
+    updateMonitorUI();
   });
 
   $('#output-preferred-btn').addEventListener('click', () => {
@@ -956,6 +1727,63 @@ function bindDeviceWidgetEvents() {
     const matched = matchObsInputsToDevice('output', selectedOutputId);
     if (matched.length > 0) invoke('toggle_input_mute', { inputName: matched[0].name }).catch(() => {});
   });
+
+  // Monitor button
+  $('#input-monitor-btn').addEventListener('click', () => {
+    cycleMonitorType();
+  });
+}
+
+const MONITOR_CYCLE = [
+  'OBS_MONITORING_TYPE_NONE',
+  'OBS_MONITORING_TYPE_MONITOR_ONLY',
+  'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
+];
+
+function cycleMonitorType() {
+  const matched = matchObsInputsToDevice('input', selectedInputId);
+  if (matched.length === 0 || !isConnected) return;
+
+  const input = matched[0];
+  const current = input.monitorType || 'OBS_MONITORING_TYPE_NONE';
+  const idx = MONITOR_CYCLE.indexOf(current);
+  const next = MONITOR_CYCLE[(idx + 1) % MONITOR_CYCLE.length];
+
+  invoke('set_input_audio_monitor_type', { inputName: input.name, monitorType: next }).then(() => {
+    if (next === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
+      showFrameDropAlert('Monitor + Output: audio goes to stream/recording. Use headphones to avoid feedback.');
+    }
+  }).catch(e => showFrameDropAlert('Monitor change failed: ' + e));
+}
+
+function updateMonitorUI() {
+  const btn = document.getElementById('input-monitor-btn');
+  const led = document.getElementById('input-monitor-led');
+  if (!btn || !led) return;
+
+  const matched = matchObsInputsToDevice('input', selectedInputId);
+  if (matched.length === 0 || !isConnected) {
+    btn.className = 'monitor-btn';
+    btn.title = 'Monitor Off';
+    led.className = 'led led-off';
+    return;
+  }
+
+  const monType = matched[0].monitorType || 'OBS_MONITORING_TYPE_NONE';
+
+  btn.classList.remove('mon-only', 'mon-output');
+  if (monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY') {
+    btn.classList.add('mon-only');
+    btn.title = 'Monitor Only (click to cycle)';
+    led.className = 'led led-amber';
+  } else if (monType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
+    btn.classList.add('mon-output');
+    btn.title = 'Monitor + Output (click to cycle)';
+    led.className = 'led led-red';
+  } else {
+    btn.title = 'Monitor Off (click to cycle)';
+    led.className = 'led led-off';
+  }
 }
 
 // --- Pre-Flight ---
@@ -1176,6 +2004,7 @@ $('#btn-save-settings').addEventListener('click', async () => {
     password: $('#obs-password').value,
     autoLaunchObs: $('#auto-launch-obs').checked,
     geminiApiKey: newKey,
+    enableVoiceInput: $('#enable-voice-input').checked,
   };
   saveSettings(settings);
   $('#settings-dropdown').classList.remove('open');
@@ -1192,6 +2021,7 @@ $('#settings-dropdown').addEventListener('click', (e) => e.stopPropagation());
 
 document.addEventListener('click', () => {
   $('#settings-dropdown').classList.remove('open');
+  document.querySelectorAll('.add-filter-dropdown.open').forEach(d => d.classList.remove('open'));
 });
 
 $('#btn-preflight-record').addEventListener('click', () => runPreflight('record'));
@@ -1226,6 +2056,32 @@ async function sendChatMessage() {
   if (!message) return;
 
   input.value = '';
+
+  if (/calibrat|set up my mic|configure my mic|optimize my mic/i.test(message)) {
+    appendChatMessage('user', message);
+    appendChatMessage('system', 'Opening Calibration Wizard...');
+    startCalibration();
+    return;
+  }
+
+  const presetMap = {
+    'tutorial': 'tutorial', 'gaming': 'gaming', 'podcast': 'podcast',
+    'music': 'music', 'broadcast': 'broadcast', 'asmr': 'asmr',
+    'noisy.?room': 'noisy-room', 'just.?chatting': 'just-chatting',
+    'singing': 'singing', 'karaoke': 'singing',
+  };
+  const presetMatch = message.match(/(?:add|apply|use|load|set up|try).*?(tutorial|gaming|podcast|music|broadcast|asmr|noisy.?room|just.?chatting|singing|karaoke).*?(?:preset)?/i);
+  if (presetMatch) {
+    const key = presetMatch[1].toLowerCase().replace(/\s+/g, '');
+    const presetId = Object.entries(presetMap).find(([pattern]) => new RegExp(pattern, 'i').test(key))?.[1];
+    if (presetId) {
+      appendChatMessage('user', message);
+      appendChatMessage('system', 'Applying preset from Signal Chain...');
+      handlePresetSelection(presetId);
+      return;
+    }
+  }
+
   appendChatMessage('user', message);
 
   const sendBtn = $('#btn-chat-send');
@@ -1249,14 +2105,148 @@ async function sendChatMessage() {
 
   sendBtn.disabled = false;
   input.disabled = false;
+  input.placeholder = 'Ask OBServer AI anything...';
+  input.classList.remove('voice-active');
+  if (voiceState === 'PROCESSING') setVoiceState('IDLE');
   input.focus();
+}
+
+function initVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = $('#btn-voice');
+
+  if (!SpeechRecognition) {
+    btn.disabled = true;
+    btn.title = 'Voice input not supported in this WebView';
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (e) => {
+    const input = $('#chat-input');
+    let interim = '';
+    let final = '';
+    for (let i = 0; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        final += e.results[i][0].transcript;
+      } else {
+        interim += e.results[i][0].transcript;
+      }
+    }
+    input.value = final || interim;
+    input.classList.add('voice-active');
+  };
+
+  recognition.onend = () => {
+    const input = $('#chat-input');
+    const transcript = input.value.trim();
+    if (voiceState === 'LISTENING' && transcript) {
+      setVoiceState('PROCESSING');
+      sendChatMessage();
+    } else {
+      setVoiceState('IDLE');
+      input.classList.remove('voice-active');
+      input.placeholder = 'Ask OBServer AI anything...';
+    }
+    pttActive = false;
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech') {
+      setVoiceState('IDLE');
+    } else if (e.error === 'not-allowed') {
+      showFrameDropAlert('Microphone access denied');
+      setVoiceState('IDLE');
+    } else if (e.error === 'network') {
+      showFrameDropAlert('Speech recognition requires internet');
+      setVoiceState('IDLE');
+    } else {
+      showFrameDropAlert('Voice error: ' + e.error);
+      setVoiceState('IDLE');
+    }
+    pttActive = false;
+  };
+
+  btn.addEventListener('click', () => {
+    if (voiceState === 'IDLE') {
+      startListening();
+    } else if (voiceState === 'LISTENING') {
+      cancelListening();
+    }
+  });
+}
+
+function setVoiceState(state) {
+  voiceState = state;
+  const btn = $('#btn-voice');
+  if (!btn) return;
+  btn.classList.remove('listening', 'processing');
+  if (state === 'LISTENING') btn.classList.add('listening');
+  if (state === 'PROCESSING') btn.classList.add('processing');
+}
+
+function startListening() {
+  if (voiceState !== 'IDLE') return;
+  const settings = loadSettings();
+  if (settings.enableVoiceInput === false) return;
+  if (!recognition) return;
+
+  const input = $('#chat-input');
+  input.value = '';
+  input.placeholder = 'Listening...';
+  input.classList.add('voice-active');
+  setVoiceState('LISTENING');
+
+  try {
+    recognition.start();
+  } catch (_) {
+    setVoiceState('IDLE');
+    input.classList.remove('voice-active');
+    input.placeholder = 'Ask OBServer AI anything...';
+  }
+}
+
+let stopListeningTimer = null;
+
+function stopListening() {
+  if (voiceState !== 'LISTENING' || !recognition) return;
+  // Delay stop by 500ms so the recognizer captures trailing speech
+  if (stopListeningTimer) clearTimeout(stopListeningTimer);
+  stopListeningTimer = setTimeout(() => {
+    stopListeningTimer = null;
+    if (voiceState === 'LISTENING' && recognition) recognition.stop();
+  }, 500);
+}
+
+function cancelListening() {
+  if (!recognition) return;
+  if (stopListeningTimer) { clearTimeout(stopListeningTimer); stopListeningTimer = null; }
+  setVoiceState('IDLE');
+  recognition.abort();
+  const input = $('#chat-input');
+  input.value = '';
+  input.classList.remove('voice-active');
+  input.placeholder = 'Ask OBServer AI anything...';
+  pttActive = false;
 }
 
 function appendChatMessage(role, text) {
   const container = $('#chat-messages');
   const div = document.createElement('div');
   div.className = `chat-msg ${role}`;
-  div.textContent = text;
+  if (role === 'user') {
+    const label = document.createElement('span');
+    label.className = 'chat-label chat-label-user';
+    label.textContent = 'YOU>';
+    div.appendChild(label);
+    div.appendChild(document.createTextNode(text));
+  } else {
+    div.textContent = text;
+  }
   container.appendChild(div);
   scrollChat();
 }
@@ -1268,7 +2258,11 @@ function appendAssistantMessage(resp) {
 
   const msgText = document.createElement('div');
   msgText.className = 'msg-text';
-  msgText.textContent = resp.message;
+  const aiLabel = document.createElement('span');
+  aiLabel.className = 'chat-label chat-label-ai';
+  aiLabel.textContent = 'AI>';
+  msgText.appendChild(aiLabel);
+  msgText.appendChild(document.createTextNode(resp.message));
   div.appendChild(msgText);
 
   if (resp.actionResults && resp.actionResults.length > 0) {
@@ -1365,56 +2359,182 @@ function scrollChat() {
   container.scrollTop = container.scrollHeight;
 }
 
-// --- Smart Presets ---
+// --- Smart Presets (Signal Chain) ---
 
-let presetsLoaded = false;
+async function ensurePresetsLoaded() {
+  if (cachedPresets) return cachedPresets;
+  try {
+    cachedPresets = await invoke('get_smart_presets');
+  } catch (e) {
+    showFrameDropAlert('Failed to load presets: ' + e);
+    cachedPresets = [];
+  }
+  return cachedPresets;
+}
 
-async function loadPresets() {
-  if (presetsLoaded) {
-    $('#preset-bar').hidden = !$('#preset-bar').hidden;
+function resolveSourceForPreset() {
+  const matched = matchObsInputsToDevice('input', selectedInputId);
+  if (matched.length > 0) return matched[0].name;
+  if (obsState?.specialInputs?.mic1) return obsState.specialInputs.mic1;
+  return 'Mic/Aux';
+}
+
+function resolveDesktopSource() {
+  const matched = matchObsInputsToDevice('output', selectedOutputId);
+  if (matched.length > 0) return matched[0].name;
+  if (obsState?.specialInputs?.desktop1) return obsState.specialInputs.desktop1;
+  return 'Desktop Audio';
+}
+
+async function togglePresetDropdown() {
+  const dropdown = $('#sc-preset-dropdown');
+  if (!dropdown.hidden) { dropdown.hidden = true; return; }
+
+  const presets = await ensurePresetsLoaded();
+  dropdown.innerHTML = presets.map(p => `
+    <button class="sc-preset-option" data-preset-id="${esc(p.id)}">
+      <span class="sc-preset-icon">${p.icon}</span>
+      <span class="sc-preset-info">
+        <span class="sc-preset-name">${esc(p.name)}</span>
+        <span class="sc-preset-desc">${esc(p.description)}</span>
+      </span>
+    </button>
+  `).join('');
+  dropdown.hidden = false;
+
+  dropdown.querySelectorAll('.sc-preset-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      dropdown.hidden = true;
+      handlePresetSelection(opt.dataset.presetId);
+    });
+  });
+}
+
+async function handlePresetSelection(presetId) {
+  const sourceName = resolveSourceForPreset();
+  scLog('handlePresetSelection: presetId=', presetId, 'sourceName=', sourceName);
+  const groups = loadGroups(sourceName);
+  const hasNonFilterGroups = groups.some(g => g.type !== 'filters');
+  scLog('handlePresetSelection: existing groups:', groups.length, 'hasNonFilterGroups:', hasNonFilterGroups);
+
+  if (hasNonFilterGroups) {
+    pendingPresetId = presetId;
+    $('#sc-replace-dialog').hidden = false;
+    scLog('handlePresetSelection: showing replace dialog');
+  } else {
+    scLog('handlePresetSelection: applying directly');
+    await applyPresetAsGroup(presetId, sourceName);
+  }
+}
+
+async function applyPresetAsGroup(presetId, sourceName) {
+  scLog('applyPresetAsGroup: presetId=', presetId, 'sourceName=', sourceName);
+  const presets = await ensurePresetsLoaded();
+  const preset = presets.find(p => p.id === presetId);
+  if (!preset) { scErr('applyPresetAsGroup: preset not found:', presetId); showFrameDropAlert('Preset not found'); return; }
+
+  const micSource = resolveSourceForPreset();
+  const desktopSource = resolveDesktopSource();
+  scLog('applyPresetAsGroup: micSource=', micSource, 'desktopSource=', desktopSource);
+
+  try {
+    const result = await invoke('apply_preset', { presetId, micSource, desktopSource });
+    scLog('applyPresetAsGroup: invoke result:', result);
+  } catch (e) {
+    scErr('applyPresetAsGroup: invoke error:', e);
+    showFrameDropAlert('Preset failed: ' + e);
     return;
   }
 
-  try {
-    const presets = await invoke('get_smart_presets');
-    const bar = $('#preset-bar');
-    bar.innerHTML = presets.map(p => `
-      <div class="preset-card" data-preset-id="${esc(p.id)}">
-        <div class="preset-card-icon">${p.icon}</div>
-        <div class="preset-card-name">${esc(p.name)}</div>
-        <div class="preset-card-desc">${esc(p.description)}</div>
-      </div>
-    `).join('');
-    bar.hidden = false;
-    presetsLoaded = true;
+  // Extract filter names created by this preset (AiAction uses snake_case, not camelCase)
+  scLog('applyPresetAsGroup: preset.actions:', JSON.stringify(preset.actions, null, 2));
+  const filterNames = preset.actions
+    .filter(a => a.request_type === 'CreateSourceFilter')
+    .map(a => a.params.filterName)
+    .filter(Boolean);
+  scLog('applyPresetAsGroup: extracted filterNames:', filterNames);
 
-    bar.addEventListener('click', (e) => {
-      const card = e.target.closest('.preset-card');
-      if (!card) return;
-      const presetId = card.dataset.presetId;
-      applyPreset(presetId, card.querySelector('.preset-card-name').textContent);
-    });
-  } catch (e) {
-    showFrameDropAlert('Failed to load presets: ' + e);
-  }
+  const newGroupId = addGroupFromPreset(sourceName, preset.name, preset.filterPrefix, filterNames);
+  pendingHighlight = { type: 'group', groupId: newGroupId };
+  scLog('applyPresetAsGroup: calling refreshFullState...');
+  await refreshFullState();
+  scLog('applyPresetAsGroup: refreshFullState done, panel hidden?', $('#filters-panel')?.hidden);
+  showFrameDropAlert(`Applied "${preset.name}" preset`);
 }
 
-async function applyPreset(presetId, presetName) {
-  appendChatMessage('system', `Applying preset: ${presetName}...`);
-
-  try {
-    const results = await invoke('apply_preset', { presetId });
-    const resp = {
-      message: `Applied "${presetName}" preset.`,
-      actionResults: results,
-      pendingDangerous: [],
-    };
-    appendAssistantMessage(resp);
-    refreshFullState();
-  } catch (e) {
-    appendChatMessage('system', 'Preset failed: ' + e);
+async function replacePresetsAndApply(presetId) {
+  const sourceName = resolveSourceForPreset();
+  const groups = loadGroups(sourceName);
+  // Batch remove all non-filters groups' OBS filters
+  const toRemove = groups.filter(g => g.type !== 'filters');
+  for (const g of toRemove) {
+    for (const filterName of g.filterNames) {
+      try { await invoke('remove_source_filter', { sourceName, filterName }); } catch (_) {}
+    }
   }
+  // Keep only the Filters group in localStorage
+  saveGroups(sourceName, groups.filter(g => g.type === 'filters'));
+  await applyPresetAsGroup(presetId, sourceName);
 }
+
+// Preset dropdown button
+$('#btn-sc-presets').addEventListener('click', (e) => {
+  e.stopPropagation();
+  togglePresetDropdown();
+});
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+  const dropdown = $('#sc-preset-dropdown');
+  const wrap = document.querySelector('.sc-preset-dropdown-wrap');
+  if (dropdown && !dropdown.hidden && wrap && !wrap.contains(e.target)) {
+    dropdown.hidden = true;
+  }
+});
+
+// Replace dialog handlers
+$('#btn-sc-add').addEventListener('click', async () => {
+  $('#sc-replace-dialog').hidden = true;
+  if (pendingPresetId) {
+    const sourceName = resolveSourceForPreset();
+    await applyPresetAsGroup(pendingPresetId, sourceName);
+    pendingPresetId = null;
+  }
+});
+
+$('#btn-sc-replace').addEventListener('click', async () => {
+  $('#sc-replace-dialog').hidden = true;
+  if (pendingPresetId) {
+    await replacePresetsAndApply(pendingPresetId);
+    pendingPresetId = null;
+  }
+});
+
+$('#btn-sc-cancel-preset').addEventListener('click', () => {
+  $('#sc-replace-dialog').hidden = true;
+  pendingPresetId = null;
+});
+
+// New Group dialog
+$('#btn-sc-new-group').addEventListener('click', () => {
+  $('#sc-newgroup-dialog').hidden = false;
+  $('#sc-newgroup-name').value = '';
+  $('#sc-newgroup-name').focus();
+});
+
+$('#btn-sc-create-group').addEventListener('click', () => {
+  const name = $('#sc-newgroup-name').value.trim();
+  if (!name) return;
+  const sourceName = resolveSourceForPreset();
+  const newGroupId = addCustomGroup(sourceName, name);
+  pendingHighlight = { type: 'group', groupId: newGroupId };
+  $('#sc-newgroup-dialog').hidden = true;
+  renderFiltersModule();
+});
+
+$('#btn-sc-cancel-group').addEventListener('click', () => {
+  $('#sc-newgroup-dialog').hidden = true;
+});
 
 $('#btn-chat-send').addEventListener('click', sendChatMessage);
 $('#chat-input').addEventListener('keydown', (e) => {
@@ -1423,7 +2543,6 @@ $('#chat-input').addEventListener('keydown', (e) => {
     sendChatMessage();
   }
 });
-$('#btn-presets').addEventListener('click', loadPresets);
 
 $('#btn-ai-help').addEventListener('click', () => {
   const overlay = $('#ai-help-overlay');
@@ -1479,6 +2598,751 @@ async function retryConnect(settings, maxAttempts) {
   }
 }
 
+// --- Module Shading ---
+
+function updateModuleShading() {
+  const modules = document.querySelectorAll('[data-panel]:not([hidden])');
+  modules.forEach((el, i) => {
+    el.classList.toggle('module-alt', i % 2 === 1);
+  });
+}
+
+// --- Panel Minimize / Remove ---
+
+const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system']);
+const PANEL_STATE_KEY = 'observe-panel-states';
+
+const PANEL_LABELS = {
+  'audio-devices': 'Audio Devices',
+  'mixer': 'Mixer',
+  'routing': 'Audio Routing',
+  'preflight': 'Pre-Flight',
+  'scenes': 'Scenes',
+  'stream-record': 'Stream & Record',
+  'obs-info': 'OBS Info',
+  'system': 'System',
+  'filters': 'Signal Chain',
+  'ai': 'AI Assistant',
+};
+
+function loadPanelStates() {
+  try {
+    const raw = localStorage.getItem(PANEL_STATE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return {};
+}
+
+function savePanelStates(states) {
+  localStorage.setItem(PANEL_STATE_KEY, JSON.stringify(states));
+}
+
+function toggleMinimize(panel) {
+  panel.classList.toggle('minimized');
+  const states = loadPanelStates();
+  const name = panel.dataset.panel;
+  if (!states[name]) states[name] = {};
+  states[name].minimized = panel.classList.contains('minimized');
+  savePanelStates(states);
+  updateModuleShading();
+}
+
+function removePanel(panel) {
+  const name = panel.dataset.panel;
+  panel.hidden = true;
+  const states = loadPanelStates();
+  if (!states[name]) states[name] = {};
+  states[name].removed = true;
+  savePanelStates(states);
+  updateModuleShading();
+  renderPanelToggles();
+}
+
+function restorePanel(panelName) {
+  const panel = document.querySelector(`[data-panel="${panelName}"]`);
+  if (!panel) return;
+  const states = loadPanelStates();
+  if (states[panelName]) {
+    delete states[panelName].removed;
+    savePanelStates(states);
+  }
+  applyPanelVisibility();
+  renderPanelToggles();
+}
+
+function initPanelControls() {
+  document.querySelectorAll('[data-panel]').forEach(panel => {
+    const panelName = panel.dataset.panel;
+    if (panelName === 'calibration') return;
+
+    const controls = document.createElement('div');
+    controls.className = 'mod-controls';
+
+    const minBtn = document.createElement('button');
+    minBtn.className = 'mod-ctrl-btn mod-minimize';
+    minBtn.innerHTML = '&#9662;';
+    minBtn.title = 'Minimize';
+    minBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleMinimize(panel);
+    });
+    controls.appendChild(minBtn);
+
+    if (REMOVABLE_PANELS.has(panelName)) {
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'mod-ctrl-btn mod-close';
+      closeBtn.innerHTML = '&times;';
+      closeBtn.title = 'Remove';
+      closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removePanel(panel);
+      });
+      controls.appendChild(closeBtn);
+    }
+
+    panel.appendChild(controls);
+  });
+
+  restorePanelStates();
+  renderPanelToggles();
+}
+
+function restorePanelStates() {
+  const states = loadPanelStates();
+  document.querySelectorAll('[data-panel]').forEach(panel => {
+    const name = panel.dataset.panel;
+    const state = states[name];
+    if (!state) return;
+    if (state.minimized) panel.classList.add('minimized');
+  });
+}
+
+function renderPanelToggles() {
+  const container = document.getElementById('panel-toggles');
+  if (!container) return;
+  const states = loadPanelStates();
+
+  container.innerHTML = Array.from(REMOVABLE_PANELS).map(name => {
+    const label = PANEL_LABELS[name] || name;
+    const removed = states[name]?.removed;
+    return `<label><input type="checkbox" data-panel-toggle="${name}" ${removed ? '' : 'checked'}> ${label}</label>`;
+  }).join('');
+
+  container.querySelectorAll('input[data-panel-toggle]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const panelName = cb.dataset.panelToggle;
+      if (cb.checked) {
+        restorePanel(panelName);
+      } else {
+        const panel = document.querySelector(`[data-panel="${panelName}"]`);
+        if (panel) removePanel(panel);
+      }
+    });
+  });
+}
+
+// --- Calibration Wizard ---
+
+async function beginCapture() {
+  try {
+    calibration.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (_) {
+    showFrameDropAlert('Microphone access denied');
+    cancelCalibration();
+    return false;
+  }
+  calibration.audioCtx = new AudioContext();
+  if (calibration.audioCtx.state === 'suspended') {
+    await calibration.audioCtx.resume();
+  }
+  const source = calibration.audioCtx.createMediaStreamSource(calibration.stream);
+  calibration.analyser = calibration.audioCtx.createAnalyser();
+  calibration.analyser.fftSize = 2048;
+  calibration.analyser.smoothingTimeConstant = 0;
+  source.connect(calibration.analyser);
+  calibration.timeDomainBuf = new Float32Array(calibration.analyser.fftSize);
+  return true;
+}
+
+function computeRms() {
+  calibration.analyser.getFloatTimeDomainData(calibration.timeDomainBuf);
+  let sum = 0;
+  for (let i = 0; i < calibration.timeDomainBuf.length; i++) {
+    sum += calibration.timeDomainBuf[i] * calibration.timeDomainBuf[i];
+  }
+  const rms = Math.sqrt(sum / calibration.timeDomainBuf.length);
+  if (rms < 0.0000001) return -96;
+  const db = 20 * Math.log10(rms);
+  return Math.max(-96, db);
+}
+
+function startSampling(durationMs, stepKey) {
+  calibration.samples = [];
+  const startTime = Date.now();
+  const meterFill = document.getElementById('cal-meter-fill');
+  const dbReadout = document.getElementById('cal-db-readout');
+  const timerEl = document.getElementById('cal-timer');
+  const content = document.getElementById('cal-content');
+
+  if (content) content.classList.add('recording');
+
+  calibration.intervalId = setInterval(() => {
+    const db = computeRms();
+    calibration.samples.push(db);
+
+    if (meterFill) {
+      const pct = Math.max(0, Math.min(100, ((db + 96) / 96) * 100));
+      meterFill.style.width = pct + '%';
+    }
+    if (dbReadout) {
+      dbReadout.textContent = db.toFixed(1) + ' dB';
+    }
+
+    const elapsed = Date.now() - startTime;
+    const remaining = Math.max(0, Math.ceil((durationMs - elapsed) / 1000));
+    if (timerEl) timerEl.textContent = remaining + 's';
+
+    if (elapsed >= durationMs) {
+      clearInterval(calibration.intervalId);
+      calibration.intervalId = null;
+      if (content) content.classList.remove('recording');
+      processPhaseResults(stepKey);
+      advanceStep();
+    }
+  }, 50);
+}
+
+function processPhaseResults(stepKey) {
+  const s = [...calibration.samples].sort((a, b) => a - b);
+  if (s.length === 0) return;
+
+  if (stepKey === 'silence') {
+    const mid = Math.floor(s.length / 2);
+    calibration.measurements.noiseFloor = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+    calibration.measurements.noisePeak = s[s.length - 1];
+  } else if (stepKey === 'normal') {
+    const cutoff = Math.floor(s.length * 0.2);
+    const top80 = s.slice(cutoff);
+    calibration.measurements.speechAvg = top80.reduce((a, b) => a + b, 0) / top80.length;
+    calibration.measurements.speechPeak = s[s.length - 1];
+    calibration.measurements.speechDynamic = calibration.measurements.speechPeak - calibration.measurements.speechAvg;
+  } else if (stepKey === 'loud') {
+    const cutoff = Math.floor(s.length * 0.2);
+    const top80 = s.slice(cutoff);
+    calibration.measurements.loudAvg = top80.reduce((a, b) => a + b, 0) / top80.length;
+    calibration.measurements.loudPeak = s[s.length - 1];
+    calibration.measurements.crestFactor = calibration.measurements.loudPeak - (calibration.measurements.speechAvg || -30);
+  }
+}
+
+function computeRecommendations() {
+  const m = calibration.measurements;
+  const filters = [];
+
+  if (m.noiseFloor > -40) {
+    const suppress = Math.max(-60, Math.min(0, m.noiseFloor - 10));
+    filters.push({
+      kind: 'noise_suppress_filter_v2',
+      label: 'Noise Suppression',
+      settings: { suppress_level: Math.round(suppress) }
+    });
+  }
+
+  if (m.noiseFloor > -50) {
+    const gap = (m.speechAvg || -20) - m.noiseFloor;
+    const openThresh = m.noiseFloor + gap * 0.4;
+    filters.push({
+      kind: 'noise_gate_filter',
+      label: 'Noise Gate',
+      settings: {
+        open_threshold: Math.round(openThresh),
+        close_threshold: Math.round(openThresh - 6),
+        attack_time: 25,
+        hold_time: 200,
+        release_time: 150
+      }
+    });
+  }
+
+  if ((m.speechAvg || -20) < -25) {
+    const gain = -18 - (m.speechAvg || -20);
+    filters.push({
+      kind: 'gain_filter',
+      label: 'Gain',
+      settings: { db: Math.round(gain * 2) / 2 }
+    });
+  }
+
+  const crest = m.crestFactor || 0;
+  if (crest > 12) {
+    const ratio = Math.min(8, 2 + (crest - 12) / 3);
+    filters.push({
+      kind: 'compressor_filter',
+      label: 'Compressor',
+      settings: {
+        ratio: Math.round(ratio * 2) / 2,
+        threshold: Math.round(((m.speechAvg || -20) + 6) * 2) / 2,
+        attack_time: 6,
+        release_time: 60,
+        output_gain: 0
+      }
+    });
+  }
+
+  const limiterThresh = Math.min(-1, Math.round(((m.loudPeak || -6) + 3) * 2) / 2);
+  filters.push({
+    kind: 'limiter_filter',
+    label: 'Limiter',
+    settings: { threshold: limiterThresh, release_time: 60 }
+  });
+
+  calibration.recommendations = filters;
+}
+
+async function startCalibration() {
+  if (calibration.step) return;
+
+  const matched = matchObsInputsToDevice('input', selectedInputId);
+  if (matched.length === 0) {
+    showFrameDropAlert('No OBS input source found for your mic');
+    return;
+  }
+  calibration.obsSourceName = matched[0].name;
+
+  calibration.echoWarning = false;
+  if (matched[0].monitorType && matched[0].monitorType !== 'OBS_MONITORING_TYPE_NONE') {
+    calibration.echoWarning = true;
+  }
+
+  calibration.measurements = {};
+  calibration.recommendations = null;
+  calibration.step = 'prep';
+
+  const panel = document.getElementById('calibration-panel');
+  if (panel) {
+    panel.hidden = false;
+    updateModuleShading();
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  renderCalProgress();
+  renderCalPrep();
+}
+
+function advanceStep() {
+  const idx = CAL_STEPS.indexOf(calibration.step);
+  if (idx < 0 || idx >= CAL_STEPS.length - 1) return;
+  calibration.step = CAL_STEPS[idx + 1];
+
+  if (calibration.step === 'analysis') {
+    const allSilent = calibration.measurements.noiseFloor <= -95 &&
+                      (calibration.measurements.speechAvg || -96) <= -95;
+    if (allSilent) {
+      showFrameDropAlert('No audio detected. Check your microphone.');
+      cancelCalibration();
+      return;
+    }
+    computeRecommendations();
+    calibration.step = 'results';
+  }
+
+  renderCalProgress();
+
+  switch (calibration.step) {
+    case 'silence': renderCalSilence(); break;
+    case 'normal': renderCalNormal(); break;
+    case 'loud': renderCalLoud(); break;
+    case 'results': renderCalResults(); break;
+    case 'applied': renderCalApplied(); break;
+  }
+}
+
+function cancelCalibration() {
+  cleanupCalibration();
+  const panel = document.getElementById('calibration-panel');
+  if (panel) panel.hidden = true;
+  updateModuleShading();
+}
+
+function cleanupCalibration() {
+  if (calibration.intervalId) {
+    clearInterval(calibration.intervalId);
+    calibration.intervalId = null;
+  }
+  if (calibration.stream) {
+    calibration.stream.getTracks().forEach(t => t.stop());
+    calibration.stream = null;
+  }
+  if (calibration.audioCtx) {
+    calibration.audioCtx.close().catch(() => {});
+    calibration.audioCtx = null;
+  }
+  calibration.analyser = null;
+  calibration.timeDomainBuf = null;
+  calibration.samples = [];
+  calibration.step = null;
+
+  const content = document.getElementById('cal-content');
+  if (content) content.classList.remove('recording');
+  const warning = document.getElementById('cal-existing-warning');
+  if (warning) warning.hidden = true;
+}
+
+function renderCalProgress() {
+  const stepsEl = document.getElementById('cal-progress-steps');
+  const fillEl = document.getElementById('cal-progress-fill');
+  if (!stepsEl || !fillEl) return;
+
+  const labels = ['Prep', 'Silence', 'Speech', 'Loud', 'Results'];
+  const stepMap = ['prep', 'silence', 'normal', 'loud', 'results'];
+  const currentIdx = CAL_STEPS.indexOf(calibration.step);
+
+  stepsEl.innerHTML = labels.map((label, i) => {
+    const mapIdx = CAL_STEPS.indexOf(stepMap[i]);
+    let cls = 'cal-step-label';
+    if (mapIdx < currentIdx) cls += ' done';
+    else if (mapIdx === currentIdx) cls += ' active';
+    return `<span class="${cls}">${label}</span>`;
+  }).join('');
+
+  const pct = Math.round((currentIdx / (CAL_STEPS.length - 1)) * 100);
+  fillEl.style.width = pct + '%';
+}
+
+function renderCalPrep() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+
+  const calData = loadCalibrationData();
+  const lastRunHtml = calData
+    ? `<p style="color:var(--cream-dim);font-size:11px;margin-top:10px;">Last calibrated: ${new Date(calData.timestamp).toLocaleDateString()}</p>`
+    : '';
+
+  const echoHtml = calibration.echoWarning
+    ? `<div class="cal-echo-warning">Warning: Your mic source has audio monitoring enabled. This may cause feedback during calibration. Consider disabling monitoring before proceeding.</div>`
+    : '';
+
+  content.innerHTML = `
+    <p class="cal-instruction">Prepare your environment for calibration:</p>
+    <ul class="cal-checklist">
+      <li>Close doors and windows</li>
+      <li>Turn off fans, AC, or noisy appliances</li>
+      <li>Sit in your normal recording/streaming position</li>
+      <li>Make sure your mic is connected and selected</li>
+    </ul>
+    ${echoHtml}
+    <p class="cal-instruction" style="margin-top:12px;">Source: <strong style="color:var(--amber);">${esc(calibration.obsSourceName)}</strong></p>
+    ${lastRunHtml}
+    <button class="hw-btn" id="btn-cal-start" style="margin-top:14px;">Start Calibration</button>
+  `;
+
+  document.getElementById('btn-cal-start').addEventListener('click', async () => {
+    const ok = await beginCapture();
+    if (ok) advanceStep();
+  });
+}
+
+function renderCalSilence() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+
+  content.innerHTML = `
+    <p class="cal-instruction emphasis">Stay Quiet</p>
+    <p class="cal-instruction" style="text-align:center;">Measuring your room's noise floor. Do not speak or make any sounds.</p>
+    <div class="cal-timer" id="cal-timer">5s</div>
+    <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
+    <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+  `;
+
+  startSampling(5000, 'silence');
+}
+
+function renderCalNormal() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+
+  content.innerHTML = `
+    <p class="cal-instruction emphasis">Speak Normally</p>
+    <p class="cal-instruction" style="text-align:center;">Read the following text in your normal speaking voice:</p>
+    <div class="cal-script">${esc(CAL_SCRIPTS.normal)}</div>
+    <div class="cal-timer" id="cal-timer">8s</div>
+    <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
+    <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+  `;
+
+  startSampling(8000, 'normal');
+}
+
+function renderCalLoud() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+
+  content.innerHTML = `
+    <p class="cal-instruction emphasis">Get Loud!</p>
+    <p class="cal-instruction" style="text-align:center;">Read this as if you're excited or reacting to something amazing:</p>
+    <div class="cal-script">${esc(CAL_SCRIPTS.loud)}</div>
+    <div class="cal-timer" id="cal-timer">6s</div>
+    <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
+    <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+  `;
+
+  startSampling(6000, 'loud');
+}
+
+function renderCalResults() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+  const m = calibration.measurements;
+  const recs = calibration.recommendations || [];
+
+  content.innerHTML = `
+    <div class="cal-results-grid">
+      <div class="cal-result-card">
+        <div class="cal-result-label">Noise Floor</div>
+        <div class="cal-result-value">${(m.noiseFloor || -96).toFixed(1)} dB</div>
+        <div class="cal-result-detail">Peak: ${(m.noisePeak || -96).toFixed(1)} dB</div>
+      </div>
+      <div class="cal-result-card">
+        <div class="cal-result-label">Speech Level</div>
+        <div class="cal-result-value">${(m.speechAvg || -96).toFixed(1)} dB</div>
+        <div class="cal-result-detail">Peak: ${(m.speechPeak || -96).toFixed(1)} dB</div>
+      </div>
+      <div class="cal-result-card">
+        <div class="cal-result-label">Loud Peak</div>
+        <div class="cal-result-value">${(m.loudPeak || -96).toFixed(1)} dB</div>
+        <div class="cal-result-detail">Avg: ${(m.loudAvg || -96).toFixed(1)} dB</div>
+      </div>
+      <div class="cal-result-card">
+        <div class="cal-result-label">Crest Factor</div>
+        <div class="cal-result-value">${(m.crestFactor || 0).toFixed(1)} dB</div>
+        <div class="cal-result-detail">Dynamic range</div>
+      </div>
+    </div>
+    <p class="cal-instruction">Recommended filter chain:</p>
+    <div class="cal-filter-chain">
+      ${recs.map((f, i) => {
+        const arrow = i < recs.length - 1 ? '<span class="cal-filter-arrow">&rarr;</span>' : '';
+        return `<span class="cal-filter-chip">${esc(f.label)}</span>${arrow}`;
+      }).join('')}
+    </div>
+    <button class="hw-btn" id="btn-cal-apply" style="margin-top:12px;">Apply Filters</button>
+  `;
+
+  document.getElementById('btn-cal-apply').addEventListener('click', () => {
+    const existingFilters = getExistingSourceFilters();
+    if (existingFilters.length > 0) {
+      document.getElementById('cal-existing-warning').hidden = false;
+    } else {
+      applyCalibrationFilters('keep');
+    }
+  });
+
+  cleanupCapture();
+}
+
+function cleanupCapture() {
+  if (calibration.stream) {
+    calibration.stream.getTracks().forEach(t => t.stop());
+    calibration.stream = null;
+  }
+  if (calibration.audioCtx) {
+    calibration.audioCtx.close().catch(() => {});
+    calibration.audioCtx = null;
+  }
+  calibration.analyser = null;
+  calibration.timeDomainBuf = null;
+}
+
+function renderCalApplied() {
+  const content = document.getElementById('cal-content');
+  if (!content) return;
+  const recs = calibration.recommendations || [];
+
+  content.innerHTML = `
+    <p class="cal-instruction emphasis" style="color:var(--green-bright);">Calibration Complete</p>
+    <div style="margin:12px 0;">
+      ${recs.map(f => `
+        <div class="pf-check pass">
+          <span class="pf-icon">+</span>
+          <span class="pf-label">${esc(CAL_FILTER_PREFIX + ' ' + f.label)}</span>
+          <span class="pf-detail">Applied to ${esc(calibration.obsSourceName)}</span>
+        </div>
+      `).join('')}
+    </div>
+    <button class="hw-btn" id="btn-cal-done" style="margin-top:12px;">Done</button>
+  `;
+
+  document.getElementById('btn-cal-done').addEventListener('click', () => {
+    cancelCalibration();
+    refreshFullState();
+  });
+}
+
+function getExistingSourceFilters() {
+  if (!obsState || !obsState.inputs || !calibration.obsSourceName) return [];
+  const input = obsState.inputs[calibration.obsSourceName];
+  return (input && input.filters) ? input.filters : [];
+}
+
+async function applyCalibrationFilters(mode) {
+  if (mode === 'cancel') {
+    document.getElementById('cal-existing-warning').hidden = true;
+    return;
+  }
+
+  const recs = calibration.recommendations || [];
+  if (recs.length === 0) return;
+  const sourceName = calibration.obsSourceName;
+
+  if (mode === 'replace') {
+    const existing = getExistingSourceFilters();
+    for (const f of existing) {
+      try {
+        await invoke('remove_source_filter', { sourceName, filterName: f.name });
+      } catch (_) {}
+    }
+  }
+
+  document.getElementById('cal-existing-warning').hidden = true;
+
+  const appliedNames = [];
+  for (const rec of recs) {
+    const filterName = CAL_FILTER_PREFIX + ' ' + rec.label;
+    try {
+      await invoke('create_source_filter', {
+        sourceName,
+        filterName,
+        filterKind: rec.kind,
+        filterSettings: rec.settings
+      });
+      appliedNames.push(filterName);
+    } catch (e) {
+      showFrameDropAlert('Filter creation failed: ' + e);
+    }
+  }
+
+  const calData = {
+    timestamp: Date.now(),
+    deviceName: calibration.obsSourceName,
+    measurements: { ...calibration.measurements },
+    recommendations: recs.map(r => ({ kind: r.kind, label: r.label, settings: r.settings })),
+    appliedTo: sourceName,
+    filterNames: appliedNames,
+  };
+  saveCalibrationData(calData);
+  updateCalStatusLabel();
+
+  await refreshFullState();
+
+  calibration.step = 'applied';
+  renderCalProgress();
+  renderCalApplied();
+
+  sendCalibrationSummaryToAI(calData);
+}
+
+async function sendCalibrationSummaryToAI(calData) {
+  if (!aiReady) return;
+  const m = calData.measurements;
+  const filterList = calData.recommendations.map(r => r.label).join(', ');
+  const summary = `[Calibration completed] Source: ${calData.appliedTo}. ` +
+    `Noise floor: ${(m.noiseFloor || -96).toFixed(1)}dB, ` +
+    `Speech avg: ${(m.speechAvg || -96).toFixed(1)}dB, ` +
+    `Loud peak: ${(m.loudPeak || -96).toFixed(1)}dB, ` +
+    `Crest: ${(m.crestFactor || 0).toFixed(1)}dB. ` +
+    `Applied filters: ${filterList}.`;
+
+  try {
+    const resp = await invoke('send_chat_message', { message: summary });
+    appendAssistantMessage(resp);
+  } catch (_) {}
+}
+
+function loadCalibrationData() {
+  try {
+    const raw = localStorage.getItem(CALIBRATION_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return null;
+}
+
+function saveCalibrationData(data) {
+  localStorage.setItem(CALIBRATION_KEY, JSON.stringify(data));
+}
+
+function updateCalStatusLabel() {
+  const el = document.getElementById('cal-last-run');
+  if (!el) return;
+  const data = loadCalibrationData();
+  if (data && data.timestamp) {
+    el.textContent = 'Last: ' + new Date(data.timestamp).toLocaleDateString();
+    const btn = document.getElementById('btn-calibrate-mic');
+    if (btn) btn.textContent = 'Recalibrate';
+  } else {
+    el.textContent = 'Not calibrated';
+  }
+}
+
+function initCalibration() {
+  const calBtn = document.getElementById('btn-calibrate-mic');
+  if (calBtn) {
+    calBtn.addEventListener('click', () => startCalibration());
+  }
+
+  const cancelBtn = document.getElementById('btn-cal-cancel');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => cancelCalibration());
+  }
+
+  const replaceBtn = document.getElementById('btn-cal-replace');
+  if (replaceBtn) {
+    replaceBtn.addEventListener('click', () => applyCalibrationFilters('replace'));
+  }
+
+  const keepBtn = document.getElementById('btn-cal-keep');
+  if (keepBtn) {
+    keepBtn.addEventListener('click', () => applyCalibrationFilters('keep'));
+  }
+
+  const cancelApplyBtn = document.getElementById('btn-cal-cancel-apply');
+  if (cancelApplyBtn) {
+    cancelApplyBtn.addEventListener('click', () => applyCalibrationFilters('cancel'));
+  }
+
+  updateCalStatusLabel();
+}
+
+// --- Window Controls ---
+
+const winMinBtn = document.getElementById('win-minimize');
+const winMaxBtn = document.getElementById('win-maximize');
+const winCloseBtn = document.getElementById('win-close');
+
+if (winMinBtn) {
+  winMinBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    window.__TAURI__.window.getCurrentWindow().minimize();
+  });
+}
+if (winMaxBtn) {
+  winMaxBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    window.__TAURI__.window.getCurrentWindow().toggleMaximize();
+  });
+}
+if (winCloseBtn) {
+  winCloseBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    window.__TAURI__.window.getCurrentWindow().close();
+  });
+}
+
+// --- Maximize on launch ---
+
+window.__TAURI__.window.getCurrentWindow().maximize();
+
 // --- Init ---
 
 const initialSettings = loadSettings();
@@ -1487,7 +3351,10 @@ setupEventListeners();
 bindDeviceWidgetEvents();
 bindScenesPanelEvents();
 initToolbar();
+initPanelControls();
 loadAudioDevices();
+initVoiceInput();
+initCalibration();
 
 (async () => {
   if (initialSettings.geminiApiKey) {
@@ -1496,6 +3363,7 @@ loadAudioDevices();
     } catch (_) {}
   }
   await checkAiReady();
+  await ensurePresetsLoaded();
 })();
 
 autoLaunchAndConnect(initialSettings);

@@ -19,7 +19,7 @@ use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -38,6 +38,24 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(obs_state::ObsState::new())) as SharedObsState)
         .manage(Arc::new(RwLock::new(gemini_client)) as SharedGeminiClient)
         .manage(Arc::new(RwLock::new(Vec::<ai_actions::UndoEntry>::new())) as SharedUndoStack)
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+                    let ptt = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
+                    if shortcut == &ptt {
+                        match event.state() {
+                            ShortcutState::Pressed => {
+                                let _ = app.emit("voice://ptt-start", ());
+                            }
+                            ShortcutState::Released => {
+                                let _ = app.emit("voice://ptt-stop", ());
+                            }
+                        }
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             commands::connect_obs,
             commands::disconnect_obs,
@@ -79,10 +97,20 @@ pub fn run() {
             commands::launch_obs,
             commands::is_obs_running,
             commands::set_source_filter_settings,
+            commands::set_source_filter_index,
+            commands::set_source_filter_name,
             commands::rename_input,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;
+
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                let ptt = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
+                if let Err(e) = app.global_shortcut().register(ptt) {
+                    log::warn!("Failed to register PTT shortcut: {}", e);
+                }
+            }
 
             let app_handle = app.handle().clone();
             let obs_state = app.state::<SharedObsState>().inner().clone();

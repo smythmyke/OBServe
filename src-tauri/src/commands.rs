@@ -229,6 +229,46 @@ pub async fn set_source_filter_settings(
 }
 
 #[tauri::command]
+pub async fn set_source_filter_index(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    source_name: String,
+    filter_name: String,
+    filter_index: u32,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetSourceFilterIndex",
+        Some(json!({
+            "sourceName": source_name,
+            "filterName": filter_name,
+            "filterIndex": filter_index,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_source_filter_name(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    source_name: String,
+    filter_name: String,
+    new_filter_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetSourceFilterName",
+        Some(json!({
+            "sourceName": source_name,
+            "filterName": filter_name,
+            "newFilterName": new_filter_name,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn rename_input(
     conn_state: tauri::State<'_, SharedObsConnection>,
     input_name: String,
@@ -567,6 +607,8 @@ pub async fn apply_preset(
     obs_state: tauri::State<'_, SharedObsState>,
     undo_stack: tauri::State<'_, SharedUndoStack>,
     preset_id: String,
+    mic_source: Option<String>,
+    desktop_source: Option<String>,
 ) -> Result<Vec<ActionResult>, String> {
     let all_presets = presets::get_presets();
     let preset = all_presets
@@ -575,9 +617,21 @@ pub async fn apply_preset(
         .ok_or_else(|| format!("Preset '{}' not found", preset_id))?;
 
     let state_snapshot = obs_state.read().await.clone();
+
+    let mic = mic_source.unwrap_or_else(|| {
+        let m = &state_snapshot.special_inputs.mic1;
+        if m.is_empty() { "Mic/Aux".into() } else { m.clone() }
+    });
+    let desktop = desktop_source.unwrap_or_else(|| {
+        let d = &state_snapshot.special_inputs.desktop1;
+        if d.is_empty() { "Desktop Audio".into() } else { d.clone() }
+    });
+
+    let resolved = presets::resolve_preset_actions(&preset.actions, &mic, &desktop);
+
     let conn = conn_state.lock().await;
     let results =
-        ai_actions::execute_actions(&preset.actions, &conn, &state_snapshot, &undo_stack).await;
+        ai_actions::execute_actions(&resolved, &conn, &state_snapshot, &undo_stack).await;
 
     Ok(results.into_iter().map(|mut r| { r.pending_action = None; r }).collect())
 }

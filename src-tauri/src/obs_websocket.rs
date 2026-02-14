@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::obs_state::{InputInfo, ObsStats, SharedObsState};
+use crate::obs_state::{FilterInfo, InputInfo, ObsStats, SharedObsState};
 use tauri::Emitter;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -511,16 +511,88 @@ async fn handle_event(
                 json!({"inputName": name, "monitorType": monitor_type}),
             );
         }
-        "SourceFilterCreated"
-        | "SourceFilterRemoved"
-        | "SourceFilterEnableStateChanged"
-        | "SourceFilterNameChanged"
-        | "SourceFilterListReindexed" => {
-            let source = event_data["sourceName"].as_str().unwrap_or("");
-            let _ = app.emit(
-                "obs://filters-changed",
-                json!({"sourceName": source}),
-            );
+        "SourceFilterCreated" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let filter_name = event_data["filterName"].as_str().unwrap_or("").to_string();
+            let filter_kind = event_data["filterKind"].as_str().unwrap_or("").to_string();
+            let filter_settings = event_data["filterSettings"].clone();
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    let idx = event_data["filterIndex"].as_u64().unwrap_or(input.filters.len() as u64) as usize;
+                    let filter = FilterInfo {
+                        name: filter_name,
+                        kind: filter_kind,
+                        enabled: true,
+                        settings: filter_settings,
+                    };
+                    if idx <= input.filters.len() {
+                        input.filters.insert(idx, filter);
+                    } else {
+                        input.filters.push(filter);
+                    }
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
+        }
+        "SourceFilterRemoved" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let filter_name = event_data["filterName"].as_str().unwrap_or("");
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    input.filters.retain(|f| f.name != filter_name);
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
+        }
+        "SourceFilterEnableStateChanged" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let filter_name = event_data["filterName"].as_str().unwrap_or("");
+            let enabled = event_data["filterEnabled"].as_bool().unwrap_or(true);
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    if let Some(f) = input.filters.iter_mut().find(|f| f.name == filter_name) {
+                        f.enabled = enabled;
+                    }
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
+        }
+        "SourceFilterNameChanged" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let old_name = event_data["filterName"].as_str().unwrap_or("");
+            let new_name = event_data["newFilterName"].as_str().unwrap_or("").to_string();
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    if let Some(f) = input.filters.iter_mut().find(|f| f.name == old_name) {
+                        f.name = new_name;
+                    }
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
+        }
+        "SourceFilterListReindexed" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            // Reorder filters based on the provided list
+            if let Some(filters_arr) = event_data["filters"].as_array() {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    let mut reordered = Vec::new();
+                    for item in filters_arr {
+                        let name = item["filterName"].as_str().unwrap_or("");
+                        if let Some(f) = input.filters.iter().find(|f| f.name == name) {
+                            reordered.push(f.clone());
+                        }
+                    }
+                    if !reordered.is_empty() {
+                        input.filters = reordered;
+                    }
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
         }
         "StreamStateChanged" => {
             let active =

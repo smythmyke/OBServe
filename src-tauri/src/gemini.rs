@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 pub type SharedGeminiClient = Arc<RwLock<Option<GeminiClient>>>;
 
 const GEMINI_URL: &str =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const MAX_HISTORY: usize = 10;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -19,17 +19,27 @@ pub struct ChatMessage {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AiAction {
     pub safety: String,
     pub description: String,
     pub action_type: String,
     pub request_type: String,
+    #[serde(deserialize_with = "deserialize_params")]
     pub params: Value,
 }
 
+fn deserialize_params<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Value::deserialize(deserializer)?;
+    match &v {
+        Value::String(s) => serde_json::from_str(s).map_err(serde::de::Error::custom),
+        _ => Ok(v),
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatResponse {
     pub message: String,
     pub actions: Vec<AiAction>,
@@ -177,6 +187,26 @@ The app labels the user's input device as ❝My Mic❞ and output device as ❝M
 These are the Windows hardware devices. OBS inputs (like "Mic/Aux", "Desktop Audio") are
 shown alongside these with their own quoted names. Users may refer to either layer.
 When referencing devices in responses, use these names to match what the user sees.
+
+### Signal Chain Groups
+The Signal Chain panel organizes filters into named groups (sub-modules):
+- "Filters" (always present, top) — user's manually added filters
+- Preset groups (e.g. "Tutorial", "Noisy Room") — from Smart Presets dropdown
+- Calibration group — from the calibration wizard
+- Custom groups — user-created or converted from presets
+
+Smart Presets are available on the Signal Chain panel (not the AI panel).
+When users ask about presets, tell them to use the Smart Presets dropdown on the Signal Chain.
+Available presets: Tutorial, Gaming, Podcast, Music, Broadcast Voice, ASMR,
+Noisy Room, Just Chatting, Singing/Karaoke.
+
+### Audio Calibration
+The app includes a Calibration Wizard that measures noise floor, speech levels, and dynamics,
+then applies optimized filters (noise suppression, noise gate, gain, compressor, limiter).
+Filters created by calibration are prefixed "OBServe Cal".
+Filters created by presets are prefixed with the preset name (e.g. "Tutorial Noise Gate").
+When users mention calibration results, reference the measurements to explain filter choices.
+If a user asks to recalibrate, tell them to use the Calibrate button on their mic widget or type "calibrate" in chat.
 
 ### Relative Adjustments
 When users say relative terms, apply these dB offsets to the CURRENT volume:
@@ -386,12 +416,14 @@ For SetSceneItemEnabled: use the current scene name if the user doesn't specify 
 ## Response Rules
 1. Always respond with valid JSON: {"message": "...", "actions": [...]}
 2. The "message" field is your human-readable explanation — be concise and friendly.
-3. If just chatting or answering a question, return "actions": [].
-4. When reporting status ("what's my setup?", "how does it look?"), describe the current state from the data above.
-5. You CAN combine multiple actions in one response (e.g., add noise gate AND compressor).
-6. NEVER invent input names or source names — only use the exact names listed above.
+3. The "params" field in each action MUST be a JSON-encoded string, e.g. "{\"inputName\": \"Mic\", \"inputVolumeDb\": -10.0}" — NOT a raw object.
+4. If just chatting or answering a question, return "actions": [].
+5. When reporting status ("what's my setup?", "how does it look?"), describe the current state from the data above.
+6. You CAN combine multiple actions in one response (e.g., add noise gate AND compressor).
+7. NEVER invent input names or source names — only use the exact names listed above.
 7. For volume changes, always calculate from the current value shown above.
-8. If you're unsure which device/source the user means, ask — don't guess wrong.
+8. When the user requests a filter without specifying which audio source to apply it to, ALWAYS apply it to the primary microphone/aux input source (the OBS input with kind containing "input_capture").
+9. If you're unsure which device/source the user means, ask — don't guess wrong.
 "#,
     );
 
@@ -412,7 +444,7 @@ fn response_schema() -> Value {
                         "description": {"type": "string"},
                         "action_type": {"type": "string", "enum": ["obs_request", "windows_audio"]},
                         "request_type": {"type": "string"},
-                        "params": {"type": "object"}
+                        "params": {"type": "string"}
                     },
                     "required": ["safety", "description", "action_type", "request_type", "params"]
                 }
