@@ -1,5 +1,6 @@
 use crate::ai_actions::{self, ActionResult, SharedUndoStack};
 use crate::audio;
+use crate::audio_monitor::{AudioMetrics, SharedAudioMetrics};
 use crate::gemini::{AiAction, SharedGeminiClient};
 use crate::obs_launcher::{self, ObsLaunchStatus};
 use crate::obs_config::{self, ObsAudioConfig};
@@ -9,6 +10,7 @@ use crate::preflight::{self, PreflightReport};
 use crate::presets::{self, Preset};
 use crate::routing::{self, RoutingRecommendation};
 use crate::system_monitor::{self, DisplayInfo, SystemResources};
+use crate::vst_manager::{self, VstStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -533,7 +535,9 @@ pub async fn send_chat_message(
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
     undo_stack: tauri::State<'_, SharedUndoStack>,
+    audio_metrics_state: tauri::State<'_, SharedAudioMetrics>,
     message: String,
+    calibration_data: Option<String>,
 ) -> Result<FullChatResponse, String> {
     let mut client_guard = gemini.write().await;
     let client = client_guard
@@ -541,11 +545,20 @@ pub async fn send_chat_message(
         .ok_or_else(|| "Gemini API key not configured. Set GEMINI_API_KEY environment variable.".to_string())?;
 
     let state_snapshot = obs_state.read().await.clone();
+    let metrics_snapshot = audio_metrics_state.read().await.clone();
     let devices = tokio::task::spawn_blocking(audio::enumerate_audio_devices)
         .await
         .map_err(|e| format!("Task failed: {}", e))??;
 
-    let chat_response = client.send_message(&message, &state_snapshot, &devices).await?;
+    let chat_response = client
+        .send_message(
+            &message,
+            &state_snapshot,
+            &devices,
+            &metrics_snapshot,
+            calibration_data.as_deref(),
+        )
+        .await?;
 
     let conn = conn_state.lock().await;
     let results =
@@ -627,7 +640,7 @@ pub async fn apply_preset(
         if d.is_empty() { "Desktop Audio".into() } else { d.clone() }
     });
 
-    let resolved = presets::resolve_preset_actions(&preset.actions, &mic, &desktop);
+    let resolved = presets::resolve_preset_actions(&preset.actions, &mic, &desktop)?;
 
     let conn = conn_state.lock().await;
     let results =
@@ -715,4 +728,50 @@ pub async fn is_obs_running() -> Result<bool, String> {
     tokio::task::spawn_blocking(obs_launcher::is_obs_running)
         .await
         .map_err(|e| format!("Task failed: {}", e))
+}
+
+// --- Audio Metrics Command ---
+
+#[tauri::command]
+pub async fn get_audio_metrics(
+    state: tauri::State<'_, SharedAudioMetrics>,
+) -> Result<AudioMetrics, String> {
+    let m = state.read().await;
+    Ok(m.clone())
+}
+
+// --- VST Manager Commands ---
+
+#[tauri::command]
+pub async fn get_vst_status() -> Result<VstStatus, String> {
+    Ok(vst_manager::get_vst_status())
+}
+
+#[tauri::command]
+pub async fn install_vsts(app_handle: tauri::AppHandle) -> Result<VstStatus, String> {
+    vst_manager::install_vsts(&app_handle)
+}
+
+#[tauri::command]
+pub async fn get_source_filter_kinds(
+    state: tauri::State<'_, SharedObsConnection>,
+) -> Result<Vec<String>, String> {
+    let conn = state.lock().await;
+    let resp = conn
+        .send_request("GetSourceFilterKindList", None)
+        .await?;
+    let kinds = resp["sourceFilterKinds"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(kinds)
+}
+
+#[tauri::command]
+pub async fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
 }

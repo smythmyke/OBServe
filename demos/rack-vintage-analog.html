@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OBServe Rack — Vintage Analog</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #1a1510;
+  font-family: 'Courier New', monospace;
+}
+
+.rack-frame {
+  display: flex;
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rack-frame::-webkit-scrollbar { display: none; }
+
+/* Wood Side Panels */
+.wood-panel {
+  width: 36px;
+  flex-shrink: 0;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0px, transparent 3px,
+      rgba(0,0,0,0.05) 3px, rgba(0,0,0,0.05) 6px
+    ),
+    linear-gradient(to right,
+      #5a3a1a 0%, #7a4a20 15%, #8a5a2a 30%,
+      #7a4a20 50%, #6a4020 70%, #8a5a2a 85%, #5a3a1a 100%
+    );
+  box-shadow: inset -2px 0 6px rgba(0,0,0,0.4);
+  border-left: 1px solid #4a2a10;
+  border-right: 1px solid #4a2a10;
+}
+.wood-panel.right {
+  box-shadow: inset 2px 0 6px rgba(0,0,0,0.4);
+}
+
+/* Wood screws */
+.wood-screw {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #b8963a, #8a6a2a 60%, #5a4a1a 100%);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.2), 0 1px 2px rgba(0,0,0,0.5);
+  margin: 30px auto;
+  position: relative;
+}
+.wood-screw::before {
+  content: '';
+  position: absolute;
+  top: 50%; left: 20%;
+  width: 60%; height: 1px;
+  background: #5a4a1a;
+  transform: translateY(-50%);
+}
+
+.rack-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rack-body::-webkit-scrollbar { display: none; }
+
+/* Cream/Beige Module Panel */
+.module {
+  background:
+    linear-gradient(to bottom, #e8dcc8 0%, #ddd0b8 50%, #d0c4a8 100%);
+  border-top: 2px solid #f0e8d8;
+  border-bottom: 2px solid #a09078;
+  padding: 16px 24px;
+  position: relative;
+  min-height: 60px;
+}
+
+.module-dark {
+  background:
+    linear-gradient(to bottom, #3a3530 0%, #2a2520 50%, #252018 100%);
+  border-top: 1px solid #4a4540;
+  border-bottom: 1px solid #151210;
+}
+
+/* Silk-screened label style */
+.silk-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 2.5px;
+  color: #5a4a38;
+  font-weight: 700;
+}
+.silk-label-light {
+  color: #a09888;
+}
+
+.module-title {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #5a4a38;
+  font-weight: 700;
+  position: absolute;
+  top: 5px;
+  left: 20px;
+}
+
+.module-title-right {
+  position: absolute;
+  top: 5px;
+  right: 20px;
+  font-size: 8px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #8a7a68;
+}
+
+/* Title Bar */
+.title-bar {
+  background: linear-gradient(to bottom, #2a2018, #1a1510);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid #3a3025;
+  cursor: grab;
+}
+.title-bar h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #d4a850;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.5);
+}
+
+.window-controls { display: flex; gap: 6px; }
+.win-btn { width: 12px; height: 12px; border-radius: 50%; border: none; cursor: pointer; }
+.win-btn.minimize { background: #d4a850; }
+.win-btn.maximize { background: #7a9a5a; }
+.win-btn.close { background: #c45040; }
+
+/* Vintage Knob */
+.v-knob-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.v-knob {
+  width: 50px; height: 50px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #3a3530, #2a2520 50%, #1a1510 100%);
+  box-shadow:
+    0 3px 8px rgba(0,0,0,0.5),
+    inset 0 2px 3px rgba(255,255,255,0.1),
+    0 0 0 3px #4a4540,
+    0 0 0 4px #2a2520;
+  position: relative;
+  cursor: pointer;
+}
+/* Chicken-head pointer */
+.v-knob::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 0; height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 14px solid #d4a850;
+  transform: translateX(-50%) rotate(var(--angle, -135deg));
+  transform-origin: center 22px;
+}
+
+/* Small knob variant */
+.v-knob-sm {
+  width: 34px; height: 34px;
+}
+.v-knob-sm::after {
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-bottom: 10px solid #d4a850;
+  top: 2px;
+  transform-origin: center 15px;
+}
+.v-knob-sm.cream::after { border-bottom-color: #e8dcc8; }
+
+.v-knob-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #5a4a38;
+  font-weight: 600;
+}
+.v-knob-label-light { color: #8a8070; }
+.v-knob-value {
+  font-size: 10px;
+  color: #2a2018;
+  font-weight: 700;
+}
+.v-knob-value-light { color: #d4a850; }
+
+/* Sunken Display (dark amber LCD) */
+.amber-display {
+  background: #1a1808;
+  border-radius: 2px;
+  box-shadow:
+    inset 2px 2px 5px rgba(0,0,0,0.8),
+    inset -1px -1px 0 rgba(255,255,255,0.03),
+    0 1px 0 rgba(255,255,255,0.1);
+  padding: 8px 12px;
+  color: #d4a850;
+  font-family: 'Courier New', monospace;
+  text-shadow: 0 0 6px rgba(212,168,80,0.3);
+}
+
+/* Vintage LED */
+.v-led {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.3);
+}
+.v-led-green {
+  background: radial-gradient(circle at 40% 35%, #88ff88, #22aa22 60%, #118811 100%);
+  box-shadow: 0 0 4px #22aa22, 0 0 8px rgba(34,170,34,0.3);
+}
+.v-led-red {
+  background: radial-gradient(circle at 40% 35%, #ff8888, #cc2222 60%, #881111 100%);
+  box-shadow: 0 0 4px #cc2222, 0 0 8px rgba(204,34,34,0.3);
+}
+.v-led-amber {
+  background: radial-gradient(circle at 40% 35%, #ffdd88, #d4a850 60%, #aa7730 100%);
+  box-shadow: 0 0 4px #d4a850, 0 0 8px rgba(212,168,80,0.3);
+}
+.v-led-off {
+  background: radial-gradient(circle at 40% 35%, #555, #333 60%, #222 100%);
+  box-shadow: none;
+}
+
+.v-led-blink { animation: vblink 0.8s ease-in-out infinite; }
+@keyframes vblink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
+
+/* Vintage VU Meter */
+.vu-analog {
+  width: 140px;
+  height: 70px;
+  background: #f5f0e0;
+  border-radius: 4px;
+  border: 2px solid #8a7a60;
+  box-shadow: inset 1px 1px 4px rgba(0,0,0,0.2), 0 2px 4px rgba(0,0,0,0.3);
+  position: relative;
+  overflow: hidden;
+}
+.vu-analog-face {
+  position: absolute;
+  bottom: 5px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 7px;
+  color: #5a4a38;
+  letter-spacing: 0.5px;
+  display: flex;
+  gap: 4px;
+}
+.vu-analog-face span { font-weight: 700; }
+.vu-analog-face .red-zone { color: #c45040; }
+
+.vu-needle {
+  position: absolute;
+  bottom: 0; left: 50%;
+  width: 2px;
+  height: 55px;
+  background: linear-gradient(to top, #1a1510, #c45040 80%, #c45040);
+  transform-origin: bottom center;
+  transform: rotate(var(--needle, -40deg));
+  transition: transform 0.15s ease-out;
+  border-radius: 1px 1px 0 0;
+}
+.vu-needle-pivot {
+  position: absolute;
+  bottom: -3px; left: 50%;
+  transform: translateX(-50%);
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #888, #333);
+}
+
+/* Vintage horizontal slider */
+.v-slider-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.v-slider-track {
+  width: 120px;
+  height: 8px;
+  background: linear-gradient(to bottom, #2a2520, #3a3530);
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.1);
+  position: relative;
+}
+.v-slider-thumb {
+  width: 18px; height: 20px;
+  background:
+    linear-gradient(to bottom, #d4a850, #aa7a30);
+  border-radius: 3px;
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.3);
+  cursor: grab;
+}
+.v-slider-thumb::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 25%;
+  width: 50%; height: 1px;
+  background: rgba(0,0,0,0.3);
+  transform: translateY(-50%);
+}
+
+/* Vintage Toggle */
+.v-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.v-toggle-body {
+  width: 18px; height: 30px;
+  background: #2a2520;
+  border-radius: 3px;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05);
+  position: relative;
+  cursor: pointer;
+}
+.v-toggle-bat {
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  width: 6px; height: 16px;
+  background: linear-gradient(to bottom, #d4a850, #aa7a30);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+.v-toggle-bat.up { top: 1px; }
+.v-toggle-bat.down { bottom: 1px; }
+
+/* Vintage push button */
+.v-btn {
+  background: linear-gradient(to bottom, #d4a850, #aa7a30);
+  border: 1px solid #8a6a20;
+  border-radius: 3px;
+  color: #1a1510;
+  padding: 6px 16px;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3);
+}
+.v-btn:active {
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+  transform: translateY(1px);
+}
+.v-btn-dark {
+  background: linear-gradient(to bottom, #3a3530, #2a2520);
+  border-color: #4a4540;
+  color: #d4a850;
+}
+
+/* Segmented LED meter (vintage) */
+.seg-meter {
+  display: flex;
+  gap: 2px;
+}
+.seg {
+  width: 10px; height: 6px;
+  border-radius: 1px;
+  background: #2a2520;
+}
+.seg.on-g { background: #22aa22; box-shadow: 0 0 3px rgba(34,170,34,0.3); }
+.seg.on-y { background: #d4a850; box-shadow: 0 0 3px rgba(212,168,80,0.3); }
+.seg.on-r { background: #cc2222; box-shadow: 0 0 3px rgba(204,34,34,0.3); }
+
+/* Layout helpers */
+.row { display: flex; align-items: center; gap: 16px; }
+.row-spread { display: flex; align-items: center; justify-content: space-between; }
+.col { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: 16px; }
+.gap-lg { gap: 24px; }
+.gap-xl { gap: 32px; }
+.center { justify-content: center; }
+</style>
+</head>
+<body>
+<div class="rack-frame">
+
+  <!-- Left Wood Panel -->
+  <div class="wood-panel">
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+  </div>
+
+  <div class="rack-body">
+
+    <!-- Title -->
+    <div class="title-bar">
+      <h1>OBServe</h1>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="row gap-sm">
+          <span class="v-led v-led-amber"></span>
+          <span style="font-size:10px;color:#8a7a60;letter-spacing:1px;">CONNECTED</span>
+        </div>
+        <div class="window-controls">
+          <div class="win-btn minimize"></div>
+          <div class="win-btn maximize"></div>
+          <div class="win-btn close"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Module (cream panel) -->
+    <div class="module" style="padding-top:22px;">
+      <span class="module-title">Status</span>
+      <span class="module-title-right">Monitor</span>
+      <div class="row-spread" style="margin-top:6px;">
+        <div class="row gap-lg">
+          <div class="col"><span class="silk-label">OBS</span><span class="v-led v-led-green"></span></div>
+          <div class="col"><span class="silk-label">Stream</span><span class="v-led v-led-off"></span></div>
+          <div class="col"><span class="silk-label">Record</span><span class="v-led v-led-red v-led-blink"></span></div>
+          <div class="col"><span class="silk-label">AI</span><span class="v-led v-led-amber"></span></div>
+        </div>
+        <div class="amber-display" style="min-width:240px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span style="font-size:9px;opacity:0.6;">CPU</span><span style="font-size:11px;">23%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span style="font-size:9px;opacity:0.6;">RAM</span><span style="font-size:11px;">4.2 GB</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;">
+            <span style="font-size:9px;opacity:0.6;">FPS</span><span style="font-size:11px;">60.00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mixer Module (dark panel with VU meters) -->
+    <div class="module module-dark" style="padding-top:24px;">
+      <span class="module-title" style="color:#8a7a60;">Channel Mixer</span>
+      <span class="module-title-right" style="color:#5a4a38;">4-Bus</span>
+      <div class="row gap-xl center" style="margin-top:8px;">
+
+        <!-- Channel: Mic -->
+        <div class="col" style="gap:10px;">
+          <span class="silk-label-light" style="font-size:9px;color:#d4a850;font-weight:700;">MIC</span>
+          <div class="vu-analog" id="vu-mic">
+            <div class="vu-analog-face">
+              <span>-20</span><span>-10</span><span>-5</span><span>0</span>
+              <span class="red-zone">+3</span>
+            </div>
+            <div class="vu-needle" id="needle-mic" style="--needle:-25deg;"></div>
+            <div class="vu-needle-pivot"></div>
+          </div>
+          <div class="v-knob-container">
+            <div class="v-knob v-knob-sm" style="--angle:-20deg;"></div>
+            <span class="v-knob-label-light" style="font-size:7px;">Gain</span>
+          </div>
+          <div class="v-toggle">
+            <div class="v-toggle-body"><div class="v-toggle-bat up"></div></div>
+            <span class="silk-label-light" style="font-size:6px;">Mute</span>
+          </div>
+        </div>
+
+        <!-- Channel: Desktop -->
+        <div class="col" style="gap:10px;">
+          <span class="silk-label-light" style="font-size:9px;color:#d4a850;font-weight:700;">DESKTOP</span>
+          <div class="vu-analog" id="vu-desk">
+            <div class="vu-analog-face">
+              <span>-20</span><span>-10</span><span>-5</span><span>0</span>
+              <span class="red-zone">+3</span>
+            </div>
+            <div class="vu-needle" id="needle-desk" style="--needle:-15deg;"></div>
+            <div class="vu-needle-pivot"></div>
+          </div>
+          <div class="v-knob-container">
+            <div class="v-knob v-knob-sm" style="--angle:-40deg;"></div>
+            <span class="v-knob-label-light" style="font-size:7px;">Gain</span>
+          </div>
+          <div class="v-toggle">
+            <div class="v-toggle-body"><div class="v-toggle-bat up"></div></div>
+            <span class="silk-label-light" style="font-size:6px;">Mute</span>
+          </div>
+        </div>
+
+        <!-- Channel: Music -->
+        <div class="col" style="gap:10px;">
+          <span class="silk-label-light" style="font-size:9px;color:#d4a850;font-weight:700;">MUSIC</span>
+          <div class="vu-analog" id="vu-music">
+            <div class="vu-analog-face">
+              <span>-20</span><span>-10</span><span>-5</span><span>0</span>
+              <span class="red-zone">+3</span>
+            </div>
+            <div class="vu-needle" id="needle-music" style="--needle:-30deg;"></div>
+            <div class="vu-needle-pivot"></div>
+          </div>
+          <div class="v-knob-container">
+            <div class="v-knob v-knob-sm" style="--angle:-60deg;"></div>
+            <span class="v-knob-label-light" style="font-size:7px;">Gain</span>
+          </div>
+          <div class="v-toggle">
+            <div class="v-toggle-body"><div class="v-toggle-bat down"></div></div>
+            <span class="silk-label-light" style="font-size:6px;color:#c45040;">Mute</span>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div style="width:1px;height:200px;background:#4a4540;"></div>
+
+        <!-- Master -->
+        <div class="col" style="gap:10px;">
+          <span class="silk-label-light" style="font-size:10px;color:#c45040;font-weight:700;">MASTER</span>
+          <div class="vu-analog" id="vu-master" style="width:160px;height:80px;">
+            <div class="vu-analog-face">
+              <span>-20</span><span>-10</span><span>-5</span><span>0</span>
+              <span class="red-zone">+3</span>
+            </div>
+            <div class="vu-needle" id="needle-master" style="--needle:-18deg;height:65px;"></div>
+            <div class="vu-needle-pivot"></div>
+          </div>
+          <div class="v-knob-container">
+            <div class="v-knob" style="--angle:0deg;"></div>
+            <span class="v-knob-label-light" style="font-size:8px;">Level</span>
+            <span class="v-knob-value-light">0.0 dB</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- EQ Module (cream panel) -->
+    <div class="module" style="padding-top:22px;">
+      <span class="module-title">Parametric EQ</span>
+      <span class="module-title-right">Mic Channel</span>
+      <div class="row gap-xl center" style="margin-top:8px;">
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:-100deg;"></div>
+          <span class="v-knob-label">Freq</span>
+          <span class="v-knob-value">80 Hz</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob v-knob-sm" style="--angle:-50deg;"></div>
+          <span class="v-knob-label">Q</span>
+          <span class="v-knob-value">0.7</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:-60deg;"></div>
+          <span class="v-knob-label">Gain</span>
+          <span class="v-knob-value">-3 dB</span>
+        </div>
+
+        <div style="width:1px;height:60px;background:#b0a890;"></div>
+
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:-30deg;"></div>
+          <span class="v-knob-label">Freq</span>
+          <span class="v-knob-value">2.5k</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob v-knob-sm" style="--angle:-20deg;"></div>
+          <span class="v-knob-label">Q</span>
+          <span class="v-knob-value">1.4</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:20deg;"></div>
+          <span class="v-knob-label">Gain</span>
+          <span class="v-knob-value">+2 dB</span>
+        </div>
+
+        <div style="width:1px;height:60px;background:#b0a890;"></div>
+
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:40deg;"></div>
+          <span class="v-knob-label">Freq</span>
+          <span class="v-knob-value">8k</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob v-knob-sm" style="--angle:-40deg;"></div>
+          <span class="v-knob-label">Q</span>
+          <span class="v-knob-value">0.5</span>
+        </div>
+        <div class="v-knob-container">
+          <div class="v-knob" style="--angle:10deg;"></div>
+          <span class="v-knob-label">Gain</span>
+          <span class="v-knob-value">+1 dB</span>
+        </div>
+
+        <div style="width:1px;height:60px;background:#b0a890;"></div>
+
+        <div class="col" style="gap:8px;">
+          <div class="v-toggle">
+            <span class="silk-label" style="font-size:6px;">Bypass</span>
+            <div class="v-toggle-body"><div class="v-toggle-bat up"></div></div>
+          </div>
+          <span class="v-led v-led-green"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene Selector (dark panel) -->
+    <div class="module module-dark" style="padding-top:22px;">
+      <span class="module-title" style="color:#8a7a60;">Scene Select</span>
+      <div class="row gap-md center" style="margin-top:8px;">
+        <div class="col" style="gap:4px;">
+          <button class="v-btn" style="background:linear-gradient(to bottom,#4a6a3a,#3a5a2a);border-color:#5a8a3a;color:#dde8cc;">Gameplay</button>
+          <span class="v-led v-led-green" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="v-btn-dark v-btn">Facecam</button>
+          <span class="v-led v-led-off" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="v-btn-dark v-btn">BRB</button>
+          <span class="v-led v-led-off" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="v-btn-dark v-btn">Starting</button>
+          <span class="v-led v-led-off" style="width:6px;height:6px;"></span>
+        </div>
+
+        <div style="width:1px;height:35px;background:#4a4540;"></div>
+
+        <div class="col" style="gap:3px;">
+          <div class="seg-meter" id="seg1">
+            <div class="seg"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
+            <div class="seg"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
+            <div class="seg"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
+          </div>
+          <span class="silk-label-light" style="font-size:7px;">Output Level</span>
+        </div>
+
+        <div style="width:1px;height:35px;background:#4a4540;"></div>
+
+        <div class="col" style="gap:4px;">
+          <button class="v-btn" style="background:linear-gradient(to bottom,#8a3a2a,#6a2a1a);border-color:#aa4a3a;color:#ffccbb;">REC</button>
+          <span class="v-led v-led-red v-led-blink" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="v-btn-dark v-btn">STREAM</button>
+          <span class="v-led v-led-off" style="width:6px;height:6px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Chat (cream panel) -->
+    <div class="module" style="padding-top:22px;">
+      <span class="module-title">AI Assistant</span>
+      <span class="module-title-right">Gemini</span>
+      <div class="amber-display" style="min-height:80px;margin-top:4px;margin-bottom:10px;">
+        <div style="margin-bottom:6px;">
+          <span style="font-size:9px;opacity:0.5;">YOU&gt;</span>
+          <span style="font-size:11px;"> My mic sounds thin, add some warmth</span>
+        </div>
+        <div>
+          <span style="font-size:9px;opacity:0.5;">AI&gt;</span>
+          <span style="font-size:11px;"> Boosting 200-400Hz shelf by +3dB and adding subtle compression. Your voice will sound fuller now.</span>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:6px;align-items:center;">
+          <span class="v-led v-led-green" style="width:5px;height:5px;"></span>
+          <span style="font-size:9px;opacity:0.7;">EQ + Compressor applied</span>
+        </div>
+      </div>
+      <div class="row gap-sm">
+        <div style="flex:1;height:28px;background:#1a1808;border-radius:2px;border:1px solid #4a4030;box-shadow:inset 1px 1px 3px rgba(0,0,0,0.5);display:flex;align-items:center;padding:0 10px;">
+          <span style="font-size:10px;color:#5a4a30;font-family:'Courier New',monospace;">Type a command...</span>
+        </div>
+        <button class="v-btn">Send</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Wood Panel -->
+  <div class="wood-panel right">
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+    <div class="wood-screw"></div>
+  </div>
+
+</div>
+
+<script>
+// Animate VU needle meters
+function animateNeedles() {
+  const needles = [
+    { id: 'needle-mic', base: -15, variance: 20 },
+    { id: 'needle-desk', base: -20, variance: 15 },
+    { id: 'needle-music', base: -30, variance: 12 },
+    { id: 'needle-master', base: -12, variance: 18 },
+  ];
+  needles.forEach(n => {
+    const el = document.getElementById(n.id);
+    if (!el) return;
+    const angle = n.base + (Math.random() * n.variance) - n.variance / 3;
+    el.style.setProperty('--needle', angle + 'deg');
+  });
+
+  // Segmented meter
+  const seg = document.getElementById('seg1');
+  if (seg) {
+    const segs = seg.querySelectorAll('.seg');
+    const total = segs.length;
+    const level = 5 + Math.floor(Math.random() * 5);
+    segs.forEach((s, i) => {
+      s.className = 'seg';
+      if (i < level) {
+        if (i >= total - 2) s.classList.add('on-r');
+        else if (i >= total - 4) s.classList.add('on-y');
+        else s.classList.add('on-g');
+      }
+    });
+  }
+
+  requestAnimationFrame(() => setTimeout(animateNeedles, 150));
+}
+animateNeedles();
+</script>
+</body>
+</html>

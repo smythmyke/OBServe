@@ -222,12 +222,12 @@
           <div class="device-widget" id="input-widget">
             <div class="widget-header">
               <div class="widget-name-left">
-                <span class="fat-quote-name accent-red">&#10077;My Mic&#10078;</span>
                 <span class="hw-device-name" id="input-hw-name"></span>
               </div>
               <span class="flow-arrow">&rarr;</span>
               <div class="widget-name-right">
-                <span class="fat-quote-name accent-muted" id="input-obs-name">&#10077;Aux&#10078;</span>
+                <span class="fat-quote-name accent-red">My Mic</span>
+                <span class="obs-source-name" id="input-obs-name">Aux</span>
               </div>
             </div>
 
@@ -237,7 +237,18 @@
             </div>
 
             <div class="dual-knob-row">
-              <div class="knob-col">
+              <div class="knob-col knob-col-secondary">
+                <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
+                  diameter="60" colors="#5a5040;#0c0a06;#1a1714"></webaudio-knob>
+                <div class="knob-info">
+                  <span class="device-vol-pct" id="input-vol-pct">--%</span>
+                  <button class="device-mute-btn" id="input-mute-btn">Mute</button>
+                </div>
+              </div>
+
+              <span class="flow-arrow-mid">&rarr;</span>
+
+              <div class="knob-col knob-col-primary" id="input-obs-knob-col">
                 <div class="gauge-knob-container">
                   <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
                     <circle class="gauge-track" cx="60" cy="60" r="54"/>
@@ -246,28 +257,17 @@
                     <circle class="gauge-fill peak-fill" id="input-peak-fill" cx="60" cy="60" r="44"/>
                   </svg>
                   <div class="knob-overlay">
-                    <webaudio-knob id="input-knob" min="0" max="100" step="1" value="0"
+                    <webaudio-knob id="input-obs-knob" min="-100" max="26" step="0.1" value="0"
                       diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
                   </div>
                 </div>
                 <div class="knob-info">
-                  <span class="device-vol-pct" id="input-vol-pct">--%</span>
+                  <span class="obs-vol-db" id="input-obs-db">-- dB</span>
                   <div class="knob-btn-row">
-                    <button class="device-mute-btn" id="input-mute-btn">Mute</button>
+                    <button class="obs-mute-btn" id="input-obs-mute">Mute</button>
                     <button class="monitor-btn" id="input-monitor-btn" title="Monitor Off">MON</button>
                     <span class="led led-off" id="input-monitor-led"></span>
                   </div>
-                </div>
-              </div>
-
-              <span class="flow-arrow-mid">&rarr;</span>
-
-              <div class="knob-col" id="input-obs-knob-col" hidden>
-                <webaudio-knob id="input-obs-knob" min="-100" max="26" step="0.1" value="0"
-                  diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
-                <div class="knob-info">
-                  <span class="obs-vol-db" id="input-obs-db">-- dB</span>
-                  <button class="obs-mute-btn" id="input-obs-mute">Mute</button>
                 </div>
               </div>
             </div>
@@ -282,11 +282,11 @@
           <div class="device-widget" id="output-widget">
             <div class="widget-header">
               <div class="widget-name-left">
-                <span class="fat-quote-name accent-green" id="output-obs-name">&#10077;Desktop Audio&#10078;</span>
+                <span class="fat-quote-name accent-green">My Speakers</span>
+                <span class="obs-source-name" id="output-obs-name">Desktop Audio</span>
               </div>
               <span class="flow-arrow">&rarr;</span>
               <div class="widget-name-right">
-                <span class="fat-quote-name accent-muted">&#10077;My Speakers&#10078;</span>
                 <span class="hw-device-name" id="output-hw-name"></span>
               </div>
             </div>
@@ -297,18 +297,7 @@
             </div>
 
             <div class="dual-knob-row">
-              <div class="knob-col" id="output-obs-knob-col" hidden>
-                <webaudio-knob id="output-obs-knob" min="-100" max="26" step="0.1" value="0"
-                  diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
-                <div class="knob-info">
-                  <span class="obs-vol-db" id="output-obs-db">-- dB</span>
-                  <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
-                </div>
-              </div>
-
-              <span class="flow-arrow-mid">&rarr;</span>
-
-              <div class="knob-col">
+              <div class="knob-col knob-col-primary" id="output-obs-knob-col">
                 <div class="gauge-knob-container">
                   <svg class="peak-gauge" viewBox="0 0 120 120" width="120" height="120">
                     <circle class="gauge-track" cx="60" cy="60" r="54"/>
@@ -317,10 +306,21 @@
                     <circle class="gauge-fill peak-fill" id="output-peak-fill" cx="60" cy="60" r="44"/>
                   </svg>
                   <div class="knob-overlay">
-                    <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
+                    <webaudio-knob id="output-obs-knob" min="-100" max="26" step="0.1" value="0"
                       diameter="80" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
                   </div>
                 </div>
+                <div class="knob-info">
+                  <span class="obs-vol-db" id="output-obs-db">-- dB</span>
+                  <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
+                </div>
+              </div>
+
+              <span class="flow-arrow-mid">&rarr;</span>
+
+              <div class="knob-col knob-col-secondary">
+                <webaudio-knob id="output-knob" min="0" max="100" step="1" value="0"
+                  diameter="60" colors="#5a5040;#0c0a06;#1a1714"></webaudio-knob>
                 <div class="knob-info">
                   <span class="device-vol-pct" id="output-vol-pct">--%</span>
                   <button class="device-mute-btn" id="output-mute-btn">Mute</button>
@@ -438,7 +438,8 @@
               <div class="ai-help-examples">
                 Use <b>Smart Presets</b> on the Signal Chain panel:<br>
                 Tutorial, Gaming, Podcast, Music/DJ,<br>
-                Broadcast, ASMR, Noisy Room, Just Chatting, Singing
+                Broadcast, ASMR, Noisy Room, Just Chatting, Singing<br>
+                <b>PRO:</b> Pro Broadcast, Pro Podcast, Pro Music, Streamer Safety
               </div>
             </div>
             <button class="btn-secondary ai-help-close" id="btn-ai-help-close">Got it</button>
@@ -474,6 +475,10 @@
   <div id="alert-toast" class="alert-toast">
     <span id="alert-toast-msg"></span>
     <button id="alert-toast-dismiss" class="alert-toast-dismiss">X</button>
+  </div>
+
+  <div id="ctx-menu" class="ctx-menu" hidden>
+    <div id="ctx-menu-items"></div>
   </div>
 
   <script src="webaudio-controls.js"></script>

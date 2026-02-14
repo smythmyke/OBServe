@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OBServe Rack — Modern Dark</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #0a0a0f;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.rack-frame {
+  display: flex;
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rack-frame::-webkit-scrollbar { display: none; }
+
+/* Minimal dark rails */
+.rack-rail {
+  width: 22px;
+  flex-shrink: 0;
+  background: linear-gradient(to right, #0e0e14 0%, #18181f 50%, #0e0e14 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  gap: 36px;
+}
+
+.hex-screw {
+  width: 12px; height: 12px;
+  background: #1a1a22;
+  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  position: relative;
+  flex-shrink: 0;
+}
+.hex-screw::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 4px; height: 4px;
+  background: #2a2a35;
+  border-radius: 50%;
+  transform: translate(-50%,-50%);
+}
+
+.rack-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: #0a0a0f;
+}
+.rack-body::-webkit-scrollbar { display: none; }
+
+/* Module */
+.module {
+  background: linear-gradient(to bottom, #14141c, #111118);
+  border-top: 1px solid #1e1e28;
+  border-bottom: 1px solid #08080c;
+  padding: 16px 24px;
+  position: relative;
+}
+
+.mod-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: #444;
+  font-weight: 500;
+  position: absolute;
+  top: 6px;
+  left: 20px;
+}
+
+.mod-label-r {
+  position: absolute;
+  top: 6px;
+  right: 20px;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #333;
+}
+
+/* Accent colors */
+:root {
+  --cyan: #00d4ff;
+  --magenta: #ff00aa;
+  --green: #00ff88;
+  --red: #ff3355;
+  --amber: #ffaa00;
+  --dim: #2a2a35;
+}
+
+/* Title */
+.title-module {
+  background: linear-gradient(to bottom, #0e0e14, #111118);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1a1a22;
+  cursor: grab;
+}
+.title-module h1 {
+  font-size: 18px;
+  font-weight: 300;
+  letter-spacing: 8px;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, var(--cyan), var(--magenta));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.window-controls { display: flex; gap: 8px; }
+.win-btn {
+  width: 10px; height: 10px;
+  border-radius: 2px;
+  border: none;
+  cursor: pointer;
+}
+.win-btn.minimize { background: var(--amber); }
+.win-btn.maximize { background: var(--green); }
+.win-btn.close { background: var(--red); }
+
+/* LED (modern - tiny dots with glow) */
+.m-led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.m-led-cyan { background: var(--cyan); box-shadow: 0 0 6px var(--cyan), 0 0 12px rgba(0,212,255,0.2); }
+.m-led-green { background: var(--green); box-shadow: 0 0 6px var(--green), 0 0 12px rgba(0,255,136,0.2); }
+.m-led-red { background: var(--red); box-shadow: 0 0 6px var(--red), 0 0 12px rgba(255,51,85,0.2); }
+.m-led-magenta { background: var(--magenta); box-shadow: 0 0 6px var(--magenta), 0 0 12px rgba(255,0,170,0.2); }
+.m-led-amber { background: var(--amber); box-shadow: 0 0 6px var(--amber), 0 0 12px rgba(255,170,0,0.2); }
+.m-led-off { background: #1a1a22; box-shadow: none; }
+.m-led-blink { animation: mblink 1.2s ease-in-out infinite; }
+@keyframes mblink { 0%,100%{opacity:1;} 50%{opacity:0.15;} }
+
+/* Modern Knob (ring style) */
+.m-knob-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.m-knob {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: #111118;
+  border: 2px solid #1e1e28;
+  position: relative;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+.m-knob-ring {
+  position: absolute;
+  top: -4px; left: -4px;
+  width: 52px; height: 52px;
+}
+.m-knob-ring-track {
+  fill: none;
+  stroke: #1a1a22;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.m-knob-ring-fill {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s;
+}
+.m-knob::after {
+  content: '';
+  position: absolute;
+  top: 4px; left: 50%;
+  width: 2px; height: 10px;
+  background: var(--cyan);
+  border-radius: 1px;
+  transform: translateX(-50%) rotate(var(--angle, -135deg));
+  transform-origin: center 18px;
+  box-shadow: 0 0 4px var(--cyan);
+}
+.m-knob-label {
+  font-size: 9px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.m-knob-value {
+  font-size: 10px;
+  color: var(--cyan);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Modern Fader */
+.m-fader-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.m-fader-track {
+  width: 4px;
+  height: 120px;
+  background: #1a1a22;
+  border-radius: 2px;
+  position: relative;
+  box-shadow: inset 0 0 4px rgba(0,0,0,0.5);
+}
+.m-fader-fill {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  border-radius: 2px;
+  background: linear-gradient(to top, var(--cyan), rgba(0,212,255,0.3));
+  transition: height 0.2s;
+}
+.m-fader-thumb {
+  width: 20px; height: 8px;
+  background: linear-gradient(to bottom, #3a3a45, #2a2a35);
+  border: 1px solid #4a4a55;
+  border-radius: 2px;
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  cursor: grab;
+  box-shadow: 0 0 6px rgba(0,0,0,0.4);
+}
+.m-fader-label {
+  font-size: 9px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Segmented RGB meter */
+.rgb-meter {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  width: 8px;
+}
+.rgb-seg {
+  height: 3px;
+  border-radius: 0.5px;
+  background: #111;
+  transition: background 0.08s, box-shadow 0.08s;
+}
+.rgb-seg.on-c { background: var(--cyan); box-shadow: 0 0 3px rgba(0,212,255,0.3); }
+.rgb-seg.on-g { background: var(--green); box-shadow: 0 0 3px rgba(0,255,136,0.3); }
+.rgb-seg.on-m { background: var(--magenta); box-shadow: 0 0 3px rgba(255,0,170,0.3); }
+.rgb-seg.on-r { background: var(--red); box-shadow: 0 0 3px rgba(255,51,85,0.3); }
+
+/* Horizontal bar meter */
+.bar-meter {
+  height: 3px;
+  background: #111;
+  border-radius: 1.5px;
+  overflow: hidden;
+  position: relative;
+}
+.bar-meter-fill {
+  height: 100%;
+  border-radius: 1.5px;
+  transition: width 0.2s;
+}
+.bar-cyan { background: linear-gradient(to right, rgba(0,212,255,0.3), var(--cyan)); }
+.bar-green { background: linear-gradient(to right, rgba(0,255,136,0.3), var(--green)); }
+.bar-magenta { background: linear-gradient(to right, rgba(255,0,170,0.3), var(--magenta)); }
+
+/* Display panel */
+.m-display {
+  background: #08080c;
+  border: 1px solid #1a1a22;
+  border-radius: 4px;
+  padding: 10px 14px;
+}
+
+/* Modern button */
+.m-btn {
+  background: #14141c;
+  border: 1px solid #2a2a35;
+  border-radius: 4px;
+  color: #666;
+  padding: 6px 16px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.m-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  box-shadow: 0 0 10px rgba(0,212,255,0.1);
+}
+.m-btn.active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(0,212,255,0.05);
+  box-shadow: 0 0 10px rgba(0,212,255,0.1), inset 0 0 10px rgba(0,212,255,0.05);
+}
+.m-btn.danger {
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(255,51,85,0.05);
+}
+.m-btn.danger:hover {
+  box-shadow: 0 0 10px rgba(255,51,85,0.1);
+}
+
+/* Toggle (modern) */
+.m-toggle {
+  width: 32px; height: 16px;
+  background: #1a1a22;
+  border-radius: 8px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.m-toggle.on { background: rgba(0,212,255,0.2); }
+.m-toggle-dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: #333;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: all 0.2s;
+}
+.m-toggle.on .m-toggle-dot {
+  left: 18px;
+  background: var(--cyan);
+  box-shadow: 0 0 6px var(--cyan);
+}
+
+/* Waveform display (fake) */
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 30px;
+}
+.waveform-bar {
+  width: 2px;
+  background: var(--cyan);
+  border-radius: 1px;
+  opacity: 0.6;
+  transition: height 0.1s;
+}
+
+/* Layout */
+.row { display: flex; align-items: center; gap: 16px; }
+.row-spread { display: flex; align-items: center; justify-content: space-between; }
+.col { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.center { justify-content: center; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: 16px; }
+.gap-lg { gap: 24px; }
+.gap-xl { gap: 32px; }
+
+.text-xs { font-size: 9px; color: #444; text-transform: uppercase; letter-spacing: 1.5px; }
+.text-sm { font-size: 11px; color: #666; }
+.text-val { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.c-cyan { color: var(--cyan); }
+.c-green { color: var(--green); }
+.c-red { color: var(--red); }
+.c-magenta { color: var(--magenta); }
+.c-amber { color: var(--amber); }
+</style>
+</head>
+<body>
+<div class="rack-frame">
+
+  <!-- Left Rail -->
+  <div class="rack-rail">
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+  </div>
+
+  <div class="rack-body">
+
+    <!-- Title -->
+    <div class="title-module">
+      <h1>OBServe</h1>
+      <div style="display:flex;align-items:center;gap:20px;">
+        <div class="row gap-sm">
+          <span class="m-led m-led-cyan"></span>
+          <span class="text-xs" style="color:var(--cyan);letter-spacing:2px;font-weight:300;">Online</span>
+        </div>
+        <div class="window-controls">
+          <div class="win-btn minimize"></div>
+          <div class="win-btn maximize"></div>
+          <div class="win-btn close"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="module" style="padding-top:24px;">
+      <span class="mod-label">System</span>
+      <span class="mod-label-r">Monitor</span>
+      <div class="row-spread">
+        <div class="row gap-lg">
+          <div class="col"><span class="text-xs">OBS</span><span class="m-led m-led-green"></span></div>
+          <div class="col"><span class="text-xs">Stream</span><span class="m-led m-led-off"></span></div>
+          <div class="col"><span class="text-xs">Record</span><span class="m-led m-led-red m-led-blink"></span></div>
+          <div class="col"><span class="text-xs">AI</span><span class="m-led m-led-magenta"></span></div>
+        </div>
+
+        <div class="m-display" style="min-width:160px;">
+          <div class="row-spread" style="margin-bottom:6px;">
+            <span class="text-xs">CPU</span>
+            <div class="bar-meter" style="width:80px;"><div class="bar-meter-fill bar-cyan" style="width:23%;"></div></div>
+            <span class="text-val c-cyan">23%</span>
+          </div>
+          <div class="row-spread" style="margin-bottom:6px;">
+            <span class="text-xs">RAM</span>
+            <div class="bar-meter" style="width:80px;"><div class="bar-meter-fill bar-green" style="width:52%;"></div></div>
+            <span class="text-val c-green">52%</span>
+          </div>
+          <div class="row-spread">
+            <span class="text-xs">GPU</span>
+            <div class="bar-meter" style="width:80px;"><div class="bar-meter-fill bar-magenta" style="width:18%;"></div></div>
+            <span class="text-val c-magenta">18%</span>
+          </div>
+        </div>
+
+        <div class="m-display" style="min-width:140px;">
+          <div class="row-spread" style="margin-bottom:4px;"><span class="text-xs">FPS</span><span class="text-val c-cyan">60.0</span></div>
+          <div class="row-spread" style="margin-bottom:4px;"><span class="text-xs">Bitrate</span><span class="text-val c-cyan">6000</span></div>
+          <div class="row-spread"><span class="text-xs">Dropped</span><span class="text-val c-green">0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mixer -->
+    <div class="module" style="padding-top:28px;">
+      <span class="mod-label">Mixer</span>
+      <span class="mod-label-r">Audio</span>
+      <div class="row gap-xl center">
+
+        <!-- Channel -->
+        <div class="col" style="gap:6px;">
+          <span class="text-xs c-cyan" style="font-weight:600;">Mic</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="rgb-meter" id="m1" style="height:120px;">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+            <div class="m-fader-wrap">
+              <div class="m-fader-track">
+                <div class="m-fader-fill" style="height:70%;"></div>
+                <div class="m-fader-thumb" style="bottom:65%;"></div>
+              </div>
+            </div>
+            <div class="rgb-meter" id="m1b">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+          </div>
+          <span class="text-val c-cyan" style="font-size:11px;">-3.2 dB</span>
+          <div class="m-toggle on"><div class="m-toggle-dot"></div></div>
+        </div>
+
+        <div class="col" style="gap:6px;">
+          <span class="text-xs" style="font-weight:600;">Desktop</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="rgb-meter" id="m2">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+            <div class="m-fader-wrap">
+              <div class="m-fader-track">
+                <div class="m-fader-fill" style="height:55%;"></div>
+                <div class="m-fader-thumb" style="bottom:50%;"></div>
+              </div>
+            </div>
+            <div class="rgb-meter" id="m2b">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+          </div>
+          <span class="text-val" style="font-size:11px;color:#666;">-8.0 dB</span>
+          <div class="m-toggle on"><div class="m-toggle-dot"></div></div>
+        </div>
+
+        <div class="col" style="gap:6px;">
+          <span class="text-xs" style="font-weight:600;">Music</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="rgb-meter" id="m3">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+            <div class="m-fader-wrap">
+              <div class="m-fader-track">
+                <div class="m-fader-fill" style="height:35%;background:linear-gradient(to top,var(--magenta),rgba(255,0,170,0.3));"></div>
+                <div class="m-fader-thumb" style="bottom:30%;"></div>
+              </div>
+            </div>
+            <div class="rgb-meter" id="m3b">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+          </div>
+          <span class="text-val c-magenta" style="font-size:11px;">-14.0 dB</span>
+          <div class="m-toggle"><div class="m-toggle-dot"></div></div>
+        </div>
+
+        <!-- Separator -->
+        <div style="width:1px;height:180px;background:#1e1e28;"></div>
+
+        <!-- Master -->
+        <div class="col" style="gap:6px;">
+          <span class="text-xs c-red" style="font-weight:700;letter-spacing:3px;">Master</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="rgb-meter" id="mM" style="height:140px;">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+            <div class="m-fader-wrap">
+              <div class="m-fader-track" style="height:140px;">
+                <div class="m-fader-fill" style="height:75%;background:linear-gradient(to top,var(--green),rgba(0,255,136,0.2));"></div>
+                <div class="m-fader-thumb" style="bottom:72%;"></div>
+              </div>
+            </div>
+            <div class="rgb-meter" id="mMb" style="height:140px;">
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+              <div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div><div class="rgb-seg"></div>
+            </div>
+          </div>
+          <span class="text-val c-green" style="font-size:14px;">0.0 dB</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- FX Module with ring knobs -->
+    <div class="module" style="padding-top:28px;">
+      <span class="mod-label">Processing</span>
+      <span class="mod-label-r">Mic Chain</span>
+      <div class="row gap-xl center">
+        <div class="m-knob-wrap">
+          <div class="m-knob" style="--angle:-90deg;">
+            <svg class="m-knob-ring" viewBox="0 0 52 52">
+              <circle class="m-knob-ring-track" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="-37.7"
+                transform="rotate(135 26 26)"/>
+              <circle class="m-knob-ring-fill" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="85"
+                transform="rotate(135 26 26)"/>
+            </svg>
+          </div>
+          <span class="m-knob-label">Gate</span>
+          <span class="m-knob-value">-32 dB</span>
+        </div>
+        <div class="m-knob-wrap">
+          <div class="m-knob" style="--angle:-45deg;">
+            <svg class="m-knob-ring" viewBox="0 0 52 52">
+              <circle class="m-knob-ring-track" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="-37.7"
+                transform="rotate(135 26 26)"/>
+              <circle class="m-knob-ring-fill" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="60"
+                transform="rotate(135 26 26)" style="stroke:var(--green);"/>
+            </svg>
+          </div>
+          <span class="m-knob-label">Comp</span>
+          <span class="m-knob-value" style="color:var(--green);">3:1</span>
+        </div>
+        <div class="m-knob-wrap">
+          <div class="m-knob" style="--angle:-20deg;">
+            <svg class="m-knob-ring" viewBox="0 0 52 52">
+              <circle class="m-knob-ring-track" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="-37.7"
+                transform="rotate(135 26 26)"/>
+              <circle class="m-knob-ring-fill" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="45"
+                transform="rotate(135 26 26)" style="stroke:var(--magenta);"/>
+            </svg>
+          </div>
+          <span class="m-knob-label">EQ Low</span>
+          <span class="m-knob-value" style="color:var(--magenta);">-2 dB</span>
+        </div>
+        <div class="m-knob-wrap">
+          <div class="m-knob" style="--angle:0deg;">
+            <svg class="m-knob-ring" viewBox="0 0 52 52">
+              <circle class="m-knob-ring-track" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="-37.7"
+                transform="rotate(135 26 26)"/>
+              <circle class="m-knob-ring-fill" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="37.7"
+                transform="rotate(135 26 26)" style="stroke:var(--amber);"/>
+            </svg>
+          </div>
+          <span class="m-knob-label">EQ Mid</span>
+          <span class="m-knob-value" style="color:var(--amber);">0 dB</span>
+        </div>
+        <div class="m-knob-wrap">
+          <div class="m-knob" style="--angle:30deg;">
+            <svg class="m-knob-ring" viewBox="0 0 52 52">
+              <circle class="m-knob-ring-track" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="-37.7"
+                transform="rotate(135 26 26)"/>
+              <circle class="m-knob-ring-fill" cx="26" cy="26" r="24"
+                stroke-dasharray="113" stroke-dashoffset="25"
+                transform="rotate(135 26 26)"/>
+            </svg>
+          </div>
+          <span class="m-knob-label">EQ High</span>
+          <span class="m-knob-value">+2 dB</span>
+        </div>
+
+        <div style="width:1px;height:70px;background:#1e1e28;"></div>
+
+        <div class="col" style="gap:8px;">
+          <span class="text-xs">Waveform</span>
+          <div class="m-display" style="padding:8px;">
+            <div class="waveform" id="waveform">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scenes -->
+    <div class="module" style="padding-top:28px;">
+      <span class="mod-label">Scenes</span>
+      <span class="mod-label-r">Switcher</span>
+      <div class="row gap-md center">
+        <div class="col" style="gap:4px;">
+          <button class="m-btn active">Gameplay</button>
+          <span class="m-led m-led-cyan"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="m-btn">Facecam</button>
+          <span class="m-led m-led-off"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="m-btn">BRB</button>
+          <span class="m-led m-led-off"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="m-btn">Starting</button>
+          <span class="m-led m-led-off"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="m-btn">Ending</button>
+          <span class="m-led m-led-off"></span>
+        </div>
+
+        <div style="width:1px;height:40px;background:#1e1e28;"></div>
+
+        <div class="col" style="gap:4px;">
+          <button class="m-btn danger">REC</button>
+          <span class="m-led m-led-red m-led-blink"></span>
+        </div>
+        <div class="col" style="gap:4px;">
+          <button class="m-btn">Stream</button>
+          <span class="m-led m-led-off"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Chat -->
+    <div class="module" style="padding-top:28px;">
+      <span class="mod-label">AI</span>
+      <span class="mod-label-r">Gemini</span>
+      <div class="m-display" style="min-height:90px;margin-bottom:10px;">
+        <div style="margin-bottom:6px;">
+          <span class="text-xs c-magenta" style="font-size:8px;">You</span>
+          <span class="text-sm" style="margin-left:6px;">Set up my audio for a gaming stream</span>
+        </div>
+        <div style="margin-bottom:6px;">
+          <span class="text-xs c-cyan" style="font-size:8px;">AI</span>
+          <span class="text-sm" style="margin-left:6px;">Applying gaming preset: noise gate at -32dB, compressor 3:1, boosting presence at 4kHz. Desktop audio set to -10dB for game/voice balance.</span>
+        </div>
+        <div class="row gap-sm" style="margin-top:6px;">
+          <span class="m-led m-led-green" style="width:4px;height:4px;"></span>
+          <span style="font-size:9px;color:#444;">3 actions applied</span>
+          <span class="m-led m-led-green" style="width:4px;height:4px;"></span>
+          <span style="font-size:9px;color:var(--green);">All successful</span>
+        </div>
+      </div>
+      <div class="row gap-sm">
+        <div style="flex:1;height:32px;background:#08080c;border:1px solid #1e1e28;border-radius:4px;display:flex;align-items:center;padding:0 12px;">
+          <span style="font-size:11px;color:#2a2a35;">Ask OBServer AI...</span>
+        </div>
+        <button class="m-btn" style="border-color:var(--cyan);color:var(--cyan);">Send</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Rail -->
+  <div class="rack-rail">
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+    <div class="hex-screw"></div><div class="hex-screw"></div><div class="hex-screw"></div>
+  </div>
+
+</div>
+
+<script>
+// Generate waveform bars
+const wf = document.getElementById('waveform');
+for (let i = 0; i < 60; i++) {
+  const bar = document.createElement('div');
+  bar.className = 'waveform-bar';
+  bar.style.height = Math.random() * 24 + 4 + 'px';
+  wf.appendChild(bar);
+}
+
+// Animate meters
+function animateMeters() {
+  const meters = [
+    { id: 'm1', base: 9, var: 4 }, { id: 'm1b', base: 8, var: 4 },
+    { id: 'm2', base: 7, var: 3 }, { id: 'm2b', base: 6, var: 3 },
+    { id: 'm3', base: 4, var: 3 }, { id: 'm3b', base: 4, var: 2 },
+    { id: 'mM', base: 12, var: 5 }, { id: 'mMb', base: 11, var: 5 },
+  ];
+  meters.forEach(m => {
+    const el = document.getElementById(m.id);
+    if (!el) return;
+    const segs = el.querySelectorAll('.rgb-seg');
+    const total = segs.length;
+    const level = Math.min(total, Math.max(0, m.base + Math.floor(Math.random() * m.var) - 1));
+    segs.forEach((s, i) => {
+      s.className = 'rgb-seg';
+      if (i < level) {
+        if (i >= total - 2) s.classList.add('on-r');
+        else if (i >= total - 4) s.classList.add('on-m');
+        else if (i >= total - 6) s.classList.add('on-c');
+        else s.classList.add('on-g');
+      }
+    });
+  });
+
+  // Animate waveform
+  wf.querySelectorAll('.waveform-bar').forEach(bar => {
+    bar.style.height = Math.random() * 24 + 4 + 'px';
+  });
+
+  requestAnimationFrame(() => setTimeout(animateMeters, 100));
+}
+animateMeters();
+</script>
+</body>
+</html>

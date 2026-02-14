@@ -1,4 +1,5 @@
 use crate::gemini::AiAction;
+use crate::vst_manager;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -10,28 +11,49 @@ pub struct Preset {
     pub description: String,
     pub icon: String,
     pub filter_prefix: String,
+    pub pro: bool,
     pub actions: Vec<AiAction>,
 }
 
-pub fn resolve_preset_actions(actions: &[AiAction], mic: &str, desktop: &str) -> Vec<AiAction> {
-    actions
-        .iter()
-        .map(|a| {
-            let params_str = a.params.to_string();
-            let resolved = params_str
-                .replace("{mic}", mic)
-                .replace("{desktop}", desktop);
-            let params: serde_json::Value =
-                serde_json::from_str(&resolved).unwrap_or_else(|_| a.params.clone());
-            AiAction {
-                safety: a.safety.clone(),
-                description: a.description.clone(),
-                action_type: a.action_type.clone(),
-                request_type: a.request_type.clone(),
-                params,
+pub fn resolve_preset_actions(actions: &[AiAction], mic: &str, desktop: &str) -> Result<Vec<AiAction>, String> {
+    let re = regex_lite::Regex::new(r"\{vst:(\w+)\}").unwrap();
+    let mut resolved_actions = Vec::new();
+
+    for a in actions {
+        let params_str = a.params.to_string();
+        let resolved = params_str
+            .replace("{mic}", mic)
+            .replace("{desktop}", desktop);
+
+        // Resolve {vst:PluginName} placeholders
+        let mut vst_error: Option<String> = None;
+        let final_str = re.replace_all(&resolved, |caps: &regex_lite::Captures| {
+            let plugin_name = &caps[1];
+            match vst_manager::get_vst_path(plugin_name) {
+                Some(path) => path.replace('\\', "\\\\"),
+                None => {
+                    vst_error = Some(format!("VST plugin '{}' not installed", plugin_name));
+                    caps[0].to_string()
+                }
             }
-        })
-        .collect()
+        });
+
+        if let Some(err) = vst_error {
+            return Err(err);
+        }
+
+        let params: serde_json::Value =
+            serde_json::from_str(&final_str).unwrap_or_else(|_| a.params.clone());
+        resolved_actions.push(AiAction {
+            safety: a.safety.clone(),
+            description: a.description.clone(),
+            action_type: a.action_type.clone(),
+            request_type: a.request_type.clone(),
+            params,
+        });
+    }
+
+    Ok(resolved_actions)
 }
 
 pub fn get_presets() -> Vec<Preset> {
@@ -42,6 +64,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Screen recording with voiceover. Mic priority, desktop audio low, noise gate + compressor on mic.".into(),
             icon: "🎓".into(),
             filter_prefix: "Tutorial".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -101,6 +124,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Balanced game + voice mix. Noise suppression on mic, game audio at -10dB.".into(),
             icon: "🎮".into(),
             filter_prefix: "Gaming".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -139,6 +163,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Voice-only setup. Mic at 0dB, desktop audio muted, full vocal chain (gate + compressor + limiter).".into(),
             icon: "🎙️".into(),
             filter_prefix: "Podcast".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -213,6 +238,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Music priority with voice ducking. Music at 0dB, mic at -8dB, limiter on master.".into(),
             icon: "🎵".into(),
             filter_prefix: "Music".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -251,6 +277,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Radio-quality vocal chain. Suppression + gate + compressor (high ratio) + gain + limiter for a polished, consistent sound.".into(),
             icon: "📻".into(),
             filter_prefix: "Broadcast".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -346,6 +373,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Preserve quiet detail and intimacy. Light gate (very low threshold), gentle compression, gain boost, soft limiter.".into(),
             icon: "🤫".into(),
             filter_prefix: "ASMR".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -434,6 +462,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Maximum noise fighting. Aggressive suppression + tight gate + expander + compressor + limiter for loud environments.".into(),
             icon: "🔇".into(),
             filter_prefix: "Noisy Room".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -532,6 +561,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Balanced IRL/chatting stream. Suppression + compressor on mic, desktop audio at comfortable background level.".into(),
             icon: "💬".into(),
             filter_prefix: "Just Chatting".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -602,6 +632,7 @@ pub fn get_presets() -> Vec<Preset> {
             description: "Preserve vocal dynamics for singing. Light compressor, gain boost, limiter. Desktop at -6dB for backing track.".into(),
             icon: "🎤".into(),
             filter_prefix: "Singing".into(),
+            pro: false,
             actions: vec![
                 AiAction {
                     safety: "safe".into(),
@@ -661,6 +692,271 @@ pub fn get_presets() -> Vec<Preset> {
                         "filterSettings": {
                             "threshold": -1.0,
                             "release_time": 80
+                        }
+                    }),
+                },
+            ],
+        },
+        // --- Pro Presets (Airwindows VST) ---
+        Preset {
+            id: "pro-broadcast".into(),
+            name: "Pro Broadcast".into(),
+            description: "Professional broadcast voice. Console emulation, de-essing, smooth compression, brick-wall limiting.".into(),
+            icon: "📡".into(),
+            filter_prefix: "Pro Broadcast".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add console channel strip to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Broadcast Console",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestConsoleChannel}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add de-esser to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Broadcast DeEss",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:DeEss}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add smooth compressor to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Broadcast Pressure",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Pressure4}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add brick-wall limiter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Broadcast Limiter",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:BlockParty}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-podcast".into(),
+            name: "Pro Podcast".into(),
+            description: "Warm, intimate podcast voice. Console strip, gate/envelope, density compression, brick-wall limiting.".into(),
+            icon: "🎧".into(),
+            filter_prefix: "Pro Podcast".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add console channel strip to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Podcast Console",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestConsoleChannel}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gate/envelope to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Podcast Gate",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Gatelope}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add density compression to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Podcast Density",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Density}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add brick-wall limiter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Podcast Limiter",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:BlockParty}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-music".into(),
+            name: "Pro Music".into(),
+            description: "Enhanced vocal/instrument sound. Air EQ, warm drive, smooth compression, vinyl tone, natural reverb.".into(),
+            icon: "🎶".into(),
+            filter_prefix: "Pro Music".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add air EQ to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Music Air",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Air}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add warm saturation to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Music Drive",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestDrive}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add smooth compressor to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Music Pressure",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Pressure4}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add vinyl tone shaping to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Music Vinyl",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:ToVinyl4}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add natural reverb to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Music Reverb",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Verbity}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "streamer-safety".into(),
+            name: "Streamer Safety".into(),
+            description: "Protection chain. De-essing, noise gating, brick-wall limiting — prevents sibilance, noise, and clipping.".into(),
+            icon: "🛡️".into(),
+            filter_prefix: "Streamer Safety".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add de-esser to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Streamer Safety DeEss",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:DeEss}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gate/envelope to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Streamer Safety Gate",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Gatelope}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add brick-wall limiter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Streamer Safety Limiter",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:BlockParty}"
                         }
                     }),
                 },

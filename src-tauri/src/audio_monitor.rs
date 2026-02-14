@@ -1,7 +1,25 @@
 use crate::audio;
 use crate::obs_state::SharedObsState;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::AppHandle;
+use tokio::sync::RwLock;
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct AudioMetrics {
+    pub devices: HashMap<String, DeviceMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct DeviceMetrics {
+    pub peak: f32,
+    pub rms: f32,
+    pub noise_floor: f32,
+    pub clipping: bool,
+}
+
+pub type SharedAudioMetrics = Arc<RwLock<AudioMetrics>>;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,20 +49,77 @@ pub struct ObsDeviceLostEvent {
 pub async fn start_audio_monitor(
     app_handle: AppHandle,
     obs_state: SharedObsState,
+    audio_metrics: SharedAudioMetrics,
 ) -> Result<(), String> {
-    start_peak_meter_polling(app_handle.clone());
+    start_peak_meter_polling(app_handle.clone(), audio_metrics);
     start_device_hotplug(app_handle, obs_state);
     Ok(())
 }
 
-fn start_peak_meter_polling(app_handle: AppHandle) {
+const RMS_WINDOW: usize = 5; // 5 samples at 200ms = 1 second
+const NOISE_FLOOR_WINDOW: usize = 50; // 50 samples at 200ms = 10 seconds
+
+fn start_peak_meter_polling(app_handle: AppHandle, audio_metrics: SharedAudioMetrics) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+        let mut ring_buffers: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut noise_floor_history: HashMap<String, Vec<f32>> = HashMap::new();
+
         loop {
             interval.tick().await;
             let handle = app_handle.clone();
             let result = tokio::task::spawn_blocking(poll_all_peak_meters).await;
             if let Ok(Ok(levels)) = result {
+                let mut metrics_snapshot = AudioMetrics::default();
+
+                for level in &levels {
+                    let ring = ring_buffers
+                        .entry(level.device_id.clone())
+                        .or_insert_with(|| Vec::with_capacity(RMS_WINDOW));
+                    ring.push(level.peak);
+                    if ring.len() > RMS_WINDOW {
+                        ring.remove(0);
+                    }
+
+                    let rms = if ring.is_empty() {
+                        0.0
+                    } else {
+                        let sum_sq: f32 = ring.iter().map(|v| v * v).sum();
+                        (sum_sq / ring.len() as f32).sqrt()
+                    };
+
+                    let nf_history = noise_floor_history
+                        .entry(level.device_id.clone())
+                        .or_insert_with(|| Vec::with_capacity(NOISE_FLOOR_WINDOW));
+                    if rms > 0.0001 {
+                        nf_history.push(rms);
+                        if nf_history.len() > NOISE_FLOOR_WINDOW {
+                            nf_history.remove(0);
+                        }
+                    }
+
+                    let noise_floor = nf_history
+                        .iter()
+                        .copied()
+                        .reduce(f32::min)
+                        .unwrap_or(0.0);
+
+                    metrics_snapshot.devices.insert(
+                        level.device_id.clone(),
+                        DeviceMetrics {
+                            peak: level.peak,
+                            rms,
+                            noise_floor,
+                            clipping: level.peak >= 0.95,
+                        },
+                    );
+                }
+
+                {
+                    let mut m = audio_metrics.write().await;
+                    *m = metrics_snapshot;
+                }
+
                 if levels.iter().any(|l| l.peak > 0.001) {
                     use tauri::Emitter;
                     let _ = handle.emit(

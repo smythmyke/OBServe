@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OBServe Rack — Classic Studio</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.rack-frame {
+  display: flex;
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rack-frame::-webkit-scrollbar { display: none; }
+
+/* Rack Rails */
+.rack-rail {
+  width: 28px;
+  flex-shrink: 0;
+  background:
+    linear-gradient(to right, #1a1a1a 0%, #3a3a3a 40%, #2a2a2a 60%, #1a1a1a 100%);
+  box-shadow: inset -1px 0 3px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+  gap: 40px;
+}
+.rack-rail.right {
+  box-shadow: inset 1px 0 3px rgba(0,0,0,0.6);
+}
+
+.screw {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ccc, #888 40%, #555 100%);
+  box-shadow: inset 0 1px 2px rgba(255,255,255,0.3), 0 1px 3px rgba(0,0,0,0.7);
+  position: relative;
+  flex-shrink: 0;
+}
+.screw::before {
+  content: '';
+  position: absolute;
+  top: 50%; left: 20%;
+  width: 60%; height: 1.5px;
+  background: #444;
+  transform: translateY(-50%) rotate(30deg);
+}
+
+/* Main Panel Area */
+.rack-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.rack-body::-webkit-scrollbar { display: none; }
+
+/* Module Panel */
+.module {
+  background:
+    repeating-linear-gradient(to right, rgba(255,255,255,0) 0%, rgba(255,255,255,0) 6%, rgba(255,255,255,0.08) 7.5%),
+    repeating-linear-gradient(to right, transparent 0%, transparent 4%, rgba(0,0,0,0.03) 4.5%),
+    linear-gradient(to bottom, #4a4a4a 0%, #555 10%, #4a4a4a 50%, #3a3a3a 90%, #333 100%);
+  border-top: 1px solid #666;
+  border-bottom: 1px solid #222;
+  padding: 14px 20px;
+  position: relative;
+}
+
+.module-label {
+  position: absolute;
+  top: 6px;
+  left: 16px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #999;
+  font-weight: 600;
+}
+
+.module-brand {
+  position: absolute;
+  top: 6px;
+  right: 16px;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: #666;
+}
+
+/* Title Bar Module */
+.title-module {
+  background:
+    linear-gradient(to bottom, #2a2a2a 0%, #333 50%, #2a2a2a 100%);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #444;
+  cursor: grab;
+}
+
+.title-module h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e94560;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(233,69,96,0.3);
+}
+
+.window-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.win-btn {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+.win-btn.minimize { background: #e9c845; }
+.win-btn.maximize { background: #4ecca3; }
+.win-btn.close { background: #e94560; }
+
+/* Sunken Display */
+.display-sunken {
+  background: #0a0a0a;
+  border-radius: 3px;
+  box-shadow:
+    inset 2px 2px 4px rgba(0,0,0,0.8),
+    inset -1px -1px 0 rgba(255,255,255,0.05);
+  padding: 10px 14px;
+}
+
+/* LED Indicators */
+.led {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.led-green {
+  background: #00cc44;
+  box-shadow: 0 0 4px #00cc44, 0 0 8px rgba(0,204,68,0.4);
+}
+.led-red {
+  background: #ff2222;
+  box-shadow: 0 0 4px #ff2222, 0 0 8px rgba(255,34,34,0.4);
+}
+.led-amber {
+  background: #ffaa00;
+  box-shadow: 0 0 4px #ffaa00, 0 0 8px rgba(255,170,0,0.4);
+}
+.led-off {
+  background: #333;
+  box-shadow: none;
+}
+
+.led-blink {
+  animation: blink 1s ease-in-out infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* VU Meter */
+.vu-meter {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  width: 18px;
+}
+.vu-seg {
+  height: 4px;
+  border-radius: 1px;
+  background: #222;
+  transition: background 0.1s;
+}
+.vu-seg.on-green { background: #00cc44; box-shadow: 0 0 3px rgba(0,204,68,0.3); }
+.vu-seg.on-amber { background: #ffaa00; box-shadow: 0 0 3px rgba(255,170,0,0.3); }
+.vu-seg.on-red   { background: #ff2222; box-shadow: 0 0 3px rgba(255,34,34,0.3); }
+
+/* Horizontal Meter Bar */
+.h-meter {
+  height: 8px;
+  background: #111;
+  border-radius: 2px;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.6);
+  overflow: hidden;
+  position: relative;
+}
+.h-meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.h-meter-fill.green { background: linear-gradient(to right, #00cc44, #44ff88); }
+.h-meter-fill.amber { background: linear-gradient(to right, #ffaa00, #ffcc44); }
+
+/* Knob */
+.knob-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.knob {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #888, #555 50%, #333 100%);
+  box-shadow:
+    0 2px 6px rgba(0,0,0,0.6),
+    inset 0 1px 2px rgba(255,255,255,0.2);
+  position: relative;
+  cursor: pointer;
+}
+.knob::after {
+  content: '';
+  position: absolute;
+  top: 4px; left: 50%;
+  width: 2px; height: 12px;
+  background: #eee;
+  border-radius: 1px;
+  transform: translateX(-50%) rotate(var(--knob-angle, -135deg));
+  transform-origin: bottom center;
+  top: 6px;
+}
+.knob-label {
+  font-size: 9px;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.knob-value {
+  font-size: 10px;
+  color: #4ecca3;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fader */
+.fader-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.fader-track {
+  width: 8px;
+  height: 100px;
+  background: #111;
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 4px rgba(0,0,0,0.8);
+  position: relative;
+}
+.fader-thumb {
+  width: 24px;
+  height: 10px;
+  background: linear-gradient(to bottom, #999, #666);
+  border-radius: 2px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.3);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: grab;
+}
+.fader-label {
+  font-size: 9px;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Slider (horizontal) */
+.slider-track {
+  width: 120px;
+  height: 6px;
+  background: #111;
+  border-radius: 3px;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.7);
+  position: relative;
+}
+.slider-thumb {
+  width: 14px;
+  height: 18px;
+  background: linear-gradient(to bottom, #aaa, #777);
+  border-radius: 3px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  cursor: grab;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  width: 16px;
+  height: 28px;
+  background: #222;
+  border-radius: 3px;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.6);
+  position: relative;
+  cursor: pointer;
+}
+.toggle-handle {
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(to bottom, #ccc, #888);
+  border-radius: 2px;
+  position: absolute;
+  left: 2px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+.toggle-handle.up { top: 2px; }
+.toggle-handle.down { bottom: 2px; }
+
+/* Button */
+.push-btn {
+  background: linear-gradient(to bottom, #555, #333);
+  border: 1px solid #222;
+  border-radius: 3px;
+  color: #ccc;
+  padding: 5px 14px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.push-btn:active {
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.6);
+  transform: translateY(1px);
+}
+
+/* Layout helpers */
+.row { display: flex; align-items: center; gap: 16px; }
+.row-spread { display: flex; align-items: center; justify-content: space-between; }
+.col { display: flex; flex-direction: column; gap: 6px; }
+.center { display: flex; justify-content: center; align-items: center; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: 16px; }
+.gap-lg { gap: 24px; }
+.mt { margin-top: 20px; }
+.flex-1 { flex: 1; }
+
+.text-xs { font-size: 9px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+.text-sm { font-size: 11px; color: #aaa; }
+.text-val { font-size: 13px; color: #4ecca3; font-weight: 600; font-variant-numeric: tabular-nums; }
+.text-red { color: #e94560; }
+.text-amber { color: #ffaa00; }
+.text-white { color: #ddd; }
+</style>
+</head>
+<body>
+<div class="rack-frame">
+
+  <!-- Left Rail -->
+  <div class="rack-rail">
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+  </div>
+
+  <!-- Modules -->
+  <div class="rack-body">
+
+    <!-- Title Bar -->
+    <div class="title-module">
+      <h1>OBServe</h1>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="row gap-sm">
+          <span class="led led-green"></span>
+          <span class="text-sm">Connected</span>
+        </div>
+        <div class="window-controls">
+          <div class="win-btn minimize"></div>
+          <div class="win-btn maximize"></div>
+          <div class="win-btn close"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection / Status Module (1U) -->
+    <div class="module" style="padding-top:24px;">
+      <span class="module-label">Status Monitor</span>
+      <span class="module-brand">OBServe v0.1</span>
+      <div class="row-spread">
+        <div class="row gap-lg">
+          <div class="col center">
+            <span class="text-xs">OBS</span>
+            <span class="led led-green"></span>
+          </div>
+          <div class="col center">
+            <span class="text-xs">Stream</span>
+            <span class="led led-off"></span>
+          </div>
+          <div class="col center">
+            <span class="text-xs">Record</span>
+            <span class="led led-red led-blink"></span>
+          </div>
+          <div class="col center">
+            <span class="text-xs">AI</span>
+            <span class="led led-amber"></span>
+          </div>
+        </div>
+        <div class="display-sunken" style="min-width:200px;">
+          <div class="text-xs" style="margin-bottom:4px;">System</div>
+          <div class="row-spread">
+            <span class="text-sm">CPU</span>
+            <span class="text-val">23%</span>
+          </div>
+          <div class="row-spread">
+            <span class="text-sm">RAM</span>
+            <span class="text-val">4.2 GB</span>
+          </div>
+          <div class="row-spread">
+            <span class="text-sm">GPU</span>
+            <span class="text-val">18%</span>
+          </div>
+        </div>
+        <div class="display-sunken" style="min-width:180px;">
+          <div class="text-xs" style="margin-bottom:4px;">Encoding</div>
+          <div class="row-spread">
+            <span class="text-sm">FPS</span>
+            <span class="text-val">60.0</span>
+          </div>
+          <div class="row-spread">
+            <span class="text-sm">Bitrate</span>
+            <span class="text-val">6000 kbps</span>
+          </div>
+          <div class="row-spread">
+            <span class="text-sm">Dropped</span>
+            <span class="text-val" style="color:#4ecca3;">0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Audio Mixer Module -->
+    <div class="module" style="padding-top:28px;">
+      <span class="module-label">Audio Mixer</span>
+      <span class="module-brand">8-Channel</span>
+      <div class="row gap-lg" style="justify-content:center;">
+
+        <!-- Channel Strip -->
+        <div class="col center" style="gap:8px;">
+          <span class="text-xs">Mic</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="vu-meter" id="vu1">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+            <div class="fader-container">
+              <div class="fader-track">
+                <div class="fader-thumb" style="top:25%;"></div>
+              </div>
+            </div>
+            <div class="vu-meter" id="vu1b">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+          </div>
+          <span class="text-val">-3.2 dB</span>
+          <div class="col center" style="gap:3px;">
+            <div class="toggle-switch"><div class="toggle-handle up"></div></div>
+            <span class="text-xs" style="font-size:7px;">Mute</span>
+          </div>
+        </div>
+
+        <div class="col center" style="gap:8px;">
+          <span class="text-xs">Desktop</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="vu-meter" id="vu2">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+            <div class="fader-container">
+              <div class="fader-track">
+                <div class="fader-thumb" style="top:40%;"></div>
+              </div>
+            </div>
+            <div class="vu-meter" id="vu2b">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+          </div>
+          <span class="text-val">-8.0 dB</span>
+          <div class="col center" style="gap:3px;">
+            <div class="toggle-switch"><div class="toggle-handle up"></div></div>
+            <span class="text-xs" style="font-size:7px;">Mute</span>
+          </div>
+        </div>
+
+        <div class="col center" style="gap:8px;">
+          <span class="text-xs">Music</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="vu-meter" id="vu3">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+            <div class="fader-container">
+              <div class="fader-track">
+                <div class="fader-thumb" style="top:60%;"></div>
+              </div>
+            </div>
+            <div class="vu-meter" id="vu3b">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+          </div>
+          <span class="text-val">-14.0 dB</span>
+          <div class="col center" style="gap:3px;">
+            <div class="toggle-switch"><div class="toggle-handle down"></div></div>
+            <span class="text-xs" style="font-size:7px;color:#e94560;">Mute</span>
+          </div>
+        </div>
+
+        <div class="col center" style="gap:8px;">
+          <span class="text-xs">Alerts</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="vu-meter" id="vu4">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+            <div class="fader-container">
+              <div class="fader-track">
+                <div class="fader-thumb" style="top:50%;"></div>
+              </div>
+            </div>
+            <div class="vu-meter" id="vu4b">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+            </div>
+          </div>
+          <span class="text-val">-10.5 dB</span>
+          <div class="col center" style="gap:3px;">
+            <div class="toggle-switch"><div class="toggle-handle up"></div></div>
+            <span class="text-xs" style="font-size:7px;">Mute</span>
+          </div>
+        </div>
+
+        <!-- Master -->
+        <div style="width:1px;height:180px;background:#555;margin:0 8px;"></div>
+        <div class="col center" style="gap:8px;">
+          <span class="text-xs text-red" style="color:#e94560;font-weight:700;">Master</span>
+          <div class="row gap-sm" style="align-items:flex-end;">
+            <div class="vu-meter" id="vuM">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div>
+            </div>
+            <div class="fader-container">
+              <div class="fader-track" style="height:130px;">
+                <div class="fader-thumb" style="top:20%;"></div>
+              </div>
+            </div>
+            <div class="vu-meter" id="vuMb">
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div><div class="vu-seg"></div><div class="vu-seg"></div>
+              <div class="vu-seg"></div>
+            </div>
+          </div>
+          <span class="text-val" style="font-size:15px;">0.0 dB</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- EQ / Effects Module -->
+    <div class="module" style="padding-top:28px;">
+      <span class="module-label">Channel EQ &amp; Dynamics</span>
+      <span class="module-brand">Mic Processing</span>
+      <div class="row gap-lg" style="justify-content:center;">
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: -90deg;"></div>
+          <span class="knob-label">Low Cut</span>
+          <span class="knob-value">80 Hz</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: -45deg;"></div>
+          <span class="knob-label">Low</span>
+          <span class="knob-value">-2 dB</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: 0deg;"></div>
+          <span class="knob-label">Mid</span>
+          <span class="knob-value">0 dB</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: 30deg;"></div>
+          <span class="knob-label">High</span>
+          <span class="knob-value">+2 dB</span>
+        </div>
+
+        <div style="width:1px;height:70px;background:#555;margin:0 8px;"></div>
+
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: -60deg;"></div>
+          <span class="knob-label">Threshold</span>
+          <span class="knob-value">-24 dB</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: -20deg;"></div>
+          <span class="knob-label">Ratio</span>
+          <span class="knob-value">3:1</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: 10deg;"></div>
+          <span class="knob-label">Attack</span>
+          <span class="knob-value">10 ms</span>
+        </div>
+        <div class="knob-container">
+          <div class="knob" style="--knob-angle: 45deg;"></div>
+          <span class="knob-label">Release</span>
+          <span class="knob-value">100 ms</span>
+        </div>
+
+        <div style="width:1px;height:70px;background:#555;margin:0 8px;"></div>
+
+        <div class="col center" style="gap:6px;">
+          <div class="display-sunken" style="padding:6px 10px;text-align:center;">
+            <span class="text-xs">GR</span>
+            <div class="h-meter" style="width:80px;margin-top:4px;">
+              <div class="h-meter-fill amber" style="width:35%;"></div>
+            </div>
+            <span class="text-val" style="font-size:11px;">-4.2 dB</span>
+          </div>
+          <div class="row gap-sm">
+            <span class="led led-green" style="width:6px;height:6px;"></span>
+            <span class="text-xs" style="font-size:7px;">Active</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene Selector Module -->
+    <div class="module" style="padding-top:28px;">
+      <span class="module-label">Scene Controller</span>
+      <span class="module-brand">OBS Scenes</span>
+      <div class="row gap-md" style="justify-content:center;flex-wrap:wrap;">
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn" style="background:linear-gradient(to bottom,#3a5a3a,#2a3a2a);border-color:#4ecca3;color:#4ecca3;">Gameplay</button>
+          <span class="led led-green" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn">Facecam</button>
+          <span class="led led-off" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn">BRB</button>
+          <span class="led led-off" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn">Starting</button>
+          <span class="led led-off" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn">Ending</button>
+          <span class="led led-off" style="width:6px;height:6px;"></span>
+        </div>
+
+        <div style="width:1px;height:40px;background:#555;margin:0 8px;"></div>
+
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn" style="background:linear-gradient(to bottom,#5a3a3a,#3a2a2a);border-color:#e94560;color:#e94560;">REC</button>
+          <span class="led led-red led-blink" style="width:6px;height:6px;"></span>
+        </div>
+        <div class="col center" style="gap:4px;">
+          <button class="push-btn">STREAM</button>
+          <span class="led led-off" style="width:6px;height:6px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Chat Module -->
+    <div class="module" style="padding-top:28px;">
+      <span class="module-label">AI Assistant</span>
+      <span class="module-brand">Gemini</span>
+      <div class="display-sunken" style="min-height:120px;margin-bottom:10px;">
+        <div style="margin-bottom:8px;">
+          <span class="text-xs" style="color:#e94560;">You:</span>
+          <span class="text-sm"> Make the music quieter during my voice</span>
+        </div>
+        <div>
+          <span class="text-xs" style="color:#4ecca3;">OBServer:</span>
+          <span class="text-sm"> I'll set up auto-ducking on the Music source. When your mic level exceeds -20 dB, I'll reduce music by 15 dB with a 200ms attack.</span>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;">
+          <span class="led led-green" style="width:5px;height:5px;"></span>
+          <span style="font-size:10px;color:#4ecca3;">Compressor applied to Music</span>
+        </div>
+      </div>
+      <div class="row gap-sm">
+        <div style="flex:1;height:30px;background:#0a0a0a;border-radius:3px;border:1px solid #333;box-shadow:inset 1px 1px 3px rgba(0,0,0,0.5);display:flex;align-items:center;padding:0 10px;">
+          <span class="text-sm" style="color:#555;">Ask OBServer AI...</span>
+        </div>
+        <button class="push-btn">Send</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Rail -->
+  <div class="rack-rail right">
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+    <div class="screw"></div><div class="screw"></div><div class="screw"></div>
+  </div>
+
+</div>
+
+<script>
+// Animate VU meters
+function animateMeters() {
+  const meters = [
+    { id: 'vu1', base: 7, variance: 3 },
+    { id: 'vu1b', base: 6, variance: 3 },
+    { id: 'vu2', base: 5, variance: 3 },
+    { id: 'vu2b', base: 5, variance: 2 },
+    { id: 'vu3', base: 3, variance: 2 },
+    { id: 'vu3b', base: 3, variance: 2 },
+    { id: 'vu4', base: 4, variance: 3 },
+    { id: 'vu4b', base: 4, variance: 2 },
+    { id: 'vuM', base: 9, variance: 4 },
+    { id: 'vuMb', base: 8, variance: 4 },
+  ];
+  meters.forEach(m => {
+    const el = document.getElementById(m.id);
+    if (!el) return;
+    const segs = el.querySelectorAll('.vu-seg');
+    const total = segs.length;
+    const level = Math.min(total, Math.max(0, m.base + Math.floor(Math.random() * m.variance) - 1));
+    segs.forEach((seg, i) => {
+      seg.className = 'vu-seg';
+      if (i < level) {
+        if (i >= total - 2) seg.classList.add('on-red');
+        else if (i >= total - 4) seg.classList.add('on-amber');
+        else seg.classList.add('on-green');
+      }
+    });
+  });
+  requestAnimationFrame(() => setTimeout(animateMeters, 120));
+}
+animateMeters();
+</script>
+</body>
+</html>

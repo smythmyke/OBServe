@@ -12,8 +12,10 @@ mod presets;
 mod routing;
 mod system_monitor;
 mod tray;
+mod vst_manager;
 
 use ai_actions::SharedUndoStack;
+use audio_monitor::SharedAudioMetrics;
 use commands::SharedObsConnection;
 use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
@@ -38,6 +40,7 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(obs_state::ObsState::new())) as SharedObsState)
         .manage(Arc::new(RwLock::new(gemini_client)) as SharedGeminiClient)
         .manage(Arc::new(RwLock::new(Vec::<ai_actions::UndoEntry>::new())) as SharedUndoStack)
+        .manage(Arc::new(RwLock::new(audio_monitor::AudioMetrics::default())) as SharedAudioMetrics)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -100,6 +103,11 @@ pub fn run() {
             commands::set_source_filter_index,
             commands::set_source_filter_name,
             commands::rename_input,
+            commands::get_vst_status,
+            commands::install_vsts,
+            commands::get_audio_metrics,
+            commands::get_source_filter_kinds,
+            commands::open_devtools,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;
@@ -112,10 +120,22 @@ pub fn run() {
                 }
             }
 
+            // Auto-install bundled VST plugins
+            match vst_manager::install_vsts(app.handle()) {
+                Ok(status) => {
+                    let count = status.plugins.iter().filter(|p| p.installed).count();
+                    log::info!("VST auto-install: {}/{} plugins installed", count, status.plugins.len());
+                }
+                Err(e) => log::warn!("VST auto-install failed (non-fatal): {}", e),
+            }
+
             let app_handle = app.handle().clone();
             let obs_state = app.state::<SharedObsState>().inner().clone();
+            let audio_metrics = app.state::<SharedAudioMetrics>().inner().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = audio_monitor::start_audio_monitor(app_handle, obs_state).await {
+                if let Err(e) =
+                    audio_monitor::start_audio_monitor(app_handle, obs_state, audio_metrics).await
+                {
                     log::error!("Audio monitor failed: {}", e);
                 }
             });

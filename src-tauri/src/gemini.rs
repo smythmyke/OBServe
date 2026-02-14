@@ -1,4 +1,5 @@
 use crate::audio::AudioDevice;
+use crate::audio_monitor::AudioMetrics;
 use crate::obs_state::ObsState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -65,13 +66,16 @@ impl GeminiClient {
         user_text: &str,
         obs_state: &ObsState,
         devices: &[AudioDevice],
+        audio_metrics: &AudioMetrics,
+        calibration_json: Option<&str>,
     ) -> Result<ChatResponse, String> {
         self.history.push(ChatMessage {
             role: "user".into(),
             text: user_text.into(),
         });
 
-        let system_prompt = build_system_prompt(obs_state, devices);
+        let system_prompt = build_system_prompt(obs_state, devices, audio_metrics, calibration_json);
+        log::info!("AI system prompt length: {} chars", system_prompt.len());
 
         let contents: Vec<Value> = self
             .history
@@ -163,7 +167,48 @@ fn match_hw_device(kind: &str, device_id: &str, devices: &[AudioDevice]) -> Stri
     }
 }
 
-fn build_system_prompt(state: &ObsState, devices: &[AudioDevice]) -> String {
+fn linear_to_db(linear: f32) -> f32 {
+    if linear <= 0.0 {
+        -96.0
+    } else {
+        (20.0 * linear.log10()).max(-96.0)
+    }
+}
+
+fn format_filter_settings(settings: &Value) -> String {
+    let obj = match settings.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    let skip_keys = ["name", ""];
+    let parts: Vec<String> = obj
+        .iter()
+        .filter(|(k, v)| {
+            !skip_keys.contains(&k.as_str())
+                && !v.is_null()
+                && v.as_str().map_or(true, |s| !s.is_empty())
+        })
+        .map(|(k, v)| {
+            match v {
+                Value::String(s) => format!("{}: {}", k, s),
+                _ => format!("{}: {}", k, v),
+            }
+        })
+        .collect();
+    let result = parts.join(", ");
+    if result.len() > 120 {
+        format!("{}...", &result[..117])
+    } else {
+        result
+    }
+}
+
+fn build_system_prompt(
+    state: &ObsState,
+    devices: &[AudioDevice],
+    audio_metrics: &AudioMetrics,
+    calibration_json: Option<&str>,
+) -> String {
     let mut prompt = String::from(
         r#"You are OBServer AI, an expert sound engineer and OBS Studio assistant. You help creators control their audio, video, scenes, and streaming setup through natural conversation.
 
@@ -175,18 +220,23 @@ You have deep knowledge of audio engineering: gain staging, compression, noise g
 Users speak casually. Map their words to the correct OBS input or source:
 - "my mic", "my voice", "microphone", "me" → the OBS input with kind containing "input_capture" (typically Mic/Aux or the mic source listed below)
 - "desktop audio", "desktop sound", "computer audio", "system audio", "game sound", "game audio", "the music", "background music", "music" → the OBS input with kind containing "output_capture" (typically Desktop Audio)
-- "my headphones", "my speakers", "output" → refers to monitoring/output settings
+- "my speakers", "speakers", "speaker volume", "output volume" → ALSO the OBS input with kind containing "output_capture" (typically Desktop Audio). The UI labels the user's output device as ❝My Speakers❞, which feeds from the Desktop Audio OBS input. Adjust the Desktop Audio OBS input volume.
+- "my headphones", "monitoring", "hear myself", "listen to" → refers to monitoring/output settings (SetInputAudioMonitorType)
 - "webcam", "camera", "my cam", "facecam" → the scene source with kind containing "dshow" or "video_capture" or a source named like "webcam"/"camera"
 - "game capture", "game", "gameplay" → source with kind "game_capture"
 - "screen", "display", "monitor" → source with kind "monitor_capture" or "display_capture"
 - "chat", "alerts", "overlay" → browser_source or image sources with matching names
 When multiple matches exist, prefer the one in the current scene. If still ambiguous, ask the user.
 
-### UI Labels
-The app labels the user's input device as ❝My Mic❞ and output device as ❝My Speakers❞.
-These are the Windows hardware devices. OBS inputs (like "Mic/Aux", "Desktop Audio") are
-shown alongside these with their own quoted names. Users may refer to either layer.
-When referencing devices in responses, use these names to match what the user sees.
+### UI Labels & Device Mapping
+The app shows two audio widgets with these mappings:
+- Input widget: ❝My Mic❞ (Windows hardware) ← fed by OBS input "Mic/Aux" (or whichever input has kind "input_capture")
+- Output widget: ❝Desktop Audio❞ (OBS input) → feeds into ❝My Speakers❞ (Windows hardware)
+
+So when the user says "my mic" or "mic", use the OBS input_capture source.
+When the user says "my speakers", "speakers", or "desktop audio", use the OBS output_capture source.
+IMPORTANT: "speakers" and "desktop audio" are the SAME thing — both map to the OBS output_capture input.
+Use the OBS input names (like "Mic/Aux", "Desktop Audio") in action params, never the UI labels.
 
 ### Signal Chain Groups
 The Signal Chain panel organizes filters into named groups (sub-modules):
@@ -199,6 +249,23 @@ Smart Presets are available on the Signal Chain panel (not the AI panel).
 When users ask about presets, tell them to use the Smart Presets dropdown on the Signal Chain.
 Available presets: Tutorial, Gaming, Podcast, Music, Broadcast Voice, ASMR,
 Noisy Room, Just Chatting, Singing/Karaoke.
+
+Pro presets (require bundled Airwindows VST plugins):
+Pro Broadcast, Pro Podcast, Pro Music, Streamer Safety.
+
+### Airwindows VST Plugins
+OBServe bundles 10 professional-grade Airwindows VST2 plugins (MIT licensed):
+Air, BlockParty, DeEss, Density, Gatelope, Pressure4, PurestConsoleChannel,
+PurestDrive, ToVinyl4, Verbity.
+
+Pro presets use these VST plugins for broadcast-quality audio:
+- Pro Broadcast: Console → De-ess → Compress → Limit
+- Pro Podcast: Console → Gate → Density → Limit
+- Pro Music: Air EQ → Drive → Compress → Vinyl → Reverb
+- Streamer Safety: De-ess → Gate → Limit
+
+When users ask for professional audio quality, recommend Pro presets.
+VST plugin parameters cannot be adjusted individually — they use factory defaults.
 
 ### Audio Calibration
 The app includes a Calibration Wizard that measures noise floor, speech levels, and dynamics,
@@ -289,10 +356,79 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         if !input.filters.is_empty() {
             for f in &input.filters {
                 let status = if f.enabled { "ON" } else { "OFF" };
+                let settings_str = format_filter_settings(&f.settings);
+                if settings_str.is_empty() {
+                    prompt.push_str(&format!(
+                        "  - filter: \"{}\" (`{}`, {})\n",
+                        f.name, f.kind, status
+                    ));
+                } else {
+                    prompt.push_str(&format!(
+                        "  - filter: \"{}\" (`{}`, {}) — {}\n",
+                        f.name, f.kind, status, settings_str
+                    ));
+                }
+            }
+        }
+    }
+
+    // Live Audio Metrics
+    if !audio_metrics.devices.is_empty() {
+        prompt.push_str("\n### Live Audio Metrics\n");
+        for (name, input) in &state.inputs {
+            if let Some(metrics) = audio_metrics.devices.values().next() {
+                let device_id = &input.device_id;
+                let m = audio_metrics
+                    .devices
+                    .get(device_id)
+                    .or_else(|| {
+                        audio_metrics.devices.iter().find_map(|(k, v)| {
+                            if k.contains(device_id) || device_id.contains(k) {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .unwrap_or(metrics);
+                let peak_db = linear_to_db(m.peak);
+                let rms_db = linear_to_db(m.rms);
+                let nf_db = linear_to_db(m.noise_floor);
+                let clip_str = if m.clipping { " [CLIPPING!]" } else { "" };
                 prompt.push_str(&format!(
-                    "  - filter: \"{}\" (`{}`, {})\n",
-                    f.name, f.kind, status
+                    "- Input \"{}\": peak {:.0}dB, RMS {:.0}dB, noise floor {:.0}dB{}\n",
+                    name, peak_db, rms_db, nf_db, clip_str
                 ));
+            }
+        }
+    }
+
+    // Calibration data
+    if let Some(cal_json) = calibration_json {
+        if let Ok(cal) = serde_json::from_str::<Value>(cal_json) {
+            prompt.push_str("\n### Last Calibration");
+            if let Some(source) = cal["appliedTo"].as_str() {
+                prompt.push_str(&format!(" ({})", source));
+            }
+            prompt.push('\n');
+            if let Some(m) = cal.get("measurements") {
+                let nf = m["noiseFloor"].as_f64().unwrap_or(-96.0);
+                let sa = m["speechAvg"].as_f64().unwrap_or(-96.0);
+                let lp = m["loudPeak"].as_f64().unwrap_or(-96.0);
+                let cf = m["crestFactor"].as_f64().unwrap_or(0.0);
+                prompt.push_str(&format!(
+                    "Noise floor: {:.1}dB, Speech avg: {:.1}dB, Loud peak: {:.1}dB, Crest factor: {:.1}dB\n",
+                    nf, sa, lp, cf
+                ));
+            }
+            if let Some(recs) = cal["recommendations"].as_array() {
+                let labels: Vec<&str> = recs
+                    .iter()
+                    .filter_map(|r| r["label"].as_str())
+                    .collect();
+                if !labels.is_empty() {
+                    prompt.push_str(&format!("Applied filters: {}\n", labels.join(", ")));
+                }
             }
         }
     }
@@ -377,14 +513,86 @@ Monitor types: `OBS_MONITORING_TYPE_NONE`, `OBS_MONITORING_TYPE_MONITOR_ONLY`, `
 - `gain_filter` — simple volume boost. Settings: {"db": 5.0}
 - `expander_filter` — reduces quiet sounds. Settings: {"ratio": 4.0, "threshold": -40.0, "attack_time": 10, "release_time": 50}
 
-When users describe audio problems, diagnose and apply the right filter:
-- "background noise", "fan noise", "AC noise" → noise_suppress_filter_v2
-- "keyboard clicks", "mouse clicks", "picks up sounds when I'm not talking" → noise_gate_filter
-- "volume is inconsistent", "sometimes loud sometimes quiet", "normalize my mic" → compressor_filter
-- "audio clips", "peaks", "too loud sometimes" → limiter_filter
-- "mic is too quiet", "boost my mic" → gain_filter (or raise input volume)
-- "echo", "reverb" → check monitor type first, then suggest noise gate or suppression
-- "make it sound professional", "radio voice" → chain: noise gate + compressor + limiter
+### Audio Problem Diagnosis
+
+When users report audio issues, follow this diagnostic process:
+
+1. CHECK EXISTING FILTERS FIRST
+   - Read the current filter chain and parameter values shown above
+   - If a relevant filter exists, ADJUST its parameters rather than adding a duplicate
+   - Example: user says "keyboard still audible" and noise gate exists at -32dB threshold → raise to -26dB
+
+2. USE AUDIO METRICS for data-driven decisions
+   - Compare noise floor to gate thresholds — gate should open above noise floor
+   - If RMS is very low, suggest gain before compression
+   - If clipping detected, suggest limiter or reduce gain
+
+3. EXPLAIN your reasoning referencing actual values
+   - "Your noise gate threshold is at -32dB but your noise floor is -28dB, so sounds between -32 and -28 are getting through. I'll raise the close threshold to -25dB."
+
+### Common Complaints → Diagnosis
+
+**"lip smacking" / "mouth sounds" / "wet sounds"**
+→ Short transients between words, typically -30 to -20dB.
+→ Fix: Tighten noise gate close_threshold (raise toward speech level), increase hold_time to 150-250ms so gate stays open during natural pauses, add expander with threshold just below speech level for gentler attenuation.
+→ If gate exists: adjust close_threshold up by 4-6dB. If not: add gate + expander combo.
+
+**"keyboard" / "typing" / "mouse clicks" / "mechanical sounds"**
+→ Impulsive sounds during speech gaps, typically -35 to -25dB.
+→ Fix: Noise gate with fast attack (10-25ms), moderate hold (150-200ms). If gate exists but not catching clicks, raise close_threshold. If picks up during speech, add noise_suppress_filter_v2 at moderate level (-30).
+→ Chain: noise suppression → noise gate
+
+**"breathing" / "I can hear breaths" / "breath sounds"**
+→ Longer, lower-energy sounds between sentences, typically -35 to -25dB.
+→ Fix: Expander (ratio 3-4, threshold midway between noise floor and speech). Preferred over hard gate because breathing is gradual. If gate exists, increase hold_time so brief pauses don't trigger, and raise close_threshold.
+
+**"background noise" / "fan" / "AC" / "hiss" / "hum"**
+→ Continuous low-level noise.
+→ Fix: noise_suppress_filter_v2. If exists, strengthen suppress_level (more negative). -30 is moderate, -50 is aggressive. Warn: aggressive suppression can affect voice quality.
+→ If noise floor metric available, set suppress_level to noise_floor - 10dB.
+
+**"echo" / "reverb" / "room sound" / "hollow"**
+→ Room reflections.
+→ Fix: First check monitor type — if monitoring is on, that's the likely cause (loop). If not, this is a room acoustics issue. Stronger noise suppression helps somewhat. Tell user: "This is mostly a physical problem — soft furnishings, acoustic panels, or getting closer to the mic helps most."
+
+**"plosives" / "popping on P and B" / "wind noise"**
+→ Low-frequency air blasts from close mic proximity.
+→ Fix: No native OBS high-pass filter. Suggest: move mic slightly off-axis or use a pop filter. Can partially mitigate with noise suppression. If Airwindows available, recommend Pro preset.
+
+**"sibilance" / "harsh S sounds" / "sharpness"**
+→ High-frequency energy on fricatives.
+→ Fix: If Airwindows DeEss VST available, add it. Otherwise, compressor with fast attack (1-3ms) can help slightly. Tell user about Pro presets if available.
+
+**"too quiet" / "can barely hear me"**
+→ Check current volume level. If < -20dB, increase OBS volume first. If still quiet, add gain_filter. Check if compressor output_gain could be raised. Reference audio metrics RMS level.
+
+**"distorted" / "clipping" / "crackling"**
+→ Check if peak > -3dB or clipping flag. Reduce gain or input volume. Add limiter if not present. If compressor exists with high output_gain, reduce it.
+
+**"inconsistent volume" / "sometimes loud sometimes quiet"**
+→ High dynamic range. Add or adjust compressor. Typical settings: ratio 3-6, threshold at speech average level, fast attack (3-6ms).
+
+**"sounds robotic" / "artifacts" / "weird processing"**
+→ Over-aggressive noise suppression. Reduce suppress_level toward 0 (less aggressive). If multiple filters active, consider disabling some.
+
+### Filter Chain Order (signal flow)
+When adding multiple filters, maintain this order (top = first in chain):
+1. Noise Suppression (remove steady-state noise)
+2. Noise Gate / Expander (cut silence between speech)
+3. EQ / High-pass (shape frequency response)
+4. Gain (bring level up if needed)
+5. Compressor (even out dynamics)
+6. De-esser (tame sibilance)
+7. Limiter (prevent clipping — always last)
+
+When adding a filter, set its filterIndex to place it correctly in the chain.
+
+### Parameter Adjustment Guidelines
+When modifying existing filter settings (SetSourceFilterSettings):
+- Make moderate changes (3-6dB per adjustment for thresholds)
+- Tell the user what you changed and why
+- Offer to undo or fine-tune further
+- Always reference the current values: "Moving your gate threshold from -32 to -26dB"
 
 ### Scene Controls (action_type: "obs_request")
 | Action | request_type | params | Use for |

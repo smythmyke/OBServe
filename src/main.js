@@ -55,22 +55,25 @@ const GROUP_TYPES = {
 };
 
 let cachedPresets = null;
+let vstStatus = null;
+let discoveredFilterKinds = null;
 let dragData = null;
+let suppressFilterRender = false;
 let pendingPresetId = null;
 let pendingHighlight = null; // { type: 'group'|'filter', groupId?, source?, filterName? }
 
 const VISIBILITY_MATRIX = {
   'audio': {
-    'simple':   ['audio-devices', 'ai'],
-    'advanced': ['audio-devices', 'mixer', 'routing', 'preflight', 'ai'],
+    'simple':   ['audio-devices', 'filters', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'mixer', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
-    'simple':   ['audio-devices', 'scenes', 'stream-record', 'ai'],
-    'advanced': ['audio-devices', 'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
+    'simple':   ['audio-devices', 'filters', 'scenes', 'stream-record', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
   },
   'video': {
-    'simple':   ['scenes', 'stream-record', 'ai'],
-    'advanced': ['scenes', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
+    'simple':   ['filters', 'scenes', 'stream-record', 'ai'],
+    'advanced': ['filters', 'scenes', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
   },
 };
 
@@ -83,7 +86,7 @@ function applyPanelVisibility() {
   const states = loadPanelStates();
   document.querySelectorAll('[data-panel]').forEach(el => {
     const panelName = el.dataset.panel;
-    if (panelName === 'filters' || panelName === 'calibration') return;
+    if (panelName === 'calibration') return;
     if (states[panelName]?.removed) { el.hidden = true; return; }
     const inMatrix = allowed.includes(panelName);
     const needsConn = CONNECTION_REQUIRED_PANELS.has(panelName);
@@ -162,9 +165,13 @@ function setupEventListeners() {
 
   listen('obs://input-volume-changed', (e) => {
     const { inputName, inputVolumeDb, inputVolumeMul } = e.payload;
+    console.log('[VOL] volume-changed event:', inputName, inputVolumeDb.toFixed(1) + 'dB');
     if (obsState && obsState.inputs[inputName]) {
       obsState.inputs[inputName].volumeDb = inputVolumeDb;
       obsState.inputs[inputName].volumeMul = inputVolumeMul;
+      console.log('[VOL] state updated for', inputName);
+    } else {
+      console.warn('[VOL] input not found in obsState:', inputName, 'keys:', Object.keys(obsState?.inputs || {}));
     }
     if (!draggingSliders.has(inputName)) {
       updateMixerItem(inputName);
@@ -590,6 +597,9 @@ function setConnectedUI(status) {
   sysResourceInterval = setInterval(loadSystemResources, 10000);
 
   checkRouting();
+  refreshFullState();
+
+  invoke('get_source_filter_kinds').then(kinds => { discoveredFilterKinds = kinds; }).catch(() => {});
 }
 
 function setDisconnectedUI() {
@@ -612,10 +622,11 @@ function setDisconnectedUI() {
     sysResourceInterval = null;
   }
   obsState = null;
+  discoveredFilterKinds = null;
   const inputObsCol = document.getElementById('input-obs-knob-col');
   const outputObsCol = document.getElementById('output-obs-knob-col');
-  if (inputObsCol) inputObsCol.hidden = true;
-  if (outputObsCol) outputObsCol.hidden = true;
+  if (inputObsCol) inputObsCol.classList.add('obs-disconnected');
+  if (outputObsCol) outputObsCol.classList.add('obs-disconnected');
   const inputFilterKnobs = document.getElementById('input-filter-knobs');
   const outputFilterKnobs = document.getElementById('output-filter-knobs');
   if (inputFilterKnobs) inputFilterKnobs.innerHTML = '';
@@ -698,7 +709,90 @@ const FILTER_DEFAULTS = {
       { param: 'threshold', label: 'Thresh', min: -96, max: 0, step: 1, fmt: v => `${v} dB` },
     ]
   },
+  'vst_filter': {
+    label: 'VST Plugin',
+    defaults: {},
+    knobs: []
+  },
 };
+
+const VST_FILTER_CATALOG = {
+  'Air':                   { label: 'Air EQ',          description: 'Tilt EQ for brightness/warmth' },
+  'BlockParty':            { label: 'BlockParty',      description: 'Loudness limiter' },
+  'DeEss':                 { label: 'DeEss',           description: 'Sibilance reducer' },
+  'Density':               { label: 'Density',         description: 'Color saturation compressor' },
+  'Gatelope':              { label: 'Gatelope',        description: 'Gate + lowpass envelope' },
+  'Pressure4':             { label: 'Pressure4',       description: 'Speed-sensitive compressor' },
+  'PurestConsoleChannel':  { label: 'Console Channel', description: 'Analog console emulation' },
+  'PurestDrive':           { label: 'PurestDrive',     description: 'Subtle saturation/drive' },
+  'ToVinyl4':              { label: 'ToVinyl4',        description: 'Vinyl record emulation' },
+  'Verbity':               { label: 'Verbity',         description: 'Reverb' },
+};
+
+function humanizeFilterKind(kind) {
+  return kind
+    .replace(/_filter$/, '')
+    .replace(/_v\d+$/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function generateFilterNameFromLabel(sourceName, label) {
+  if (!obsState || !obsState.inputs[sourceName]) return label;
+  const existing = (obsState.inputs[sourceName].filters || []).map(f => f.name);
+  if (!existing.includes(label)) return label;
+  let n = 2;
+  while (existing.includes(`${label} ${n}`)) n++;
+  return `${label} ${n}`;
+}
+
+function buildFilterMenuItems() {
+  const items = [];
+
+  // Built-in section
+  items.push({ type: 'header', label: 'Built-in' });
+  for (const [kind, cfg] of Object.entries(FILTER_DEFAULTS)) {
+    if (kind === 'vst_filter') continue;
+    items.push({ type: 'filter', kind, label: cfg.label, settings: { ...cfg.defaults } });
+  }
+
+  // Airwindows VST section
+  if (vstStatus?.installed && vstStatus.plugins?.length > 0) {
+    const installedPlugins = vstStatus.plugins.filter(p => p.installed);
+    if (installedPlugins.length > 0) {
+      items.push({ type: 'header', label: 'Airwindows VST' });
+      for (const plugin of installedPlugins) {
+        const cat = VST_FILTER_CATALOG[plugin.name];
+        const label = cat ? cat.label : plugin.name;
+        items.push({
+          type: 'filter',
+          kind: 'vst_filter',
+          label: `${label} (VST)`,
+          settings: { plugin_path: plugin.fullPath },
+        });
+      }
+    }
+  }
+
+  // Other Installed section (from dynamic discovery)
+  if (discoveredFilterKinds && discoveredFilterKinds.length > 0) {
+    const builtInKinds = new Set(Object.keys(FILTER_DEFAULTS));
+    const otherKinds = discoveredFilterKinds.filter(k => !builtInKinds.has(k));
+    if (otherKinds.length > 0) {
+      items.push({ type: 'header', label: 'Other Installed' });
+      for (const kind of otherKinds) {
+        items.push({
+          type: 'filter',
+          kind,
+          label: humanizeFilterKind(kind),
+          settings: {},
+        });
+      }
+    }
+  }
+
+  return items;
+}
 
 function matchObsInputsToDevice(deviceType, windowsDeviceId) {
   if (!obsState || !obsState.inputs) return [];
@@ -732,28 +826,38 @@ function renderObsKnob(type) {
   const nameLabel = document.getElementById(`${type}-obs-name`);
 
   if (matched.length === 0 || !isConnected) {
-    if (col) col.hidden = true;
+    if (col) col.classList.add('obs-disconnected');
+    if (knob) knob.setValue(-100);
+    if (dbLabel) dbLabel.textContent = '-- dB';
+    if (muteBtn) {
+      muteBtn.classList.remove('muted');
+      muteBtn.textContent = 'Mute';
+    }
     return;
   }
 
   const input = matched[0];
-  if (col) col.hidden = false;
+  if (col) col.classList.remove('obs-disconnected');
   if (knob) knob.setValue(input.volumeDb);
   if (dbLabel) dbLabel.textContent = (input.volumeDb <= -100 ? '-inf' : input.volumeDb.toFixed(1)) + ' dB';
   if (muteBtn) {
     muteBtn.classList.toggle('muted', input.muted);
     muteBtn.textContent = input.muted ? 'MUTED' : 'Mute';
   }
-  if (nameLabel) nameLabel.innerHTML = `&#10077;${esc(input.name)}&#10078;`;
+  if (nameLabel) nameLabel.textContent = input.name;
 }
 
 function updateObsKnob(type, inputName) {
   if (!obsState || !obsState.inputs[inputName]) return;
   const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
   const matched = matchObsInputsToDevice(type, deviceId);
-  if (matched.length === 0 || matched[0].name !== inputName) return;
+  if (matched.length === 0 || matched[0].name !== inputName) {
+    console.log('[VOL] updateObsKnob: no match for', type, inputName, '| deviceId:', deviceId, '| matched:', matched.map(m => m.name));
+    return;
+  }
 
   const input = obsState.inputs[inputName];
+  console.log('[VOL] updateObsKnob: UPDATING', type, 'knob for', inputName, '→', input.volumeDb.toFixed(1) + 'dB');
   const knob = document.getElementById(`${type}-obs-knob`);
   const dbLabel = document.getElementById(`${type}-obs-db`);
   const muteBtn = document.getElementById(`${type}-obs-mute`);
@@ -878,8 +982,8 @@ function reconstructGroups(sourceName) {
     }
   }
 
-  // Remove empty non-filters groups
-  const cleaned = saved.filter(g => g.type === 'filters' || g.filterNames.length > 0);
+  // Remove empty auto-detected groups (keep filters + custom)
+  const cleaned = saved.filter(g => g.type === 'filters' || g.type === 'custom' || g.filterNames.length > 0);
 
   saveGroups(sourceName, cleaned);
   return cleaned;
@@ -1026,14 +1130,20 @@ async function syncFilterOrderToObs(sourceName) {
 
 function renderFilterCard(input, f, groupType, idx, totalInGroup) {
   const cfg = FILTER_DEFAULTS[f.kind];
-  const label = cfg ? cfg.label : f.kind;
+  const isVst = f.kind === 'vst_filter';
+  let label = cfg ? cfg.label : f.kind;
+  if (isVst && f.settings?.plugin_path) {
+    const dllName = f.settings.plugin_path.split(/[/\\]/).pop() || '';
+    label = dllName.replace(/\.dll$/i, '') || 'VST Plugin';
+  }
   const disabledClass = f.enabled ? '' : ' disabled';
   const toggleClass = f.enabled ? ' on' : '';
   const canDrag = true;
   const canRemove = GROUP_TYPES[groupType]?.removeFilter;
+  const vstBadge = isVst ? '<span class="vst-badge">VST</span>' : '';
 
   let knobsHtml = '';
-  if (cfg && cfg.knobs) {
+  if (cfg && cfg.knobs && cfg.knobs.length > 0) {
     knobsHtml = cfg.knobs.map(k => {
       const val = (f.settings && f.settings[k.param] !== undefined) ? f.settings[k.param] : (cfg.defaults[k.param] || k.min);
       return `<div class="filter-card-knob-item">
@@ -1050,7 +1160,7 @@ function renderFilterCard(input, f, groupType, idx, totalInGroup) {
 
   return `<div class="filter-card${disabledClass}" data-source="${esc(input.name)}" data-filter="${esc(f.name)}" draggable="${canDrag}">
     <div class="filter-card-header">
-      <span class="filter-card-name" title="${esc(f.name)}">${esc(label)}</span>
+      <span class="filter-card-name" title="${esc(f.name)}">${esc(label)}${vstBadge}</span>
       <div class="filter-toggle-switch${toggleClass}" data-fc-toggle-source="${esc(input.name)}" data-fc-toggle-filter="${esc(f.name)}" data-fc-enabled="${f.enabled}" title="${f.enabled ? 'Disable' : 'Enable'}"></div>
       ${canRemove ? `<button class="filter-remove-btn" data-fc-remove-source="${esc(input.name)}" data-fc-remove-filter="${esc(f.name)}" title="Remove filter">&times;</button>` : ''}
     </div>
@@ -1070,9 +1180,10 @@ function renderGroup(input, group) {
   const addFilterHtml = typeConfig.addFilter
     ? `<div class="group-add-filter-btn" data-fc-add-source="${esc(input.name)}" data-group-add-filter="${group.id}">+ Add Filter
         <div class="add-filter-dropdown">
-          ${Object.entries(FILTER_DEFAULTS).map(([kind, cfg]) =>
-            `<button class="add-filter-option" data-fc-add-kind="${kind}" data-fc-add-to="${esc(input.name)}" data-fc-add-group="${group.id}">${cfg.label}</button>`
-          ).join('')}
+          ${buildFilterMenuItems().map(item => {
+            if (item.type === 'header') return `<div class="add-filter-section-header">${item.label}</div>`;
+            return `<button class="add-filter-option" data-fc-add-kind="${item.kind}" data-fc-add-to="${esc(input.name)}" data-fc-add-group="${group.id}" data-fc-add-label="${esc(item.label)}" data-fc-add-settings='${JSON.stringify(item.settings)}'>${item.label}</button>`;
+          }).join('')}
         </div>
       </div>` : '';
 
@@ -1104,33 +1215,34 @@ function renderGroup(input, group) {
 }
 
 function renderFiltersModule() {
+  if (suppressFilterRender) { scLog('renderFiltersModule: suppressed (preset applying)'); return; }
   const panel = $('#filters-panel');
   const container = $('#filters-chain-list');
   if (!panel || !container) { scWarn('renderFiltersModule: panel or container missing'); return; }
 
   if (!obsState || !obsState.inputs) {
-    scWarn('renderFiltersModule: no obsState/inputs, hiding panel');
-    panel.hidden = true;
-    updateModuleShading();
+    container.innerHTML = '<div class="group-empty-msg">Connect to OBS to manage filters.</div>';
     return;
   }
 
-  const inputsWithFilters = Object.values(obsState.inputs)
-    .filter(i => i.filters && i.filters.length > 0);
+  // Always show primary audio sources (mic + desktop), plus any source that has filters or saved groups
+  const primarySources = new Set();
+  const micSource = resolveSourceForPreset();
+  const desktopSource = resolveDesktopSource();
+  if (obsState.inputs[micSource]) primarySources.add(micSource);
+  if (obsState.inputs[desktopSource]) primarySources.add(desktopSource);
 
-  scLog('renderFiltersModule: inputsWithFilters:', inputsWithFilters.map(i => `${i.name}(${i.filters.length} filters)`));
+  const inputsToShow = Object.values(obsState.inputs)
+    .filter(i => primarySources.has(i.name) || (i.filters && i.filters.length > 0) || loadGroups(i.name).length > 0);
 
-  if (inputsWithFilters.length === 0) {
-    scLog('renderFiltersModule: no inputs with filters, hiding panel');
-    panel.hidden = true;
-    updateModuleShading();
+  scLog('renderFiltersModule: inputsToShow:', inputsToShow.map(i => `${i.name}(${(i.filters||[]).length} filters)`));
+
+  if (inputsToShow.length === 0) {
+    container.innerHTML = '<div class="group-empty-msg">No audio sources found. Connect to OBS to manage filters.</div>';
     return;
   }
 
-  const wasHidden = panel.hidden;
-  panel.hidden = false;
-
-  container.innerHTML = inputsWithFilters.map(input => {
+  container.innerHTML = inputsToShow.map(input => {
     const groups = reconstructGroups(input.name);
     scLog('renderFiltersModule:', input.name, '→', groups.length, 'groups:', groups.map(g => `${g.name}(${g.type},${g.filterNames.length} filters:[${g.filterNames.join(',')}])`));
     const groupsHtml = groups.map(g => renderGroup(input, g)).join('');
@@ -1145,8 +1257,6 @@ function renderFiltersModule() {
 
   bindFilterChainEvents();
   bindDragDropEvents();
-
-  if (wasHidden) updateModuleShading();
 
   // Highlight newly added group or filter
   if (pendingHighlight) {
@@ -1246,9 +1356,10 @@ function bindFilterChainEvents() {
       e.stopPropagation();
       const sourceName = addOpt.dataset.fcAddTo;
       const filterKind = addOpt.dataset.fcAddKind;
-      const cfg = FILTER_DEFAULTS[filterKind];
-      const filterName = generateFilterName(sourceName, filterKind);
-      const filterSettings = cfg ? { ...cfg.defaults } : {};
+      const label = addOpt.dataset.fcAddLabel || (FILTER_DEFAULTS[filterKind]?.label) || filterKind;
+      const filterName = generateFilterNameFromLabel(sourceName, label);
+      let filterSettings = {};
+      try { filterSettings = JSON.parse(addOpt.dataset.fcAddSettings || '{}'); } catch (_) {}
       const dropdown = addOpt.closest('.add-filter-dropdown');
       if (dropdown) dropdown.classList.remove('open');
       pendingHighlight = { type: 'filter', source: sourceName, filterName };
@@ -2091,11 +2202,16 @@ async function sendChatMessage() {
   const loadingEl = document.createElement('div');
   loadingEl.className = 'chat-loading';
   loadingEl.textContent = 'Thinking...';
+  const rackBody = document.querySelector('.rack-body');
+  const savedScroll = rackBody ? rackBody.scrollTop : 0;
   $('#chat-messages').appendChild(loadingEl);
   scrollChat();
+  if (rackBody) rackBody.scrollTop = savedScroll;
 
   try {
-    const resp = await invoke('send_chat_message', { message });
+    const calData = loadCalibrationData();
+    const calibrationData = calData ? JSON.stringify(calData) : null;
+    const resp = await invoke('send_chat_message', { message, calibrationData });
     loadingEl.remove();
     appendAssistantMessage(resp);
   } catch (e) {
@@ -2108,7 +2224,7 @@ async function sendChatMessage() {
   input.placeholder = 'Ask OBServer AI anything...';
   input.classList.remove('voice-active');
   if (voiceState === 'PROCESSING') setVoiceState('IDLE');
-  input.focus();
+  input.focus({ preventScroll: true });
 }
 
 function initVoiceInput() {
@@ -2247,8 +2363,11 @@ function appendChatMessage(role, text) {
   } else {
     div.textContent = text;
   }
+  const rackBody = document.querySelector('.rack-body');
+  const savedScroll = rackBody ? rackBody.scrollTop : 0;
   container.appendChild(div);
   scrollChat();
+  if (rackBody) rackBody.scrollTop = savedScroll;
 }
 
 function appendAssistantMessage(resp) {
@@ -2350,8 +2469,11 @@ function appendAssistantMessage(resp) {
     }
   }
 
+  const rackBody = document.querySelector('.rack-body');
+  const savedScroll = rackBody ? rackBody.scrollTop : 0;
   container.appendChild(div);
   scrollChat();
+  if (rackBody) rackBody.scrollTop = savedScroll;
 }
 
 function scrollChat() {
@@ -2391,18 +2513,24 @@ async function togglePresetDropdown() {
   if (!dropdown.hidden) { dropdown.hidden = true; return; }
 
   const presets = await ensurePresetsLoaded();
-  dropdown.innerHTML = presets.map(p => `
-    <button class="sc-preset-option" data-preset-id="${esc(p.id)}">
+  const vstsInstalled = vstStatus?.installed ?? false;
+  dropdown.innerHTML = presets.map(p => {
+    const isPro = p.pro;
+    const disabled = isPro && !vstsInstalled;
+    const disabledClass = disabled ? ' disabled' : '';
+    const proBadge = isPro ? '<span class="pro-badge">PRO</span>' : '';
+    const tooltip = disabled ? ' title="VST plugins not installed"' : '';
+    return `<button class="sc-preset-option${disabledClass}" data-preset-id="${esc(p.id)}"${disabled ? ' disabled' : ''}${tooltip}>
       <span class="sc-preset-icon">${p.icon}</span>
       <span class="sc-preset-info">
-        <span class="sc-preset-name">${esc(p.name)}</span>
+        <span class="sc-preset-name">${esc(p.name)}${proBadge}</span>
         <span class="sc-preset-desc">${esc(p.description)}</span>
       </span>
-    </button>
-  `).join('');
+    </button>`;
+  }).join('');
   dropdown.hidden = false;
 
-  dropdown.querySelectorAll('.sc-preset-option').forEach(opt => {
+  dropdown.querySelectorAll('.sc-preset-option:not([disabled])').forEach(opt => {
     opt.addEventListener('click', () => {
       dropdown.hidden = true;
       handlePresetSelection(opt.dataset.presetId);
@@ -2437,14 +2565,19 @@ async function applyPresetAsGroup(presetId, sourceName) {
   const desktopSource = resolveDesktopSource();
   scLog('applyPresetAsGroup: micSource=', micSource, 'desktopSource=', desktopSource);
 
+  // Suppress filter re-renders while filters are being created
+  // (OBS events fire per-filter, causing reconstructGroups to auto-create a group before we register ours)
+  suppressFilterRender = true;
   try {
     const result = await invoke('apply_preset', { presetId, micSource, desktopSource });
     scLog('applyPresetAsGroup: invoke result:', result);
   } catch (e) {
+    suppressFilterRender = false;
     scErr('applyPresetAsGroup: invoke error:', e);
     showFrameDropAlert('Preset failed: ' + e);
     return;
   }
+  suppressFilterRender = false;
 
   // Extract filter names created by this preset (AiAction uses snake_case, not camelCase)
   scLog('applyPresetAsGroup: preset.actions:', JSON.stringify(preset.actions, null, 2));
@@ -3255,7 +3388,8 @@ async function sendCalibrationSummaryToAI(calData) {
     `Applied filters: ${filterList}.`;
 
   try {
-    const resp = await invoke('send_chat_message', { message: summary });
+    const calibrationData = JSON.stringify(calData);
+    const resp = await invoke('send_chat_message', { message: summary, calibrationData });
     appendAssistantMessage(resp);
   } catch (_) {}
 }
@@ -3339,6 +3473,207 @@ if (winCloseBtn) {
   });
 }
 
+// --- Context Menu ---
+
+function showContextMenu(x, y, items) {
+  const menu = document.getElementById('ctx-menu');
+  const container = document.getElementById('ctx-menu-items');
+  if (!menu || !container) return;
+
+  container.innerHTML = items.map(item => {
+    if (item.type === 'separator') return '<div class="ctx-menu-separator"></div>';
+    if (item.type === 'header') return `<div class="ctx-menu-header">${esc(item.label)}</div>`;
+    const check = item.checked != null
+      ? `<span class="ctx-check">${item.checked ? '\u2713' : ''}</span>`
+      : '';
+    return `<div class="ctx-menu-item" data-ctx-idx="${items.indexOf(item)}">${check}${esc(item.label)}</div>`;
+  }).join('');
+
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 4;
+  const maxY = window.innerHeight - rect.height - 4;
+  menu.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
+  menu.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+
+  container.querySelectorAll('.ctx-menu-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(el.dataset.ctxIdx, 10);
+      const item = items[idx];
+      hideContextMenu();
+      if (item && item.action) item.action();
+    });
+  });
+}
+
+function hideContextMenu() {
+  const menu = document.getElementById('ctx-menu');
+  if (menu) menu.hidden = true;
+}
+
+function buildPanelToggleItems() {
+  const items = [];
+  const states = loadPanelStates();
+  items.push({ type: 'header', label: 'Panels' });
+  for (const name of REMOVABLE_PANELS) {
+    const removed = !!states[name]?.removed;
+    const label = PANEL_LABELS[name] || name;
+    items.push({
+      label,
+      checked: !removed,
+      action: () => {
+        if (removed) { restorePanel(name); }
+        else {
+          const panel = document.querySelector(`[data-panel="${name}"]`);
+          if (panel) removePanel(panel);
+        }
+      }
+    });
+  }
+  items.push({ type: 'separator' });
+  items.push({
+    label: 'Reset Layout',
+    action: () => {
+      localStorage.removeItem(PANEL_STATE_KEY);
+      document.querySelectorAll('[data-panel]').forEach(p => p.classList.remove('minimized'));
+      applyPanelVisibility();
+      renderPanelToggles();
+    }
+  });
+  items.push({ type: 'separator' });
+  items.push({
+    label: 'Inspect',
+    action: () => invoke('open_devtools')
+  });
+  return items;
+}
+
+function buildContextItems(e) {
+  const items = [];
+
+  const filterCard = e.target.closest('.filter-card');
+  if (filterCard) {
+    const sourceName = filterCard.dataset.source;
+    const filterName = filterCard.dataset.filter;
+    const toggle = filterCard.querySelector('.filter-toggle-switch');
+    const isEnabled = toggle ? toggle.dataset.fcEnabled === 'true' : true;
+    items.push({
+      label: `${isEnabled ? 'Disable' : 'Enable'} "${filterName}"`,
+      action: () => {
+        if (toggle) toggle.click();
+      }
+    });
+    items.push({
+      label: `Remove "${filterName}"`,
+      action: () => {
+        invoke('remove_source_filter', { sourceName, filterName })
+          .catch(err => showFrameDropAlert('Remove failed: ' + err));
+      }
+    });
+    items.push({ type: 'separator' });
+    return items.concat(buildPanelToggleItems());
+  }
+
+  const groupHeader = e.target.closest('.group-header');
+  if (groupHeader) {
+    const group = groupHeader.closest('.signal-chain-group');
+    if (group) {
+      const groupId = group.dataset.groupId;
+      const sourceName = group.dataset.groupSource;
+      const groupName = groupHeader.querySelector('.group-name')?.textContent || groupId;
+      const isBypassed = group.classList.contains('group-bypassed');
+      items.push({
+        label: `${isBypassed ? 'Enable' : 'Bypass'} "${groupName}"`,
+        action: () => bypassGroup(sourceName, groupId)
+      });
+      const groupType = group.dataset.groupType;
+      if (groupType !== 'filters') {
+        items.push({
+          label: `Remove Group "${groupName}"`,
+          action: () => removeGroup(sourceName, groupId)
+        });
+      }
+      items.push({ type: 'separator' });
+    }
+    return items.concat(buildPanelToggleItems());
+  }
+
+  const sourceHeader = e.target.closest('.filter-chain-header');
+  const audioDevice = e.target.closest('.device-widget');
+  const filtersPanel = e.target.closest('#filters-panel');
+  const sourceEl = e.target.closest('.filter-chain-source');
+  if (sourceHeader || audioDevice || filtersPanel) {
+    let sourceName = null;
+    if (sourceHeader) {
+      const nameEl = sourceHeader.querySelector('.filter-chain-source-name');
+      sourceName = nameEl ? nameEl.textContent : null;
+    } else if (audioDevice) {
+      const isInput = audioDevice.id === 'input-widget';
+      const obsNameEl = audioDevice.querySelector(isInput ? '#input-obs-name' : '#output-obs-name');
+      sourceName = obsNameEl ? obsNameEl.textContent : null;
+    } else if (sourceEl) {
+      sourceName = sourceEl.dataset.sourceName;
+    } else if (filtersPanel) {
+      sourceName = resolveSourceForPreset();
+    }
+    if (sourceName) {
+      items.push({ type: 'header', label: esc(sourceName) });
+      for (const menuItem of buildFilterMenuItems()) {
+        if (menuItem.type === 'header') {
+          items.push({ type: 'separator' });
+          items.push({ type: 'header', label: menuItem.label });
+          continue;
+        }
+        items.push({
+          label: `Add ${menuItem.label}`,
+          action: () => {
+            const filterName = generateFilterNameFromLabel(sourceName, menuItem.label);
+            const filterSettings = { ...menuItem.settings };
+            pendingHighlight = { type: 'filter', source: sourceName, filterName };
+            invoke('create_source_filter', { sourceName, filterName, filterKind: menuItem.kind, filterSettings })
+              .catch(err => { pendingHighlight = null; showFrameDropAlert('Add filter failed: ' + err); });
+          }
+        });
+      }
+      items.push({ type: 'separator' });
+      items.push({
+        label: 'Apply Smart Preset\u2026',
+        action: () => {
+          const dropdown = document.getElementById('sc-preset-dropdown');
+          if (dropdown) dropdown.hidden = !dropdown.hidden;
+        }
+      });
+      items.push({ type: 'separator' });
+    }
+    return items.concat(buildPanelToggleItems());
+  }
+
+  return buildPanelToggleItems();
+}
+
+function initContextMenu() {
+  const rackBody = document.querySelector('.rack-body');
+  if (!rackBody) return;
+
+  rackBody.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const items = buildContextItems(e);
+    showContextMenu(e.clientX, e.clientY, items);
+  });
+
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('ctx-menu');
+    if (menu && !menu.hidden && !menu.contains(e.target)) {
+      hideContextMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideContextMenu();
+  });
+}
+
 // --- Maximize on launch ---
 
 window.__TAURI__.window.getCurrentWindow().maximize();
@@ -3352,6 +3687,7 @@ bindDeviceWidgetEvents();
 bindScenesPanelEvents();
 initToolbar();
 initPanelControls();
+initContextMenu();
 loadAudioDevices();
 initVoiceInput();
 initCalibration();
@@ -3364,6 +3700,20 @@ initCalibration();
   }
   await checkAiReady();
   await ensurePresetsLoaded();
+
+  // Auto-install VST plugins and check status
+  try {
+    vstStatus = await invoke('get_vst_status');
+    if (!vstStatus.installed) {
+      vstStatus = await invoke('install_vsts');
+    }
+    const installed = vstStatus.plugins.filter(p => p.installed).length;
+    if (installed > 0) {
+      scLog(`VST status: ${installed}/${vstStatus.plugins.length} plugins installed`);
+    }
+  } catch (e) {
+    scWarn('VST check failed:', e);
+  }
 })();
 
 autoLaunchAndConnect(initialSettings);

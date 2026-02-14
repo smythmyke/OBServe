@@ -209,6 +209,25 @@ fn snapshot_for_undo(action: &AiAction, obs_state: &ObsState) -> Option<UndoEntr
                     }),
                 })
             }
+            "SetSourceFilterSettings" => {
+                let source_name = action.params["sourceName"].as_str()?;
+                let filter_name = action.params["filterName"].as_str()?;
+                let input = obs_state.inputs.get(source_name)?;
+                let filter = input.filters.iter().find(|f| f.name == filter_name)?;
+                Some(UndoEntry {
+                    description: format!(
+                        "Revert settings of filter \"{}\" on \"{}\"",
+                        filter_name, source_name
+                    ),
+                    action_type: "obs_request".into(),
+                    request_type: "SetSourceFilterSettings".into(),
+                    revert_params: json!({
+                        "sourceName": source_name,
+                        "filterName": filter_name,
+                        "filterSettings": filter.settings
+                    }),
+                })
+            }
             "RemoveSourceFilter" => {
                 let source_name = action.params["sourceName"].as_str()?;
                 let filter_name = action.params["filterName"].as_str()?;
