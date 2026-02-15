@@ -1,7 +1,9 @@
 mod ai_actions;
+mod app_capture;
 mod audio;
 mod audio_monitor;
 mod commands;
+mod ducking;
 mod gemini;
 mod obs_config;
 mod obs_launcher;
@@ -17,6 +19,7 @@ mod vst_manager;
 use ai_actions::SharedUndoStack;
 use audio_monitor::SharedAudioMetrics;
 use commands::SharedObsConnection;
+use ducking::SharedDuckingConfig;
 use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
@@ -41,6 +44,7 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(gemini_client)) as SharedGeminiClient)
         .manage(Arc::new(RwLock::new(Vec::<ai_actions::UndoEntry>::new())) as SharedUndoStack)
         .manage(Arc::new(RwLock::new(audio_monitor::AudioMetrics::default())) as SharedAudioMetrics)
+        .manage(Arc::new(RwLock::new(ducking::DuckingConfig::default())) as SharedDuckingConfig)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -70,6 +74,12 @@ pub fn run() {
             commands::set_input_volume,
             commands::set_input_mute,
             commands::toggle_input_mute,
+            commands::get_input_audio_balance,
+            commands::set_input_audio_balance,
+            commands::get_input_audio_sync_offset,
+            commands::set_input_audio_sync_offset,
+            commands::get_input_audio_tracks,
+            commands::set_input_audio_tracks,
             commands::create_source_filter,
             commands::set_source_filter_enabled,
             commands::remove_source_filter,
@@ -107,6 +117,11 @@ pub fn run() {
             commands::install_vsts,
             commands::get_audio_metrics,
             commands::get_source_filter_kinds,
+            commands::get_ducking_config,
+            commands::set_ducking_config,
+            commands::get_audio_processes,
+            commands::add_app_capture,
+            commands::remove_app_capture,
             commands::open_devtools,
         ])
         .setup(|app| {
@@ -139,6 +154,24 @@ pub fn run() {
                     log::error!("Audio monitor failed: {}", e);
                 }
             });
+
+            {
+                let duck_app = app.handle().clone();
+                let duck_conn = app.state::<SharedObsConnection>().inner().clone();
+                let duck_state = app.state::<SharedObsState>().inner().clone();
+                let duck_metrics = app.state::<SharedAudioMetrics>().inner().clone();
+                let duck_config = app.state::<SharedDuckingConfig>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    ducking::start_ducking_loop(
+                        duck_app,
+                        duck_conn,
+                        duck_state,
+                        duck_metrics,
+                        duck_config,
+                    )
+                    .await;
+                });
+            }
 
             Ok(())
         })

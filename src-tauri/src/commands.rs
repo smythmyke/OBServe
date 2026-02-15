@@ -1,6 +1,8 @@
 use crate::ai_actions::{self, ActionResult, SharedUndoStack};
+use crate::app_capture::{self, AudioProcess};
 use crate::audio;
 use crate::audio_monitor::{AudioMetrics, SharedAudioMetrics};
+use crate::ducking::{DuckingConfig, SharedDuckingConfig};
 use crate::gemini::{AiAction, SharedGeminiClient};
 use crate::obs_launcher::{self, ObsLaunchStatus};
 use crate::obs_config::{self, ObsAudioConfig};
@@ -129,6 +131,105 @@ pub async fn set_input_mute(
         Some(json!({
             "inputName": input_name,
             "inputMuted": muted
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_input_audio_balance(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+) -> Result<f64, String> {
+    let conn = state.lock().await;
+    let resp = conn
+        .send_request(
+            "GetInputAudioBalance",
+            Some(json!({"inputName": input_name})),
+        )
+        .await?;
+    Ok(resp["inputAudioBalance"].as_f64().unwrap_or(0.5))
+}
+
+#[tauri::command]
+pub async fn set_input_audio_balance(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+    balance: f64,
+) -> Result<(), String> {
+    let conn = state.lock().await;
+    conn.send_request(
+        "SetInputAudioBalance",
+        Some(json!({
+            "inputName": input_name,
+            "inputAudioBalance": balance
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_input_audio_sync_offset(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+) -> Result<i64, String> {
+    let conn = state.lock().await;
+    let resp = conn
+        .send_request(
+            "GetInputAudioSyncOffset",
+            Some(json!({"inputName": input_name})),
+        )
+        .await?;
+    Ok(resp["inputAudioSyncOffset"].as_i64().unwrap_or(0))
+}
+
+#[tauri::command]
+pub async fn set_input_audio_sync_offset(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+    offset_ms: i64,
+) -> Result<(), String> {
+    let conn = state.lock().await;
+    conn.send_request(
+        "SetInputAudioSyncOffset",
+        Some(json!({
+            "inputName": input_name,
+            "inputAudioSyncOffset": offset_ms
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_input_audio_tracks(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+) -> Result<Value, String> {
+    let conn = state.lock().await;
+    let resp = conn
+        .send_request(
+            "GetInputAudioTracks",
+            Some(json!({"inputName": input_name})),
+        )
+        .await?;
+    Ok(resp["inputAudioTracks"].clone())
+}
+
+#[tauri::command]
+pub async fn set_input_audio_tracks(
+    state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+    tracks: Value,
+) -> Result<(), String> {
+    let conn = state.lock().await;
+    conn.send_request(
+        "SetInputAudioTracks",
+        Some(json!({
+            "inputName": input_name,
+            "inputAudioTracks": tracks
         })),
     )
     .await?;
@@ -769,6 +870,91 @@ pub async fn get_source_filter_kinds(
         })
         .unwrap_or_default();
     Ok(kinds)
+}
+
+// --- Ducking Commands ---
+
+#[tauri::command]
+pub async fn get_ducking_config(
+    state: tauri::State<'_, SharedDuckingConfig>,
+) -> Result<DuckingConfig, String> {
+    let config = state.read().await;
+    Ok(config.clone())
+}
+
+#[tauri::command]
+pub async fn set_ducking_config(
+    state: tauri::State<'_, SharedDuckingConfig>,
+    config: DuckingConfig,
+) -> Result<(), String> {
+    let mut current = state.write().await;
+    *current = config;
+    Ok(())
+}
+
+// --- App Capture Commands ---
+
+#[tauri::command]
+pub async fn get_audio_processes() -> Result<Vec<AudioProcess>, String> {
+    tokio::task::spawn_blocking(app_capture::enumerate_audio_processes)
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn add_app_capture(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    obs_state: tauri::State<'_, SharedObsState>,
+    process_name: String,
+    scene_name: Option<String>,
+) -> Result<String, String> {
+    let input_name = format!("App: {}", process_name.replace(".exe", ""));
+
+    {
+        let state = obs_state.read().await;
+        if state.inputs.contains_key(&input_name) {
+            return Err(format!("'{}' already exists as an OBS source", input_name));
+        }
+    }
+
+    let target_scene = match scene_name {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            let state = obs_state.read().await;
+            state.current_scene.clone()
+        }
+    };
+
+    if target_scene.is_empty() {
+        return Err("No scene available to add the capture source".to_string());
+    }
+
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "CreateInput",
+        Some(json!({
+            "sceneName": target_scene,
+            "inputName": input_name,
+            "inputKind": "wasapi_process_output_capture",
+            "inputSettings": {
+                "window": process_name
+            }
+        })),
+    )
+    .await?;
+
+    Ok(input_name)
+}
+
+#[tauri::command]
+pub async fn remove_app_capture(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("RemoveInput", Some(json!({"inputName": input_name})))
+        .await?;
+    Ok(())
 }
 
 #[tauri::command]

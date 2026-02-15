@@ -245,13 +245,8 @@ The Signal Chain panel organizes filters into named groups (sub-modules):
 - Calibration group — from the calibration wizard
 - Custom groups — user-created or converted from presets
 
-Smart Presets are available on the Signal Chain panel (not the AI panel).
-When users ask about presets, tell them to use the Smart Presets dropdown on the Signal Chain.
-Available presets: Tutorial, Gaming, Podcast, Music, Broadcast Voice, ASMR,
-Noisy Room, Just Chatting, Singing/Karaoke.
-
-Pro presets (require bundled Airwindows VST plugins):
-Pro Broadcast, Pro Podcast, Pro Music, Streamer Safety.
+Smart Presets can be applied via the Signal Chain panel OR via AI action (action_type: "apply_preset").
+Presets can be removed from the Signal Chain panel.
 
 ### Airwindows VST Plugins
 OBServe bundles 10 professional-grade Airwindows VST2 plugins (MIT licensed):
@@ -264,7 +259,7 @@ Pro presets use these VST plugins for broadcast-quality audio:
 - Pro Music: Air EQ → Drive → Compress → Vinyl → Reverb
 - Streamer Safety: De-ess → Gate → Limit
 
-When users ask for professional audio quality, recommend Pro presets.
+When users ask for professional audio quality, recommend Pro presets (if VSTs are installed).
 VST plugin parameters cannot be adjusted individually — they use factory defaults.
 
 ### Audio Calibration
@@ -283,6 +278,29 @@ When users say relative terms, apply these dB offsets to the CURRENT volume:
 - "all the way up", "max" → 0dB (unity/maximum)
 - "all the way down", "minimum", "silent" → mute the input
 Always calculate from the current volume. For example, if mic is at -10dB and user says "a little louder", set to -7dB.
+
+### Pan / Balance
+The inputAudioBalance value ranges from 0.0 (full left) to 1.0 (full right), with 0.5 = center.
+- "pan left", "move to the left" → decrease balance toward 0.0
+- "pan right" → increase toward 1.0
+- "center it", "center the audio" → set to 0.5
+- "a little left/right" → shift by 0.1 from current
+- "hard left" / "hard right" → 0.0 / 1.0
+Always calculate from the current balance shown above.
+
+### Sync Offset
+The inputAudioSyncOffset is in milliseconds (integer). Positive = delays audio.
+- "delay mic 120ms" → set to 120
+- "fix lip sync" → typically 50-200ms for camera delay; ask the user how much if not specified
+- "remove delay", "zero offset" → set to 0
+
+### Track Routing
+inputAudioTracks is an object with keys "1" through "6" (boolean). Tracks determine which recording tracks capture this source.
+- "route mic to track 3" → set track 3 to true (keep others unchanged unless user says "only")
+- "only tracks 1 and 3" → set 1 and 3 true, all others false
+- "enable all tracks" → all true
+- "remove from track 2" → set track 2 to false
+IMPORTANT: Always send the complete tracks object (all 6 keys) when changing tracks, preserving unchanged track values from the current state shown above.
 
 ### Conversation Context
 - When the user says "it", "that", "this one" → refer to the device or source from the most recent message in the conversation.
@@ -341,6 +359,60 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         fps
     ));
 
+    // Performance stats
+    prompt.push_str(&format!(
+        "**Performance:** {:.1} FPS, CPU: {:.1}%, Memory: {:.0} MB, Dropped: {} render / {} output\n",
+        state.stats.active_fps,
+        state.stats.cpu_usage,
+        state.stats.memory_usage,
+        state.stats.render_skipped_frames,
+        state.stats.output_skipped_frames
+    ));
+
+    // Stream service & recording config
+    if !state.stream_service.service_type.is_empty() {
+        let server_display = if state.stream_service.server.is_empty() {
+            "not set".to_string()
+        } else {
+            // Show just the host, strip path/query for safety
+            state.stream_service.server
+                .split('/')
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let key_status = if state.stream_service.key_set { "set" } else { "NOT set" };
+        prompt.push_str(&format!(
+            "**Stream service:** {} (server: {}, key: {})\n",
+            state.stream_service.service_type, server_display, key_status
+        ));
+    }
+    if !state.record_settings.record_directory.is_empty() {
+        prompt.push_str(&format!(
+            "**Record directory:** {}\n",
+            state.record_settings.record_directory
+        ));
+    }
+
+    // Special Input Slots
+    let special_slots: Vec<String> = [
+        ("Primary mic (mic1)", &state.special_inputs.mic1),
+        ("Secondary mic (mic2)", &state.special_inputs.mic2),
+        ("Third mic (mic3)", &state.special_inputs.mic3),
+        ("Desktop audio (desktop1)", &state.special_inputs.desktop1),
+        ("Desktop audio 2 (desktop2)", &state.special_inputs.desktop2),
+    ]
+    .iter()
+    .filter(|(_, name)| !name.is_empty())
+    .map(|(label, name)| format!("{}: \"{}\"", label, name))
+    .collect();
+    if !special_slots.is_empty() {
+        prompt.push_str("\n### Special Input Slots\n");
+        for slot in &special_slots {
+            prompt.push_str(&format!("{}\n", slot));
+        }
+    }
+
     // Audio Inputs
     prompt.push_str("\n### Audio Inputs (OBS)\n");
     if state.inputs.is_empty() {
@@ -349,9 +421,30 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
     for (name, input) in &state.inputs {
         let muted = if input.muted { " [MUTED]" } else { "" };
         let hw_annotation = match_hw_device(&input.kind, &input.device_id, devices);
+        let pan_str = if (input.audio_balance - 0.5).abs() < 0.01 {
+            String::from("C")
+        } else if input.audio_balance < 0.5 {
+            format!("L{}", ((0.5 - input.audio_balance) * 200.0).round() as i32)
+        } else {
+            format!("R{}", ((input.audio_balance - 0.5) * 200.0).round() as i32)
+        };
+        let sync_str = if input.audio_sync_offset == 0 {
+            String::new()
+        } else {
+            format!(", sync: {}ms", input.audio_sync_offset)
+        };
+        let active_tracks: Vec<String> = (1..=6)
+            .filter(|t| input.audio_tracks[t.to_string()].as_bool().unwrap_or(false))
+            .map(|t| t.to_string())
+            .collect();
+        let tracks_str = if active_tracks.is_empty() {
+            String::from("none")
+        } else {
+            active_tracks.join(",")
+        };
         prompt.push_str(&format!(
-            "- **\"{}\"** — kind: `{}`, volume: {:.1}dB, monitor: `{}`{}{}\n",
-            name, input.kind, input.volume_db, input.monitor_type, muted, hw_annotation
+            "- **\"{}\"** — kind: `{}`, volume: {:.1}dB, pan: {}, tracks: [{}], monitor: `{}`{}{}{}\n",
+            name, input.kind, input.volume_db, pan_str, tracks_str, input.monitor_type, sync_str, muted, hw_annotation
         ));
         if !input.filters.is_empty() {
             for f in &input.filters {
@@ -480,6 +573,45 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         ));
     }
 
+    // Smart Presets & VST status
+    let all_presets = crate::presets::get_presets();
+    let vst_status = crate::vst_manager::get_vst_status();
+    let vst_installed_count = vst_status.plugins.iter().filter(|p| p.installed).count();
+    let vst_total = vst_status.plugins.len();
+
+    if vst_status.installed {
+        prompt.push_str(&format!(
+            "\n**Airwindows VSTs:** Installed ({}/{} plugins)\n",
+            vst_installed_count, vst_total
+        ));
+    } else if vst_installed_count > 0 {
+        prompt.push_str(&format!(
+            "\n**Airwindows VSTs:** Partially installed ({}/{} plugins)\n",
+            vst_installed_count, vst_total
+        ));
+    } else {
+        prompt.push_str("\n**Airwindows VSTs:** Not installed — Pro presets unavailable\n");
+    }
+
+    prompt.push_str("\n### Smart Presets\n");
+    prompt.push_str("| ID | Name | Description | Pro? |\n");
+    prompt.push_str("|-----|------|-------------|------|\n");
+    for p in &all_presets {
+        let pro_label = if p.pro {
+            if vst_status.installed {
+                "Yes (VSTs installed)"
+            } else {
+                "Yes (VSTs NOT installed)"
+            }
+        } else {
+            "No"
+        };
+        prompt.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            p.id, p.name, p.description, pro_label
+        ));
+    }
+
     // --- Available Actions ---
     prompt.push_str(
         r#"
@@ -494,6 +626,9 @@ Return actions in your response to control OBS. Each action needs a safety tier,
 | Mute | SetInputMute | {"inputName": "...", "inputMuted": true/false} | "mute desktop audio", "unmute me" |
 | Toggle mute | ToggleInputMute | {"inputName": "..."} | "toggle mic mute" |
 | Set monitoring | SetInputAudioMonitorType | {"inputName": "...", "monitorType": "..."} | "let me hear the music" |
+| Set balance | SetInputAudioBalance | {"inputName": "...", "inputAudioBalance": 0.5} | "pan mic left", "center the audio" |
+| Set sync offset | SetInputAudioSyncOffset | {"inputName": "...", "inputAudioSyncOffset": 120} | "delay mic 120ms", "fix lip sync" |
+| Set tracks | SetInputAudioTracks | {"inputName": "...", "inputAudioTracks": {"1": true, "2": false, ...}} | "route mic to track 3" |
 
 Monitor types: `OBS_MONITORING_TYPE_NONE`, `OBS_MONITORING_TYPE_MONITOR_ONLY`, `OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT`
 
@@ -612,13 +747,21 @@ For SetSceneItemEnabled: use the current scene name if the user doesn't specify 
 | Pause recording | PauseRecord | {} | "pause recording", "pause" |
 | Resume recording | ResumeRecord | {} | "resume recording", "unpause" |
 
+### Smart Presets (action_type: "apply_preset")
+| Action | request_type | params | Use for |
+|--------|-------------|--------|---------|
+| Apply preset | apply | {"presetId": "tutorial", "micSource": "Mic/Aux", "desktopSource": "Desktop Audio"} | "apply tutorial preset", "set up for podcast", "use the gaming preset" |
+
+Apply a complete filter chain preset. Safety: "caution". Use the special input slot names for micSource/desktopSource.
+If the user asks for a Pro preset and VSTs are not installed, warn them and suggest installing via the Settings panel.
+
 ### Windows Audio (action_type: "windows_audio") — use ONLY when user explicitly asks
 - set_volume: {"deviceId": "...", "volume": 0.0-1.0}
 - set_mute: {"deviceId": "...", "muted": true/false}
 
 ## Safety Tiers
-- **"safe"**: Volume changes, mute/unmute, monitoring changes. Execute immediately.
-- **"caution"**: Scene switches, show/hide sources, filter add/remove/modify, audio routing. Execute but allow undo.
+- **"safe"**: Volume changes, mute/unmute, monitoring changes, pan/balance, sync offset. Execute immediately.
+- **"caution"**: Scene switches, show/hide sources, filter add/remove/modify, audio routing, track routing changes. Execute but allow undo.
 - **"dangerous"**: Start/stop stream, start/stop recording. Require user confirmation first.
 
 ## Response Rules
@@ -650,7 +793,7 @@ fn response_schema() -> Value {
                     "properties": {
                         "safety": {"type": "string", "enum": ["safe", "caution", "dangerous"]},
                         "description": {"type": "string"},
-                        "action_type": {"type": "string", "enum": ["obs_request", "windows_audio"]},
+                        "action_type": {"type": "string", "enum": ["obs_request", "windows_audio", "apply_preset"]},
                         "request_type": {"type": "string"},
                         "params": {"type": "string"}
                     },

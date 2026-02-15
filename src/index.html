@@ -364,6 +364,76 @@
         <div id="mixer-list"></div>
       </section>
 
+      <section class="module panel" id="ducking-panel" data-panel="ducking" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Auto-Duck</span>
+        <h2>Auto-Duck</h2>
+        <div class="ducking-controls">
+          <div class="ducking-toggle-row">
+            <label class="duck-switch">
+              <input type="checkbox" id="duck-enabled">
+              <span class="duck-slider-track"></span>
+            </label>
+            <span class="duck-led led-off" id="duck-led"></span>
+            <span class="duck-status-text" id="duck-status-text">Disabled</span>
+          </div>
+          <div class="ducking-sources">
+            <div class="duck-source-row">
+              <label class="duck-label">Trigger (voice)</label>
+              <select class="duck-select" id="duck-trigger-select"><option value="">—</option></select>
+            </div>
+            <div class="duck-source-row">
+              <label class="duck-label">Target (duck)</label>
+              <select class="duck-select" id="duck-target-select"><option value="">—</option></select>
+            </div>
+          </div>
+          <div class="ducking-params">
+            <div class="duck-param">
+              <label>Threshold</label>
+              <input type="range" id="duck-threshold" min="-60" max="-10" step="1" value="-40">
+              <span class="duck-param-val" id="duck-threshold-val">-40 dB</span>
+            </div>
+            <div class="duck-param">
+              <label>Duck Amount</label>
+              <input type="range" id="duck-amount" min="-30" max="0" step="1" value="-14">
+              <span class="duck-param-val" id="duck-amount-val">-14 dB</span>
+            </div>
+            <div class="duck-param">
+              <label>Attack</label>
+              <input type="range" id="duck-attack" min="10" max="500" step="10" value="50">
+              <span class="duck-param-val" id="duck-attack-val">50 ms</span>
+            </div>
+            <div class="duck-param">
+              <label>Hold</label>
+              <input type="range" id="duck-hold" min="100" max="3000" step="50" value="500">
+              <span class="duck-param-val" id="duck-hold-val">500 ms</span>
+            </div>
+            <div class="duck-param">
+              <label>Release</label>
+              <input type="range" id="duck-release" min="50" max="2000" step="50" value="300">
+              <span class="duck-param-val" id="duck-release-val">300 ms</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="module panel" id="app-capture-panel" data-panel="app-capture" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">App Capture</span>
+        <h2>App Capture</h2>
+        <div class="app-capture-controls">
+          <div class="app-capture-add-row">
+            <select class="app-capture-select" id="app-capture-select"><option value="">Select process...</option></select>
+            <button class="btn-secondary" id="btn-app-capture-refresh" title="Refresh process list">&#x21bb;</button>
+            <button class="hw-btn" id="btn-app-capture-add">Add Capture</button>
+          </div>
+          <div class="app-capture-list" id="app-capture-list"></div>
+          <p class="app-capture-hint">Capture audio from individual applications into OBS.</p>
+        </div>
+      </section>
+
       <section class="module panel" id="filters-panel" data-panel="filters" hidden>
         <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
         <div class="mod-screw bl"></div><div class="mod-screw br"></div>

@@ -50,6 +50,9 @@ pub struct InputInfo {
     pub monitor_type: String,
     pub filters: Vec<FilterInfo>,
     pub device_id: String,
+    pub audio_balance: f64,
+    pub audio_sync_offset: i64,
+    pub audio_tracks: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -231,6 +234,27 @@ pub async fn populate_initial_state(
                 String::new()
             };
 
+            let audio_balance = conn
+                .send_request("GetInputAudioBalance", Some(json!({"inputName": &name})))
+                .await
+                .ok()
+                .and_then(|v| v["inputAudioBalance"].as_f64())
+                .unwrap_or(0.5);
+
+            let audio_sync_offset = conn
+                .send_request("GetInputAudioSyncOffset", Some(json!({"inputName": &name})))
+                .await
+                .ok()
+                .and_then(|v| v["inputAudioSyncOffset"].as_i64())
+                .unwrap_or(0);
+
+            let audio_tracks = conn
+                .send_request("GetInputAudioTracks", Some(json!({"inputName": &name})))
+                .await
+                .ok()
+                .and_then(|v| v.get("inputAudioTracks").cloned())
+                .unwrap_or(json!({"1":true,"2":true,"3":false,"4":false,"5":false,"6":false}));
+
             inputs.insert(
                 name.clone(),
                 InputInfo {
@@ -242,6 +266,9 @@ pub async fn populate_initial_state(
                     monitor_type,
                     filters,
                     device_id,
+                    audio_balance,
+                    audio_sync_offset,
+                    audio_tracks,
                 },
             );
         }
@@ -319,6 +346,27 @@ pub async fn populate_initial_state(
             .and_then(|v| v["inputSettings"]["device_id"].as_str().map(String::from))
             .unwrap_or_else(|| "default".to_string());
 
+        let audio_balance = conn
+            .send_request("GetInputAudioBalance", Some(json!({"inputName": sname})))
+            .await
+            .ok()
+            .and_then(|v| v["inputAudioBalance"].as_f64())
+            .unwrap_or(0.5);
+
+        let audio_sync_offset = conn
+            .send_request("GetInputAudioSyncOffset", Some(json!({"inputName": sname})))
+            .await
+            .ok()
+            .and_then(|v| v["inputAudioSyncOffset"].as_i64())
+            .unwrap_or(0);
+
+        let audio_tracks = conn
+            .send_request("GetInputAudioTracks", Some(json!({"inputName": sname})))
+            .await
+            .ok()
+            .and_then(|v| v.get("inputAudioTracks").cloned())
+            .unwrap_or(json!({"1":true,"2":true,"3":false,"4":false,"5":false,"6":false}));
+
         inputs.insert(
             sname.clone(),
             InputInfo {
@@ -330,6 +378,9 @@ pub async fn populate_initial_state(
                 monitor_type,
                 filters,
                 device_id,
+                audio_balance,
+                audio_sync_offset,
+                audio_tracks,
             },
         );
     }

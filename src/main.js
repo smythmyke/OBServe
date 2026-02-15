@@ -65,11 +65,11 @@ let pendingHighlight = null; // { type: 'group'|'filter', groupId?, source?, fil
 const VISIBILITY_MATRIX = {
   'audio': {
     'simple':   ['audio-devices', 'filters', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'mixer', 'routing', 'preflight', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
     'simple':   ['audio-devices', 'filters', 'scenes', 'stream-record', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
   },
   'video': {
     'simple':   ['filters', 'scenes', 'stream-record', 'ai'],
@@ -78,7 +78,7 @@ const VISIBILITY_MATRIX = {
 };
 
 const CONNECTION_REQUIRED_PANELS = new Set([
-  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system',
+  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture',
 ]);
 
 function applyPanelVisibility() {
@@ -87,10 +87,12 @@ function applyPanelVisibility() {
   document.querySelectorAll('[data-panel]').forEach(el => {
     const panelName = el.dataset.panel;
     if (panelName === 'calibration') return;
-    if (states[panelName]?.removed) { el.hidden = true; return; }
+    const st = states[panelName] || {};
+    if (st.removed) { el.hidden = true; return; }
     const inMatrix = allowed.includes(panelName);
     const needsConn = CONNECTION_REQUIRED_PANELS.has(panelName);
-    el.hidden = !(inMatrix && (!needsConn || isConnected));
+    const connOk = !needsConn || isConnected;
+    el.hidden = !(inMatrix || st.forceVisible) || !connOk;
   });
   updateModuleShading();
 }
@@ -190,6 +192,30 @@ function setupEventListeners() {
     updateObsKnob('output', inputName);
   });
 
+  listen('obs://input-balance-changed', (e) => {
+    const { inputName, inputAudioBalance } = e.payload;
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioBalance = inputAudioBalance;
+    }
+    updateMixerItem(inputName);
+  });
+
+  listen('obs://input-sync-offset-changed', (e) => {
+    const { inputName, inputAudioSyncOffset } = e.payload;
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioSyncOffset = inputAudioSyncOffset;
+    }
+    updateMixerItem(inputName);
+  });
+
+  listen('obs://input-tracks-changed', (e) => {
+    const { inputName, inputAudioTracks } = e.payload;
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioTracks = inputAudioTracks;
+    }
+    updateMixerItem(inputName);
+  });
+
   listen('obs://current-scene-changed', (e) => {
     if (obsState) obsState.currentScene = e.payload.sceneName;
     renderScenes();
@@ -202,11 +228,17 @@ function setupEventListeners() {
 
   listen('obs://input-created', () => {
     refreshFullState();
+    renderActiveCaptures();
   });
 
   listen('obs://input-removed', (e) => {
     if (obsState) delete obsState.inputs[e.payload.inputName];
     renderAudioMixer();
+    renderActiveCaptures();
+  });
+
+  listen('ducking://state-changed', (e) => {
+    updateDuckingLed(e.payload.status);
   });
 
   listen('obs://input-name-changed', (e) => {
@@ -345,6 +377,8 @@ function renderFullState() {
   updateStreamRecordUI();
   renderVideoSettings();
   updateMonitorUI();
+  renderDuckingSources();
+  renderActiveCaptures();
 }
 
 function renderScenes() {
@@ -383,8 +417,8 @@ function getWidgetMatchedNames() {
   const names = new Set();
   const inputMatched = matchObsInputsToDevice('input', selectedInputId);
   const outputMatched = matchObsInputsToDevice('output', selectedOutputId);
-  for (const m of inputMatched) names.add(m.name);
-  for (const m of outputMatched) names.add(m.name);
+  if (inputMatched.length > 0) names.add(inputMatched[0].name);
+  if (outputMatched.length > 0) names.add(outputMatched[0].name);
   return names;
 }
 
@@ -405,6 +439,11 @@ function renderAudioMixer() {
   container.innerHTML = inputs.map(input => {
     const mutedClass = input.muted ? 'muted' : '';
     const dbVal = input.volumeDb <= -100 ? '-inf' : input.volumeDb.toFixed(1);
+    const balance = input.audioBalance != null ? input.audioBalance : 0.5;
+    const pan = (balance - 0.5) * 2;
+    const panLabel = Math.abs(pan) < 0.02 ? 'C' : (pan < 0 ? `L${Math.round(Math.abs(pan)*100)}` : `R${Math.round(pan*100)}`);
+    const syncOffset = input.audioSyncOffset || 0;
+    const tracks = input.audioTracks || {};
     return `<div class="mixer-item ${mutedClass}" data-input="${esc(input.name)}">
       <span class="mixer-name" title="${esc(input.name)}">${esc(input.name)}</span>
       <div class="mixer-slider-wrap">
@@ -413,10 +452,44 @@ function renderAudioMixer() {
         <span class="mixer-db">${dbVal} dB</span>
       </div>
       <button class="mixer-mute-btn ${mutedClass}" data-input="${esc(input.name)}">${input.muted ? 'MUTED' : 'Mute'}</button>
+      <div class="mixer-divider"></div>
+      <div class="pan-control">
+        <span class="pan-label">Pan</span>
+        <div class="pan-knob-wrap" data-input="${esc(input.name)}" data-pan="${pan}">
+          <svg class="pan-knob-svg" viewBox="0 0 36 36">
+            <text class="pan-lr" x="3" y="33">L</text>
+            <text class="pan-lr" x="29" y="33">R</text>
+            <path class="pan-track" d="M 6 28 A 14 14 0 1 1 30 28" />
+            <path class="pan-fill" d="M 18 4 A 14 14 0 0 1 18 4" />
+            <circle class="pan-center-dot" cx="18" cy="4" r="1.5" />
+            <circle class="pan-dot" cx="18" cy="4" r="2.5" />
+          </svg>
+        </div>
+        <span class="pan-value">${panLabel}</span>
+      </div>
+      <div class="sync-control">
+        <span class="sync-label">Sync</span>
+        <div class="sync-stepper" data-input="${esc(input.name)}">
+          <button class="sync-btn" data-dir="-1">\u2212</button>
+          <span class="sync-value">${syncOffset} ms</span>
+          <button class="sync-btn" data-dir="1">+</button>
+        </div>
+      </div>
+      <div class="tracks-control">
+        <span class="tracks-label">Tracks</span>
+        <div class="tracks-row" data-input="${esc(input.name)}">
+          ${[1,2,3,4,5,6].map(t => `<div class="track-led${tracks[String(t)] ? ' active' : ''}" data-track="${t}">${t}</div>`).join('')}
+        </div>
+      </div>
     </div>`;
   }).join('');
 
   bindMixerEvents();
+
+  // Initialize all pan knobs with SVG rendering
+  container.querySelectorAll('.pan-knob-wrap').forEach(wrap => {
+    updatePanKnob(wrap, parseFloat(wrap.dataset.pan) || 0);
+  });
 }
 
 function updateMixerItem(inputName) {
@@ -442,11 +515,115 @@ function updateMixerItem(inputName) {
     muteBtn.classList.toggle('muted', input.muted);
     muteBtn.textContent = input.muted ? 'MUTED' : 'Mute';
   }
+
+  const panWrap = item.querySelector('.pan-knob-wrap');
+  if (panWrap) {
+    const balance = input.audioBalance != null ? input.audioBalance : 0.5;
+    const pan = (balance - 0.5) * 2;
+    updatePanKnob(panWrap, pan);
+  }
+
+  const syncValueEl = item.querySelector('.sync-value');
+  if (syncValueEl) {
+    syncValueEl.textContent = (input.audioSyncOffset || 0) + ' ms';
+  }
+
+  const tracksRow = item.querySelector('.tracks-row');
+  if (tracksRow && input.audioTracks) {
+    tracksRow.querySelectorAll('.track-led').forEach(led => {
+      const t = led.dataset.track;
+      led.classList.toggle('active', !!input.audioTracks[String(t)]);
+    });
+  }
 }
 
 const debouncedSetVolume = debounce((inputName, volumeDb) => {
   invoke('set_input_volume', { inputName, volumeDb }).catch(() => {});
 }, 50);
+
+const debouncedSetBalance = debounce((inputName, balance) => {
+  invoke('set_input_audio_balance', { inputName, balance }).catch(() => {});
+}, 50);
+
+const debouncedSetSyncOffset = debounce((inputName, offsetMs) => {
+  invoke('set_input_audio_sync_offset', { inputName, offsetMs }).catch(() => {});
+}, 100);
+
+// --- Pan Knob SVG Helpers ---
+
+const PAN_SWEEP_DEG = 240;
+const PAN_START_DEG = 150;
+
+function panToAngle(pan) {
+  const normalized = (pan + 1) / 2;
+  return PAN_START_DEG + normalized * PAN_SWEEP_DEG;
+}
+
+function panDegToRad(deg) { return deg * Math.PI / 180; }
+
+function panPointOnArc(cx, cy, r, angleDeg) {
+  const rad = panDegToRad(angleDeg);
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function panSvgArcPath(cx, cy, r, startDeg, endDeg) {
+  const s = panPointOnArc(cx, cy, r, startDeg);
+  const e = panPointOnArc(cx, cy, r, endDeg);
+  const sweep = endDeg - startDeg;
+  const largeArc = Math.abs(sweep) > 180 ? 1 : 0;
+  const dir = sweep > 0 ? 1 : 0;
+  return `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeArc} ${dir} ${e.x} ${e.y}`;
+}
+
+function updatePanKnob(wrap, pan) {
+  pan = Math.max(-1, Math.min(1, pan));
+  wrap.dataset.pan = pan;
+
+  const svg = wrap.querySelector('.pan-knob-svg');
+  if (!svg) return;
+  const fillPath = svg.querySelector('.pan-fill');
+  const dot = svg.querySelector('.pan-dot');
+  const valueEl = wrap.closest('.pan-control')?.querySelector('.pan-value');
+
+  const cx = 18, cy = 18, r = 14;
+  const centerAngle = panToAngle(0);
+  const currentAngle = panToAngle(pan);
+
+  // Track path (full arc)
+  const trackPath = svg.querySelector('.pan-track');
+  trackPath.setAttribute('d', panSvgArcPath(cx, cy, r, PAN_START_DEG, PAN_START_DEG + PAN_SWEEP_DEG));
+
+  // Arc fill from center to current position
+  if (Math.abs(pan) < 0.02) {
+    fillPath.setAttribute('d', `M ${cx} ${cy - r} A 0 0 0 0 0 ${cx} ${cy - r}`);
+  } else {
+    const fromDeg = Math.min(centerAngle, currentAngle);
+    const toDeg = Math.max(centerAngle, currentAngle);
+    fillPath.setAttribute('d', panSvgArcPath(cx, cy, r, fromDeg, toDeg));
+  }
+
+  // Dot position
+  const dotPos = panPointOnArc(cx, cy, r, currentAngle);
+  dot.setAttribute('cx', dotPos.x);
+  dot.setAttribute('cy', dotPos.y);
+
+  // Center dot
+  const centerDot = svg.querySelector('.pan-center-dot');
+  const centerPos = panPointOnArc(cx, cy, r, centerAngle);
+  centerDot.setAttribute('cx', centerPos.x);
+  centerDot.setAttribute('cy', centerPos.y);
+
+  // Value label
+  if (valueEl) {
+    if (Math.abs(pan) < 0.02) {
+      valueEl.textContent = 'C';
+    } else if (pan < 0) {
+      valueEl.textContent = `L${Math.round(Math.abs(pan) * 100)}`;
+    } else {
+      valueEl.textContent = `R${Math.round(pan * 100)}`;
+    }
+  }
+}
 
 function bindMixerEvents() {
   const container = $('#mixer-list');
@@ -480,10 +657,136 @@ function bindMixerEvents() {
   }, true);
 
   container.addEventListener('click', (e) => {
-    if (!e.target.classList.contains('mixer-mute-btn')) return;
-    const inputName = e.target.dataset.input;
-    invoke('toggle_input_mute', { inputName }).catch(() => {});
+    if (e.target.classList.contains('mixer-mute-btn')) {
+      const inputName = e.target.dataset.input;
+      invoke('toggle_input_mute', { inputName }).catch(() => {});
+      return;
+    }
+
+    // Track LED toggle
+    const led = e.target.closest('.track-led');
+    if (led) {
+      const tracksRow = led.closest('.tracks-row');
+      if (!tracksRow) return;
+      const inputName = tracksRow.dataset.input;
+      led.classList.toggle('active');
+      const tracks = {};
+      tracksRow.querySelectorAll('.track-led').forEach(l => {
+        tracks[l.dataset.track] = l.classList.contains('active');
+      });
+      invoke('set_input_audio_tracks', { inputName, tracks }).catch(() => {});
+      if (obsState && obsState.inputs[inputName]) {
+        obsState.inputs[inputName].audioTracks = tracks;
+      }
+      return;
+    }
   });
+
+  // --- Pan Knob: pointer drag ---
+  let panDragging = null;
+
+  container.addEventListener('pointerdown', (e) => {
+    const wrap = e.target.closest('.pan-knob-wrap');
+    if (!wrap) return;
+    e.preventDefault();
+    panDragging = { wrap, startPan: parseFloat(wrap.dataset.pan) || 0 };
+    wrap.setPointerCapture(e.pointerId);
+  });
+
+  container.addEventListener('pointermove', (e) => {
+    if (!panDragging) return;
+    const wrap = panDragging.wrap;
+    const delta = e.movementX * 0.005 + (-e.movementY) * 0.008;
+    const newPan = Math.max(-1, Math.min(1, parseFloat(wrap.dataset.pan) + delta));
+    updatePanKnob(wrap, newPan);
+    const inputName = wrap.dataset.input;
+    const balance = (newPan + 1) / 2;
+    debouncedSetBalance(inputName, balance);
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioBalance = balance;
+    }
+  });
+
+  container.addEventListener('pointerup', (e) => {
+    if (panDragging && e.target.closest('.pan-knob-wrap') === panDragging.wrap) {
+      panDragging = null;
+    }
+  });
+
+  container.addEventListener('pointercancel', () => { panDragging = null; });
+
+  // Pan knob: double-click to reset
+  container.addEventListener('dblclick', (e) => {
+    const wrap = e.target.closest('.pan-knob-wrap');
+    if (!wrap) return;
+    updatePanKnob(wrap, 0);
+    const inputName = wrap.dataset.input;
+    debouncedSetBalance(inputName, 0.5);
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioBalance = 0.5;
+    }
+  });
+
+  // Pan knob: scroll wheel
+  container.addEventListener('wheel', (e) => {
+    const wrap = e.target.closest('.pan-knob-wrap');
+    if (!wrap) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.05 : 0.05;
+    const newPan = Math.max(-1, Math.min(1, (parseFloat(wrap.dataset.pan) || 0) + delta));
+    updatePanKnob(wrap, newPan);
+    const inputName = wrap.dataset.input;
+    const balance = (newPan + 1) / 2;
+    debouncedSetBalance(inputName, balance);
+    if (obsState && obsState.inputs[inputName]) {
+      obsState.inputs[inputName].audioBalance = balance;
+    }
+  }, { passive: false });
+
+  // --- Sync Stepper: click + hold-to-repeat ---
+  let syncHoldTimer = null;
+  let syncHoldInterval = null;
+
+  function clearSyncHold() {
+    clearTimeout(syncHoldTimer);
+    clearInterval(syncHoldInterval);
+    syncHoldTimer = null;
+    syncHoldInterval = null;
+  }
+
+  container.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest('.sync-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const stepper = btn.closest('.sync-stepper');
+    if (!stepper) return;
+    const inputName = stepper.dataset.input;
+    const dir = parseInt(btn.dataset.dir);
+    const step = 10;
+
+    function applyStep() {
+      const valEl = stepper.querySelector('.sync-value');
+      let val = parseInt(valEl.textContent) || 0;
+      val = Math.max(-5000, Math.min(5000, val + dir * step));
+      valEl.textContent = val + ' ms';
+      debouncedSetSyncOffset(inputName, val);
+      if (obsState && obsState.inputs[inputName]) {
+        obsState.inputs[inputName].audioSyncOffset = val;
+      }
+    }
+
+    applyStep();
+    syncHoldTimer = setTimeout(() => {
+      syncHoldInterval = setInterval(applyStep, 80);
+    }, 400);
+  });
+
+  container.addEventListener('pointerup', (e) => {
+    if (e.target.closest('.sync-btn')) clearSyncHold();
+  });
+  container.addEventListener('pointerleave', (e) => {
+    if (e.target.closest('.sync-btn')) clearSyncHold();
+  }, true);
 }
 
 function updateStatsUI(stats) {
@@ -600,6 +903,11 @@ function setConnectedUI(status) {
   refreshFullState();
 
   invoke('get_source_filter_kinds').then(kinds => { discoveredFilterKinds = kinds; }).catch(() => {});
+
+  const duckConfig = loadDuckingConfig();
+  if (duckConfig) {
+    invoke('set_ducking_config', { config: duckConfig }).catch(() => {});
+  }
 }
 
 function setDisconnectedUI() {
@@ -2214,6 +2522,9 @@ async function sendChatMessage() {
     const resp = await invoke('send_chat_message', { message, calibrationData });
     loadingEl.remove();
     appendAssistantMessage(resp);
+    if (resp.actionResults && resp.actionResults.length > 0) {
+      setTimeout(() => refreshFullState(), 300);
+    }
   } catch (e) {
     loadingEl.remove();
     appendChatMessage('system', 'Error: ' + e);
@@ -2742,12 +3053,14 @@ function updateModuleShading() {
 
 // --- Panel Minimize / Remove ---
 
-const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system']);
+const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture']);
 const PANEL_STATE_KEY = 'observe-panel-states';
 
 const PANEL_LABELS = {
   'audio-devices': 'Audio Devices',
   'mixer': 'Mixer',
+  'ducking': 'Auto-Duck',
+  'app-capture': 'App Capture',
   'routing': 'Audio Routing',
   'preflight': 'Pre-Flight',
   'scenes': 'Scenes',
@@ -2786,6 +3099,7 @@ function removePanel(panel) {
   const states = loadPanelStates();
   if (!states[name]) states[name] = {};
   states[name].removed = true;
+  delete states[name].forceVisible;
   savePanelStates(states);
   updateModuleShading();
   renderPanelToggles();
@@ -2794,11 +3108,14 @@ function removePanel(panel) {
 function restorePanel(panelName) {
   const panel = document.querySelector(`[data-panel="${panelName}"]`);
   if (!panel) return;
+  const allowed = VISIBILITY_MATRIX[viewMode]?.[viewComplexity] || [];
   const states = loadPanelStates();
-  if (states[panelName]) {
-    delete states[panelName].removed;
-    savePanelStates(states);
+  if (!states[panelName]) states[panelName] = {};
+  delete states[panelName].removed;
+  if (!allowed.includes(panelName)) {
+    states[panelName].forceVisible = true;
   }
+  savePanelStates(states);
   applyPanelVisibility();
   renderPanelToggles();
 }
@@ -2853,12 +3170,16 @@ function restorePanelStates() {
 function renderPanelToggles() {
   const container = document.getElementById('panel-toggles');
   if (!container) return;
-  const states = loadPanelStates();
 
-  container.innerHTML = Array.from(REMOVABLE_PANELS).map(name => {
+  const allPanels = [...document.querySelectorAll('[data-panel]')]
+    .map(el => el.dataset.panel)
+    .filter(name => name !== 'calibration');
+
+  container.innerHTML = allPanels.map(name => {
     const label = PANEL_LABELS[name] || name;
-    const removed = states[name]?.removed;
-    return `<label><input type="checkbox" data-panel-toggle="${name}" ${removed ? '' : 'checked'}> ${label}</label>`;
+    const panel = document.querySelector(`[data-panel="${name}"]`);
+    const isVisible = panel && !panel.hidden;
+    return `<label><input type="checkbox" data-panel-toggle="${name}" ${isVisible ? 'checked' : ''}> ${label}</label>`;
   }).join('');
 
   container.querySelectorAll('input[data-panel-toggle]').forEach(cb => {
@@ -3486,7 +3807,8 @@ function showContextMenu(x, y, items) {
     const check = item.checked != null
       ? `<span class="ctx-check">${item.checked ? '\u2713' : ''}</span>`
       : '';
-    return `<div class="ctx-menu-item" data-ctx-idx="${items.indexOf(item)}">${check}${esc(item.label)}</div>`;
+    const disabledCls = item.disabled ? ' ctx-menu-item-disabled' : '';
+    return `<div class="ctx-menu-item${disabledCls}" data-ctx-idx="${items.indexOf(item)}">${check}${esc(item.label)}</div>`;
   }).join('');
 
   menu.hidden = false;
@@ -3514,19 +3836,39 @@ function hideContextMenu() {
 
 function buildPanelToggleItems() {
   const items = [];
-  const states = loadPanelStates();
+  const allowed = VISIBILITY_MATRIX[viewMode]?.[viewComplexity] || [];
   items.push({ type: 'header', label: 'Panels' });
-  for (const name of REMOVABLE_PANELS) {
-    const removed = !!states[name]?.removed;
+
+  const allPanels = [...document.querySelectorAll('[data-panel]')]
+    .map(el => el.dataset.panel)
+    .filter(name => name !== 'calibration');
+
+  for (const name of allPanels) {
+    const panel = document.querySelector(`[data-panel="${name}"]`);
+    const isVisible = panel && !panel.hidden;
+    const needsConn = CONNECTION_REQUIRED_PANELS.has(name);
+    const connBlocked = needsConn && !isConnected;
     const label = PANEL_LABELS[name] || name;
+    const suffix = connBlocked ? ' (needs OBS)' : '';
+
     items.push({
-      label,
-      checked: !removed,
+      label: label + suffix,
+      checked: isVisible,
+      disabled: connBlocked,
       action: () => {
-        if (removed) { restorePanel(name); }
-        else {
-          const panel = document.querySelector(`[data-panel="${name}"]`);
+        if (connBlocked) return;
+        if (isVisible) {
           if (panel) removePanel(panel);
+        } else {
+          const states = loadPanelStates();
+          if (!states[name]) states[name] = {};
+          delete states[name].removed;
+          if (!allowed.includes(name)) {
+            states[name].forceVisible = true;
+          }
+          savePanelStates(states);
+          applyPanelVisibility();
+          renderPanelToggles();
         }
       }
     });
@@ -3674,6 +4016,202 @@ function initContextMenu() {
   });
 }
 
+// --- Auto-Duck ---
+
+const DUCKING_CONFIG_KEY = 'observe-ducking-config';
+
+function initDucking() {
+  const toggle = $('#duck-enabled');
+  const sliders = {
+    threshold: $('#duck-threshold'),
+    amount: $('#duck-amount'),
+    attack: $('#duck-attack'),
+    hold: $('#duck-hold'),
+    release: $('#duck-release'),
+  };
+
+  const saved = loadDuckingConfig();
+  if (saved) {
+    toggle.checked = saved.enabled || false;
+    if (saved.triggerSource) $('#duck-trigger-select').value = saved.triggerSource;
+    if (saved.targetSource) $('#duck-target-select').value = saved.targetSource;
+    if (saved.thresholdDb != null) sliders.threshold.value = saved.thresholdDb;
+    if (saved.duckAmountDb != null) sliders.amount.value = saved.duckAmountDb;
+    if (saved.attackMs != null) sliders.attack.value = saved.attackMs;
+    if (saved.holdMs != null) sliders.hold.value = saved.holdMs;
+    if (saved.releaseMs != null) sliders.release.value = saved.releaseMs;
+  }
+  updateDuckingParamLabels();
+
+  toggle.addEventListener('change', () => saveDuckingConfig());
+  $('#duck-trigger-select').addEventListener('change', () => saveDuckingConfig());
+  $('#duck-target-select').addEventListener('change', () => saveDuckingConfig());
+
+  Object.values(sliders).forEach(s => {
+    s.addEventListener('input', () => {
+      updateDuckingParamLabels();
+      saveDuckingConfig();
+    });
+  });
+}
+
+function updateDuckingParamLabels() {
+  $('#duck-threshold-val').textContent = $('#duck-threshold').value + ' dB';
+  $('#duck-amount-val').textContent = $('#duck-amount').value + ' dB';
+  $('#duck-attack-val').textContent = $('#duck-attack').value + ' ms';
+  $('#duck-hold-val').textContent = $('#duck-hold').value + ' ms';
+  $('#duck-release-val').textContent = $('#duck-release').value + ' ms';
+}
+
+function loadDuckingConfig() {
+  try {
+    const raw = localStorage.getItem(DUCKING_CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
+
+function saveDuckingConfig() {
+  const config = {
+    enabled: $('#duck-enabled').checked,
+    triggerSource: $('#duck-trigger-select').value,
+    targetSource: $('#duck-target-select').value,
+    thresholdDb: parseFloat($('#duck-threshold').value),
+    duckAmountDb: parseFloat($('#duck-amount').value),
+    attackMs: parseInt($('#duck-attack').value, 10),
+    holdMs: parseInt($('#duck-hold').value, 10),
+    releaseMs: parseInt($('#duck-release').value, 10),
+  };
+  localStorage.setItem(DUCKING_CONFIG_KEY, JSON.stringify(config));
+  invoke('set_ducking_config', { config }).catch(e => scWarn('Ducking config save failed:', e));
+}
+
+function renderDuckingSources() {
+  if (!obsState) return;
+  const inputs = obsState.inputs || {};
+  const triggerEl = $('#duck-trigger-select');
+  const targetEl = $('#duck-target-select');
+  const savedTrigger = triggerEl.value;
+  const savedTarget = targetEl.value;
+
+  const names = Object.keys(inputs).sort();
+
+  triggerEl.innerHTML = '<option value="">—</option>' +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  targetEl.innerHTML = '<option value="">—</option>' +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+
+  if (savedTrigger && names.includes(savedTrigger)) triggerEl.value = savedTrigger;
+  if (savedTarget && names.includes(savedTarget)) targetEl.value = savedTarget;
+
+  const saved = loadDuckingConfig();
+  if (saved) {
+    if (saved.triggerSource && names.includes(saved.triggerSource)) triggerEl.value = saved.triggerSource;
+    if (saved.targetSource && names.includes(saved.targetSource)) targetEl.value = saved.targetSource;
+  }
+}
+
+function updateDuckingLed(status) {
+  const led = $('#duck-led');
+  const text = $('#duck-status-text');
+  if (!led || !text) return;
+
+  led.className = 'duck-led';
+  switch (status) {
+    case 'disabled':
+      led.classList.add('led-off');
+      text.textContent = 'Disabled';
+      break;
+    case 'idle':
+      led.classList.add('led-green');
+      text.textContent = 'Idle';
+      break;
+    case 'attacking':
+    case 'ducking':
+    case 'holding':
+      led.classList.add('led-amber-pulse');
+      text.textContent = 'Ducking';
+      break;
+    case 'releasing':
+      led.classList.add('led-green');
+      text.textContent = 'Releasing';
+      break;
+    default:
+      led.classList.add('led-off');
+      text.textContent = status || 'Unknown';
+  }
+}
+
+// --- App Capture ---
+
+function initAppCapture() {
+  $('#btn-app-capture-refresh').addEventListener('click', () => refreshAppCaptureProcesses());
+  $('#btn-app-capture-add').addEventListener('click', async () => {
+    const select = $('#app-capture-select');
+    const processName = select.value;
+    if (!processName) return;
+    try {
+      await invoke('add_app_capture', { processName });
+      select.value = '';
+    } catch (e) {
+      showFrameDropAlert('Add capture failed: ' + e);
+    }
+  });
+}
+
+async function refreshAppCaptureProcesses() {
+  try {
+    const processes = await invoke('get_audio_processes');
+    const select = $('#app-capture-select');
+    const existing = new Set();
+    if (obsState) {
+      for (const input of Object.values(obsState.inputs)) {
+        if (input.kind === 'wasapi_process_output_capture') {
+          existing.add(input.name);
+        }
+      }
+    }
+    select.innerHTML = '<option value="">Select process...</option>' +
+      processes
+        .filter(p => !existing.has('App: ' + p.name.replace('.exe', '')))
+        .map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
+        .join('');
+  } catch (e) {
+    scWarn('Failed to refresh processes:', e);
+  }
+}
+
+function renderActiveCaptures() {
+  const container = $('#app-capture-list');
+  if (!container || !obsState) return;
+
+  const captures = Object.values(obsState.inputs)
+    .filter(i => i.kind === 'wasapi_process_output_capture')
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (captures.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = captures.map(c => `
+    <div class="app-capture-item">
+      <span class="app-capture-item-name">${esc(c.name)}</span>
+      <button class="app-capture-remove-btn" data-input="${esc(c.name)}">Remove</button>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.app-capture-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const inputName = btn.dataset.input;
+      try {
+        await invoke('remove_app_capture', { inputName });
+      } catch (e) {
+        showFrameDropAlert('Remove failed: ' + e);
+      }
+    });
+  });
+}
+
 // --- Maximize on launch ---
 
 window.__TAURI__.window.getCurrentWindow().maximize();
@@ -3691,6 +4229,8 @@ initContextMenu();
 loadAudioDevices();
 initVoiceInput();
 initCalibration();
+initDucking();
+initAppCapture();
 
 (async () => {
   if (initialSettings.geminiApiKey) {

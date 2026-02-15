@@ -2,6 +2,7 @@ use crate::audio;
 use crate::gemini::AiAction;
 use crate::obs_state::ObsState;
 use crate::obs_websocket::ObsConnection;
+use crate::presets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -95,7 +96,11 @@ pub async fn execute_actions(
     results
 }
 
-async fn dispatch_action(action: &AiAction, conn: &ObsConnection) -> Result<(), String> {
+fn dispatch_action<'a>(action: &'a AiAction, conn: &'a ObsConnection) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(dispatch_action_inner(action, conn))
+}
+
+async fn dispatch_action_inner(action: &AiAction, conn: &ObsConnection) -> Result<(), String> {
     match action.action_type.as_str() {
         "obs_request" => {
             if action.request_type == "SetSceneItemEnabled" {
@@ -107,6 +112,27 @@ async fn dispatch_action(action: &AiAction, conn: &ObsConnection) -> Result<(), 
                 Some(action.params.clone())
             };
             conn.send_request(&action.request_type, params).await?;
+            Ok(())
+        }
+        "apply_preset" => {
+            let preset_id = action.params["presetId"]
+                .as_str()
+                .ok_or("Missing presetId")?;
+            let mic = action.params["micSource"]
+                .as_str()
+                .unwrap_or("Mic/Aux");
+            let desktop = action.params["desktopSource"]
+                .as_str()
+                .unwrap_or("Desktop Audio");
+            let all_presets = presets::get_presets();
+            let preset = all_presets
+                .iter()
+                .find(|p| p.id == preset_id)
+                .ok_or_else(|| format!("Preset '{}' not found", preset_id))?;
+            let resolved = presets::resolve_preset_actions(&preset.actions, mic, desktop)?;
+            for a in &resolved {
+                dispatch_action(a, conn).await?;
+            }
             Ok(())
         }
         "windows_audio" => {
@@ -166,6 +192,45 @@ fn snapshot_for_undo(action: &AiAction, obs_state: &ObsState) -> Option<UndoEntr
                     revert_params: json!({
                         "inputName": input_name,
                         "inputMuted": input.muted
+                    }),
+                })
+            }
+            "SetInputAudioBalance" => {
+                let input_name = action.params["inputName"].as_str()?;
+                let input = obs_state.inputs.get(input_name)?;
+                Some(UndoEntry {
+                    description: format!("Revert balance of \"{}\"", input_name),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputAudioBalance".into(),
+                    revert_params: json!({
+                        "inputName": input_name,
+                        "inputAudioBalance": input.audio_balance
+                    }),
+                })
+            }
+            "SetInputAudioSyncOffset" => {
+                let input_name = action.params["inputName"].as_str()?;
+                let input = obs_state.inputs.get(input_name)?;
+                Some(UndoEntry {
+                    description: format!("Revert sync offset of \"{}\"", input_name),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputAudioSyncOffset".into(),
+                    revert_params: json!({
+                        "inputName": input_name,
+                        "inputAudioSyncOffset": input.audio_sync_offset
+                    }),
+                })
+            }
+            "SetInputAudioTracks" => {
+                let input_name = action.params["inputName"].as_str()?;
+                let input = obs_state.inputs.get(input_name)?;
+                Some(UndoEntry {
+                    description: format!("Revert track routing of \"{}\"", input_name),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputAudioTracks".into(),
+                    revert_params: json!({
+                        "inputName": input_name,
+                        "inputAudioTracks": input.audio_tracks
                     }),
                 })
             }

@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OBServe — Option E Features Mockup (Revised)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0e0c0a;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #c8b898;
+  padding: 20px 40px;
+  overflow-y: auto;
+}
+
+:root {
+  --amber: #d4a040;
+  --amber-dim: #8a6a28;
+  --amber-glow: rgba(212,160,64,0.3);
+  --green: #5aaa5a;
+  --green-bright: #66cc66;
+  --red: #cc4444;
+  --red-bright: #ee5555;
+  --cream: #c8b898;
+  --cream-dim: #7a6a50;
+  --cyan: #00d4ff;
+  --magenta: #ff00aa;
+}
+
+h1 {
+  color: var(--amber);
+  font-size: 20px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+h2 {
+  color: var(--cream);
+  font-size: 14px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin: 30px 0 10px;
+  border-bottom: 1px solid #2a2620;
+  padding-bottom: 6px;
+}
+h3 {
+  color: var(--amber-dim);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin: 20px 0 8px;
+}
+
+.mockup-note {
+  background: #1a1714;
+  border-left: 3px solid var(--amber-dim);
+  padding: 10px 14px;
+  margin: 10px 0 20px;
+  font-size: 12px;
+  color: #9a8a6a;
+  line-height: 1.5;
+}
+.mockup-note b { color: var(--amber); }
+.mockup-note code { color: var(--cyan); font-size: 11px; }
+
+/* ── Module Panel ── */
+.module {
+  background: linear-gradient(to bottom, #1e1a16 0%, #1a1714 40%, #161310 60%, #12100e 100%);
+  border-top: 1px solid #2a2620;
+  border-bottom: 1px solid #0a0908;
+  padding: 20px 32px;
+  margin-bottom: 2px;
+  position: relative;
+}
+.mod-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--amber-dim);
+}
+
+/* ── Mixer Items (matching real app) ── */
+.mixer-item {
+  background: #0c0a06;
+  border-radius: 3px;
+  padding: 10px 14px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: inset 1px 1px 4px rgba(0,0,0,0.5);
+  border: 1px solid #1a1714;
+}
+.mixer-item.muted { opacity: 0.6; }
+.mixer-name {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cream);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.mixer-slider-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mixer-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #0c0a06;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+}
+.mixer-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #e8c060, var(--amber) 60%, var(--amber-dim));
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5), 0 0 4px var(--amber-glow);
+  border: 1px solid #2a2620;
+}
+.mixer-db {
+  font-size: 11px;
+  color: var(--amber);
+  min-width: 52px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: 'Courier New', monospace;
+  text-shadow: 0 0 6px var(--amber-glow);
+}
+.mixer-mute-btn {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid #3a3428;
+  color: var(--cream-dim);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.mixer-mute-btn:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+.mixer-mute-btn.muted {
+  background: linear-gradient(to bottom, #3a1818, #2a0e0e);
+  border-color: var(--red);
+  color: var(--red);
+  box-shadow: 0 0 6px rgba(204,68,68,0.2);
+}
+.mixer-divider {
+  width: 1px;
+  height: 28px;
+  background: #2a2620;
+  flex-shrink: 0;
+}
+
+/* Pan/Sync/Tracks (existing controls) */
+.pan-control, .sync-control, .tracks-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.pan-label, .sync-label, .tracks-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--cream-dim);
+}
+
+/* ── OBS Peak Meter (new — stacked under slider) ── */
+.mixer-meter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  padding-left: 122px; /* align with slider (mixer-name min-width + gap) */
+  padding-right: 0;
+}
+.obs-meter {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #0a0806;
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+}
+.obs-meter-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  border-radius: 2px;
+  transition: width 0.06s linear;
+}
+.obs-meter-fill.level-green {
+  background: linear-gradient(to right, #1a4a1a, var(--green));
+}
+.obs-meter-fill.level-amber {
+  background: linear-gradient(to right, #4a3a10, var(--amber));
+}
+.obs-meter-fill.level-red {
+  background: linear-gradient(to right, #4a1414, var(--red-bright));
+}
+.obs-meter-peak-db {
+  font-size: 9px;
+  color: var(--cream-dim);
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: 'Courier New', monospace;
+}
+.obs-meter-peak-db.clip { color: var(--red); text-shadow: 0 0 4px rgba(204,68,68,0.5); }
+.obs-meter-label {
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #4a4438;
+  min-width: 110px;
+  text-align: right;
+  padding-right: 4px;
+}
+
+/* stereo pair */
+.obs-meter-stereo {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Sidechain Ducking (Option B: Own Panel) ── */
+
+.ducking-panel { display: flex; flex-direction: column; gap: 14px; }
+.ducking-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ducking-toggle { display: flex; align-items: center; gap: 10px; }
+
+.switch {
+  position: relative;
+  width: 38px; height: 20px;
+  cursor: pointer;
+  display: inline-block;
+}
+.switch input { display: none; }
+.switch-slider {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: #1a1714;
+  border: 1px solid #2a2620;
+  border-radius: 10px;
+  transition: 0.2s;
+}
+.switch-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px; height: 14px;
+  left: 2px; bottom: 2px;
+  background: #4a4438;
+  border-radius: 50%;
+  transition: 0.2s;
+}
+.switch input:checked + .switch-slider {
+  background: #2a3a20;
+  border-color: var(--green);
+}
+.switch input:checked + .switch-slider::before {
+  transform: translateX(18px);
+  background: var(--green-bright);
+  box-shadow: 0 0 6px rgba(90,170,90,0.4);
+}
+.ducking-label { font-size: 12px; color: var(--cream); }
+
+.ducking-config { display: flex; gap: 20px; flex-wrap: wrap; }
+.ducking-param { display: flex; flex-direction: column; gap: 3px; }
+.ducking-param label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--cream-dim);
+}
+.ducking-param input[type="range"] {
+  -webkit-appearance: none;
+  width: 100px; height: 3px;
+  background: #2a2620;
+  border-radius: 2px;
+  outline: none;
+}
+.ducking-param input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #f0d070, var(--amber) 60%, #8a6a28);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  cursor: pointer;
+}
+.ducking-param-value {
+  font-size: 10px;
+  color: var(--amber);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ducking-status { display: flex; align-items: center; gap: 8px; }
+.ducking-led {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #1a1714;
+  border: 1px solid #2a2620;
+}
+.ducking-led.active {
+  background: radial-gradient(circle at 40% 35%, #88ee88, var(--green) 60%, #2a6a2a);
+  box-shadow: 0 0 8px rgba(90,170,90,0.5);
+}
+.ducking-led.ducking {
+  background: radial-gradient(circle at 40% 35%, #ffaa44, var(--amber) 60%, #8a6a28);
+  box-shadow: 0 0 8px var(--amber-glow);
+  animation: pulse-duck 0.6s ease-in-out infinite alternate;
+}
+@keyframes pulse-duck {
+  from { opacity: 0.7; } to { opacity: 1; }
+}
+.ducking-status-text {
+  font-size: 10px;
+  color: var(--cream-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ducking-source-select {
+  background: #12100e;
+  border: 1px solid #2a2620;
+  color: var(--cream);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.ducking-source-select:focus { border-color: var(--amber-dim); outline: none; }
+
+/* ── App Audio Capture (Option B: Dropdown Add) ── */
+
+.app-capture-panel { display: flex; flex-direction: column; gap: 12px; }
+.app-list { display: flex; flex-direction: column; gap: 4px; }
+.app-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #0c0a06;
+  border-radius: 3px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.app-item:hover { border-color: #2a2620; }
+.app-item.captured { border-color: var(--green); background: #0e120e; }
+.app-icon {
+  width: 20px; height: 20px;
+  border-radius: 3px;
+  background: #2a2620;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; flex-shrink: 0;
+}
+.app-name { flex: 1; font-size: 12px; color: var(--cream); }
+.app-obs-name { font-size: 10px; color: var(--green); }
+.app-capture-btn {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid #3a3428;
+  color: var(--cream-dim);
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: all 0.15s;
+}
+.app-capture-btn:hover { border-color: var(--amber-dim); color: var(--amber); }
+.app-capture-btn.remove { border-color: var(--red); color: var(--red); }
+.app-capture-btn.remove:hover { color: var(--red-bright); }
+
+.app-capture-hint {
+  font-size: 11px;
+  color: var(--cream-dim);
+  line-height: 1.5;
+}
+.app-toolbar { display: flex; gap: 8px; align-items: center; }
+.app-refresh-btn, .app-add-btn {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid #3a3428;
+  color: var(--cream-dim);
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.app-refresh-btn:hover, .app-add-btn:hover { border-color: var(--amber-dim); color: var(--amber); }
+</style>
+</head>
+<body>
+
+<h1>OBServe — Option E Mockup (Final Picks)</h1>
+<div class="mockup-note">
+  Three features, final UI choices. All match the existing rack-mount aesthetic.
+</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2>1. OBS Post-Filter Peak Metering</h2>
+<!-- ═══════════════════════════════════════════════ -->
+
+<div class="mockup-note">
+  <b>What changes:</b> Each mixer strip gets a thin L/R meter bar underneath the volume slider,
+  showing <b>post-filter</b> levels from OBS (via <code>InputVolumeMeters</code> event).<br>
+  <b>Current mixer already has:</b> Name, volume slider, dB, Mute button, Pan knob, Sync stepper, Track LEDs.<br>
+  <b>Adding:</b> Thin stereo meter bar under the slider + peak dB readout. Color-coded: green &lt; -12dB, amber -12 to -3dB, red &gt; -3dB.<br>
+  <b>What it does NOT replace:</b> The ring gauges on Audio Devices panel stay (those show Windows device peaks, pre-OBS).<br>
+  <b>Difference:</b> If a noise gate kills the mic signal, the Audio Devices ring still shows activity but the mixer meter goes silent. That's the point.
+</div>
+
+<h3>Mixer with Post-Filter Meters</h3>
+
+<div class="module">
+  <span class="mod-title">Mixer</span>
+  <div style="display:flex; align-items:center; gap:12px; margin:10px 0 14px;">
+    <h2 style="margin:0; border:none; padding:0;">OBS Audio Mixer</h2>
+  </div>
+
+  <!-- Mic/Aux — active speech, green levels -->
+  <div class="mixer-item" data-input="Mic/Aux">
+    <span class="mixer-name">Mic/Aux</span>
+    <div class="mixer-slider-wrap">
+      <input type="range" class="mixer-slider" min="-100" max="26" step="0.1" value="-3">
+      <span class="mixer-db">-3.0 dB</span>
+    </div>
+    <button class="mixer-mute-btn">Mute</button>
+    <div class="mixer-divider"></div>
+    <div class="pan-control"><span class="pan-label">Pan</span><span style="font-size:10px;color:var(--cream-dim)">C</span></div>
+    <div class="sync-control"><span class="sync-label">Sync</span><span style="font-size:10px;color:var(--cream-dim)">0 ms</span></div>
+    <div class="tracks-control"><span class="tracks-label">Tracks</span><span style="font-size:9px;color:var(--amber-dim)">1,2</span></div>
+  </div>
+  <!-- Post-filter meter (stacked below) -->
+  <div class="mixer-meter-row">
+    <span class="obs-meter-label">post-filter</span>
+    <div class="obs-meter-stereo">
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-green" style="width:45%"></div>
+      </div>
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-green" style="width:40%"></div>
+      </div>
+    </div>
+    <span class="obs-meter-peak-db">-18 dB</span>
+  </div>
+
+  <!-- Desktop Audio — music playing, amber levels -->
+  <div class="mixer-item" data-input="Desktop Audio" style="margin-top:6px;">
+    <span class="mixer-name">Desktop Audio</span>
+    <div class="mixer-slider-wrap">
+      <input type="range" class="mixer-slider" min="-100" max="26" step="0.1" value="-10">
+      <span class="mixer-db">-10.0 dB</span>
+    </div>
+    <button class="mixer-mute-btn">Mute</button>
+    <div class="mixer-divider"></div>
+    <div class="pan-control"><span class="pan-label">Pan</span><span style="font-size:10px;color:var(--cream-dim)">C</span></div>
+    <div class="sync-control"><span class="sync-label">Sync</span><span style="font-size:10px;color:var(--cream-dim)">0 ms</span></div>
+    <div class="tracks-control"><span class="tracks-label">Tracks</span><span style="font-size:9px;color:var(--amber-dim)">1,2</span></div>
+  </div>
+  <div class="mixer-meter-row">
+    <span class="obs-meter-label">post-filter</span>
+    <div class="obs-meter-stereo">
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-amber" style="width:68%"></div>
+      </div>
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-amber" style="width:62%"></div>
+      </div>
+    </div>
+    <span class="obs-meter-peak-db">-7.2 dB</span>
+  </div>
+
+  <!-- App: Cyberpunk — hot, clipping -->
+  <div class="mixer-item" data-input="App: Cyberpunk2077" style="margin-top:6px;">
+    <span class="mixer-name">App: Cyberpunk2077</span>
+    <div class="mixer-slider-wrap">
+      <input type="range" class="mixer-slider" min="-100" max="26" step="0.1" value="6">
+      <span class="mixer-db">6.0 dB</span>
+    </div>
+    <button class="mixer-mute-btn">Mute</button>
+    <div class="mixer-divider"></div>
+    <div class="pan-control"><span class="pan-label">Pan</span><span style="font-size:10px;color:var(--cream-dim)">C</span></div>
+    <div class="sync-control"><span class="sync-label">Sync</span><span style="font-size:10px;color:var(--cream-dim)">0 ms</span></div>
+    <div class="tracks-control"><span class="tracks-label">Tracks</span><span style="font-size:9px;color:var(--amber-dim)">3</span></div>
+  </div>
+  <div class="mixer-meter-row">
+    <span class="obs-meter-label">post-filter</span>
+    <div class="obs-meter-stereo">
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-red" style="width:96%"></div>
+      </div>
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-red" style="width:92%"></div>
+      </div>
+    </div>
+    <span class="obs-meter-peak-db clip">-0.3 dB</span>
+  </div>
+
+  <!-- Muted source — meters flat -->
+  <div class="mixer-item muted" data-input="Mic 2" style="margin-top:6px;">
+    <span class="mixer-name">Mic 2</span>
+    <div class="mixer-slider-wrap">
+      <input type="range" class="mixer-slider" min="-100" max="26" step="0.1" value="-5">
+      <span class="mixer-db">-5.0 dB</span>
+    </div>
+    <button class="mixer-mute-btn muted">MUTED</button>
+    <div class="mixer-divider"></div>
+    <div class="pan-control"><span class="pan-label">Pan</span><span style="font-size:10px;color:var(--cream-dim)">C</span></div>
+    <div class="sync-control"><span class="sync-label">Sync</span><span style="font-size:10px;color:var(--cream-dim)">0 ms</span></div>
+    <div class="tracks-control"><span class="tracks-label">Tracks</span><span style="font-size:9px;color:var(--amber-dim)">1</span></div>
+  </div>
+  <div class="mixer-meter-row" style="opacity:0.4">
+    <span class="obs-meter-label">post-filter</span>
+    <div class="obs-meter-stereo">
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-green" style="width:0%"></div>
+      </div>
+      <div class="obs-meter">
+        <div class="obs-meter-fill level-green" style="width:0%"></div>
+      </div>
+    </div>
+    <span class="obs-meter-peak-db">-inf</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2>2. Auto-Duck / Sidechain (Own Panel)</h2>
+<!-- ═══════════════════════════════════════════════ -->
+
+<div class="mockup-note">
+  <b>Dedicated panel</b> — show/hide from Settings &gt; Panels. Has its own module with toggle, source selects, envelope params, and live status LED.<br>
+  <b>Depends on:</b> Feature 1 (OBS Peak Metering) for mic activity detection.<br>
+  <b>How it works:</b> When trigger source peak &gt; threshold, duck target volume by duck amount. Hold timer prevents flutter. Release restores smoothly.
+</div>
+
+<div class="module">
+  <span class="mod-title">Auto-Duck</span>
+  <div style="display:flex; align-items:center; gap:12px; margin:10px 0 14px;">
+    <h2 style="margin:0; border:none; padding:0;">Auto-Duck / Sidechain</h2>
+    <div class="ducking-toggle">
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="switch-slider"></span>
+      </label>
+    </div>
+    <div class="ducking-status">
+      <div class="ducking-led ducking"></div>
+      <span class="ducking-status-text" style="color:var(--amber);">Ducking (-14 dB)</span>
+    </div>
+  </div>
+
+  <div class="ducking-panel">
+    <div class="ducking-row">
+      <div style="display:flex; gap:20px; align-items:center;">
+        <div class="ducking-param">
+          <label>Trigger Source</label>
+          <select class="ducking-source-select" style="width:150px">
+            <option>Mic/Aux</option>
+            <option>Mic 2</option>
+          </select>
+        </div>
+        <span style="font-size:18px; color:var(--cream-dim);">&#8594;</span>
+        <div class="ducking-param">
+          <label>Duck Target</label>
+          <select class="ducking-source-select" style="width:150px">
+            <option>Desktop Audio</option>
+            <option>App: Spotify</option>
+            <option>All Desktop Sources</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="ducking-config">
+      <div class="ducking-param">
+        <label>Threshold</label>
+        <input type="range" min="-60" max="-10" value="-30">
+        <span class="ducking-param-value">-30 dB</span>
+      </div>
+      <div class="ducking-param">
+        <label>Duck Amount</label>
+        <input type="range" min="-30" max="0" value="-14">
+        <span class="ducking-param-value">-14 dB</span>
+      </div>
+      <div class="ducking-param">
+        <label>Attack</label>
+        <input type="range" min="10" max="500" value="50">
+        <span class="ducking-param-value">50 ms</span>
+      </div>
+      <div class="ducking-param">
+        <label>Hold</label>
+        <input type="range" min="100" max="3000" value="500">
+        <span class="ducking-param-value">500 ms</span>
+      </div>
+      <div class="ducking-param">
+        <label>Release</label>
+        <input type="range" min="50" max="2000" value="300">
+        <span class="ducking-param-value">300 ms</span>
+      </div>
+    </div>
+
+    <div style="font-size:10px; color:var(--cream-dim); margin-top:6px;">
+      Voice detected on <b style="color:var(--cream)">Mic/Aux</b> &rarr; <b style="color:var(--cream)">Desktop Audio</b> reduced by 14 dB &rarr; restored after 500ms silence.
+    </div>
+  </div>
+</div>
+
+<div class="mockup-note">
+  <b>Idle state:</b> LED green ("Listening"), status text "Idle".<br>
+  <b>Ducking state:</b> LED amber pulsing, status text "Ducking (-14 dB)".<br>
+  <b>Disabled:</b> Switch off, controls grayed, LED off.
+</div>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2>3. Application Audio Capture (Dropdown Add)</h2>
+<!-- ═══════════════════════════════════════════════ -->
+
+<div class="mockup-note">
+  <b>Compact dropdown + Add button.</b> User picks from running audio apps, clicks Add. Captured apps listed below with Remove.<br>
+  <b>Backend:</b> Enumerate audio sessions via WASAPI <code>IAudioSessionEnumerator</code>, create OBS input of type <code>wasapi_process_output_capture</code>.<br>
+  <b>OBS source named:</b> "App: [ProcessName]" — appears in Mixer panel with full controls (volume, pan, tracks, filters).<br>
+  <b>Requires:</b> OBS 30+ and Windows 10 22H2+.
+</div>
+
+<div class="module">
+  <span class="mod-title">App Capture</span>
+  <div style="display:flex; align-items:center; gap:12px; margin:10px 0 14px;">
+    <h2 style="margin:0; border:none; padding:0;">Application Audio Capture</h2>
+  </div>
+
+  <div class="app-capture-panel">
+    <div class="app-toolbar">
+      <select class="ducking-source-select" style="width:240px; padding:6px 10px;">
+        <option>Select application...</option>
+        <option>Discord.exe (PID 6240)</option>
+        <option>chrome.exe (PID 3104)</option>
+        <option>obs64.exe (PID 2048)</option>
+        <option>vlc.exe (PID 1560)</option>
+      </select>
+      <button class="app-add-btn">Add Capture</button>
+      <button class="app-refresh-btn">Refresh</button>
+    </div>
+
+    <div style="margin-top:8px;">
+      <span style="font-size:10px; color:var(--cream-dim); text-transform:uppercase; letter-spacing:0.5px;">Active captures</span>
+      <div class="app-list" style="margin-top:6px;">
+        <div class="app-item captured">
+          <div class="app-icon">&#127918;</div>
+          <span class="app-name">Cyberpunk2077.exe</span>
+          <span class="app-obs-name">OBS: "App: Cyberpunk2077"</span>
+          <div style="flex:1"></div>
+          <button class="app-capture-btn remove">Remove</button>
+        </div>
+        <div class="app-item captured">
+          <div class="app-icon">&#127925;</div>
+          <span class="app-name">Spotify.exe</span>
+          <span class="app-obs-name">OBS: "App: Spotify"</span>
+          <div style="flex:1"></div>
+          <button class="app-capture-btn remove">Remove</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="app-capture-hint">
+      Each captured app becomes a separate OBS audio source. Control volume, pan, filters, and track routing independently in the Mixer.
+      Captured apps that exit will show as silent until restarted.
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════ -->
+<h2>Implementation Order</h2>
+<!-- ═══════════════════════════════════════════════ -->
+
+<div class="mockup-note">
+  <b>1. OBS Peak Metering</b> — Foundation for everything else. Subscribe to InputVolumeMeters, emit Tauri event, render meters in mixer.<br>
+  <b>2. Sidechain Ducking</b> — Depends on #1 for mic activity detection. Rust-side envelope follower + SetInputVolume control loop.<br>
+  <b>3. Application Audio Capture</b> — Independent of #1 and #2. WASAPI session enumeration + OBS CreateInput for wasapi_process_output_capture.<br><br>
+  Can build #1 and #3 in parallel since they're independent. #2 depends on #1.
+</div>
+
+</body>
+</html>

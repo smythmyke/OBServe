@@ -453,6 +453,9 @@ async fn handle_event(
                         monitor_type: String::new(),
                         filters: vec![],
                         device_id,
+                        audio_balance: 0.5,
+                        audio_sync_offset: 0,
+                        audio_tracks: serde_json::json!({"1":true,"2":true,"3":false,"4":false,"5":false,"6":false}),
                     },
                 );
             }
@@ -495,6 +498,48 @@ async fn handle_event(
             let _ = app.emit(
                 "obs://input-settings-changed",
                 json!({"inputName": name}),
+            );
+        }
+        "InputAudioBalanceChanged" => {
+            let name = event_data["inputName"].as_str().unwrap_or("");
+            let balance = event_data["inputAudioBalance"].as_f64().unwrap_or(0.5);
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(name) {
+                    input.audio_balance = balance;
+                }
+            }
+            let _ = app.emit(
+                "obs://input-balance-changed",
+                json!({"inputName": name, "inputAudioBalance": balance}),
+            );
+        }
+        "InputAudioSyncOffsetChanged" => {
+            let name = event_data["inputName"].as_str().unwrap_or("");
+            let offset = event_data["inputAudioSyncOffset"].as_i64().unwrap_or(0);
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(name) {
+                    input.audio_sync_offset = offset;
+                }
+            }
+            let _ = app.emit(
+                "obs://input-sync-offset-changed",
+                json!({"inputName": name, "inputAudioSyncOffset": offset}),
+            );
+        }
+        "InputAudioTracksChanged" => {
+            let name = event_data["inputName"].as_str().unwrap_or("");
+            let tracks = event_data["inputAudioTracks"].clone();
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(name) {
+                    input.audio_tracks = tracks.clone();
+                }
+            }
+            let _ = app.emit(
+                "obs://input-tracks-changed",
+                json!({"inputName": name, "inputAudioTracks": tracks}),
             );
         }
         "InputAudioMonitorTypeChanged" => {
@@ -589,6 +634,24 @@ async fn handle_event(
                     }
                     if !reordered.is_empty() {
                         input.filters = reordered;
+                    }
+                }
+            }
+            let _ = app.emit("obs://filters-changed", json!({"sourceName": source}));
+        }
+        "SourceFilterSettingsChanged" => {
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let filter_name = event_data["filterName"].as_str().unwrap_or("");
+            let new_settings = &event_data["filterSettings"];
+            {
+                let mut s = state.write().await;
+                if let Some(input) = s.inputs.get_mut(&source) {
+                    if let Some(f) = input.filters.iter_mut().find(|f| f.name == filter_name) {
+                        if let (Some(existing), Some(incoming)) = (f.settings.as_object_mut(), new_settings.as_object()) {
+                            for (k, v) in incoming {
+                                existing.insert(k.clone(), v.clone());
+                            }
+                        }
                     }
                 }
             }
