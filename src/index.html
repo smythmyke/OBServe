@@ -275,6 +275,7 @@
             <div class="filter-knobs" id="input-filter-knobs"></div>
             <div class="cal-trigger-row">
               <button class="btn-secondary" id="btn-calibrate-mic" title="Calibrate microphone">Calibrate</button>
+              <select class="cal-profile-select" id="cal-profile-select" title="Calibration profiles"></select>
               <span class="cal-status" id="cal-last-run"></span>
             </div>
           </div>
@@ -354,6 +355,29 @@
             <button class="hw-btn" id="btn-cal-cancel-apply">Cancel</button>
           </div>
         </div>
+      </section>
+
+      <section class="module panel" id="pro-spectrum-panel" data-panel="pro-spectrum" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Pro Spectrum</span>
+        <div class="spectrum-toolbar">
+          <h2>Pro Spectrum</h2>
+          <div class="spectrum-actions">
+            <select class="spectrum-source-select" id="spectrum-source-select">
+              <option value="">Select source...</option>
+            </select>
+            <button class="btn-secondary" id="btn-spectrum-reset-lufs" title="Reset LUFS">Reset</button>
+          </div>
+        </div>
+        <canvas class="spectrum-canvas" id="spectrum-canvas" width="600" height="150"></canvas>
+        <div class="spectrum-lufs-bar" id="spectrum-lufs-bar">
+          <span class="lufs-label">M <span id="lufs-momentary">--</span></span>
+          <span class="lufs-label">S <span id="lufs-short-term">--</span></span>
+          <span class="lufs-label">I <span id="lufs-integrated">--</span></span>
+          <span class="lufs-label">TP <span id="lufs-true-peak">--</span></span>
+        </div>
+        <div class="spectrum-knobs" id="spectrum-knobs"></div>
       </section>
 
       <section class="module panel" id="mixer-panel" data-panel="mixer" hidden>

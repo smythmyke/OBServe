@@ -484,6 +484,7 @@ pub async fn set_input_settings(
 #[tauri::command]
 pub async fn set_input_audio_monitor_type(
     conn_state: tauri::State<'_, SharedObsConnection>,
+    obs_state: tauri::State<'_, SharedObsState>,
     input_name: String,
     monitor_type: String,
 ) -> Result<(), String> {
@@ -496,7 +497,41 @@ pub async fn set_input_audio_monitor_type(
         })),
     )
     .await?;
+    // Immediately sync the cache so UI reflects the change
+    {
+        let mut s = obs_state.write().await;
+        if let Some(input) = s.inputs.get_mut(&input_name) {
+            input.monitor_type = monitor_type;
+        }
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_input_audio_monitor_type(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    obs_state: tauri::State<'_, SharedObsState>,
+    input_name: String,
+) -> Result<String, String> {
+    let conn = conn_state.lock().await;
+    let result = conn
+        .send_request(
+            "GetInputAudioMonitorType",
+            Some(json!({"inputName": input_name})),
+        )
+        .await?;
+    let monitor_type = result["monitorType"]
+        .as_str()
+        .unwrap_or("OBS_MONITORING_TYPE_NONE")
+        .to_string();
+    // Sync cache with fresh value from OBS
+    {
+        let mut s = obs_state.write().await;
+        if let Some(input) = s.inputs.get_mut(&input_name) {
+            input.monitor_type = monitor_type.clone();
+        }
+    }
+    Ok(monitor_type)
 }
 
 #[tauri::command]

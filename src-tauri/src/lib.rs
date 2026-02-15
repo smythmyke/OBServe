@@ -14,6 +14,7 @@ mod presets;
 mod routing;
 mod system_monitor;
 mod tray;
+mod spectrum;
 mod vst_manager;
 
 use ai_actions::SharedUndoStack;
@@ -23,6 +24,7 @@ use ducking::SharedDuckingConfig;
 use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
+use spectrum::SharedSpectrumState;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
@@ -45,6 +47,7 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(Vec::<ai_actions::UndoEntry>::new())) as SharedUndoStack)
         .manage(Arc::new(RwLock::new(audio_monitor::AudioMetrics::default())) as SharedAudioMetrics)
         .manage(Arc::new(RwLock::new(ducking::DuckingConfig::default())) as SharedDuckingConfig)
+        .manage(Arc::new(Mutex::new(spectrum::SpectrumState::new())) as SharedSpectrumState)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -92,6 +95,7 @@ pub fn run() {
             commands::refresh_video_settings,
             commands::set_input_settings,
             commands::set_input_audio_monitor_type,
+            commands::get_input_audio_monitor_type,
             commands::create_input,
             commands::get_routing_recommendations,
             commands::apply_recommended_setup,
@@ -123,6 +127,9 @@ pub fn run() {
             commands::add_app_capture,
             commands::remove_app_capture,
             commands::open_devtools,
+            spectrum::start_spectrum,
+            spectrum::stop_spectrum,
+            spectrum::reset_lufs,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

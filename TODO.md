@@ -1,7 +1,7 @@
 # OBServe — Master TODO
 
 > Single source of truth for what's done and what's next.
-> Updated: 2026-02-14
+> Updated: 2026-02-15
 
 ## Completed Work
 
@@ -34,8 +34,11 @@
 - Dynamic filter discovery via GetSourceFilterKindList
 - VST_FILTER_CATALOG with friendly labels, humanizeFilterKind helper
 
-### Audio Calibration — DONE
-- Mic calibration wizard with real-time analysis, auto-apply recommended filters
+### Audio Calibration v1 — DONE
+- Mic calibration wizard with RMS-based analysis, auto-apply recommended filters
+
+### Sidechain Ducking + Mixer Controls — DONE
+- Sidechain auto-ducking (ducking.rs), audio balance/pan, sync offset, track routing, app audio capture
 
 ### Bug Fixes & Improvements
 - [x] SourceFilterSettingsChanged event — real-time UI sync when filters edited in OBS
@@ -47,13 +50,13 @@
 
 ### Filter Expansion — Remaining Items
 - [ ] **Option E: OBS WebSocket audio features**
-  - [ ] Audio Balance — stereo pan control per source (Get/SetInputAudioBalance)
-  - [ ] Audio Sync Offset — ms delay for lip-sync (Get/SetInputAudioSyncOffset)
-  - [ ] Audio Track Routing — 6-track assignment per source (Get/SetInputAudioTracks)
+  - [x] Audio Balance — stereo pan control per source (Get/SetInputAudioBalance)
+  - [x] Audio Sync Offset — ms delay for lip-sync (Get/SetInputAudioSyncOffset)
+  - [x] Audio Track Routing — 6-track assignment per source (Get/SetInputAudioTracks)
   - [ ] OBS Peak Metering — subscribe to InputVolumeMeters for post-filter levels
-  - [ ] Sidechain Ducking — auto-duck desktop audio when mic active
+  - [x] Sidechain Ducking — auto-duck desktop audio when mic active (ducking.rs)
   - [x] SourceFilterSettingsChanged event — sync UI when user edits filters in OBS
-  - [ ] Application Audio Capture — wasapi_process_output_capture for per-app routing
+  - [x] Application Audio Capture — wasapi_process_output_capture for per-app routing
 - [ ] **Option B: VST Catalog Browser** (RESEARCH)
   - In-app curated free VST catalog, one-click download+install
   - Catalog: ReaPlugs, TDR Nova, OTT, Wider, MeldaFreeBundle
@@ -61,7 +64,7 @@
   - Rust DSP engine (fundsp/dasp), virtual audio device, custom EQ/de-esser/reverb
 
 ### Phase 5: Advanced Features (from CLAUDE.md roadmap)
-- [ ] Auto-ducking (lower music when voice detected)
+- [x] Auto-ducking (lower music when voice detected) — sidechain ducking in ducking.rs
 - [ ] Game/application detection
 - [ ] Dynamic quality adjustment based on system load
 - [ ] Scene auto-switching
@@ -82,6 +85,37 @@
 - [ ] Web Speech API fallback (free tier)
 - [ ] Deepgram streaming (premium tier)
 
+### Project: Calibration 2.0 — Spectral Analysis & Platform Targeting
+> Spec: memory/calibration-2.0-spec.md (Project 1)
+- [ ] Platform target picker (Twitch, YouTube, Podcast, Broadcast, Discord, Custom)
+- [ ] FFT frequency analysis during silence phase (hum, hiss detection)
+- [ ] FFT analysis during speech phase (sibilance, proximity effect detection)
+- [ ] Real-time spectrum visualization canvas in calibration wizard
+- [ ] LUFS-based gain targeting (replace -18 dBFS RMS)
+- [ ] Style variants (Neutral, Voice Clarity, Bass Heavy, Bright, Warm, Podcast Standard)
+- [ ] Expanded filter recommendations (high-pass, de-esser, frequency-aware suppression)
+- [ ] Annotated results screen showing detected issues on spectrum
+
+### Project: Calibration Profiles
+> Spec: memory/calibration-2.0-spec.md (Project 2)
+- [ ] Save calibration results as named profiles (name, platform, device, measurements, filters, style)
+- [ ] Profile selector in device widget calibration row (dropdown with saved profiles)
+- [ ] Profiles in Smart Presets dropdown ("Your Calibrations" section)
+- [ ] Switch profiles re-applies filter chain to OBS source
+- [ ] Profile management (rename, delete, export/import JSON)
+- [ ] Style variant saved per profile, changeable after creation
+
+### Project: Pro Spectrum Module
+> Spec: memory/calibration-2.0-spec.md (Project 3)
+- [ ] New collapsible panel with source selector dropdown
+- [ ] Live spectrum analyzer (canvas-based FFT at 30fps)
+- [ ] Simple mode: quick-access processing knobs (HPF, Shelf, Presence, Air, Gate, Comp, Gain, Limiter)
+- [ ] Full DAW mode: interactive parametric EQ curve with draggable points
+- [ ] Mode toggle (Simple ↔ Full DAW)
+- [ ] LUFS metering (integrated, short-term, momentary)
+- [ ] Rust-side FFT (rustfft or spectrum-analyzer crate) for OBS source audio monitoring
+- [ ] Tauri events for FFT data (audio://fft-data)
+
 ### Product / Business
 - [ ] Tier gating (Free/Pro/Streamer feature gates)
 - [ ] Installer / distribution packaging
@@ -92,6 +126,7 @@
 ## Memory File Index
 - `MEMORY.md` — Technical notes, API gotchas, build tips
 - `TODO.md` — This file (master task list)
+- `calibration-2.0-spec.md` — Calibration 2.0 design spec (3 projects)
 - `signal-chain-groups-spec.md` — Signal Chain design spec (implemented)
 - `filter-expansion-plan.md` — Filter phases A-E detail
 - `audio-device-ui-plan.md` — Device UI redesign detail

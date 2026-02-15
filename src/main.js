@@ -33,6 +33,7 @@ let recognition = null;
 let pttActive = false;
 
 const CALIBRATION_KEY = 'observe-calibration';
+const CAL_PLATFORM_KEY = 'observe-cal-platform';
 const CAL_FILTER_PREFIX = 'OBServe Cal';
 const CAL_STEPS = ['prep', 'silence', 'normal', 'loud', 'analysis', 'results', 'applied'];
 const CAL_SCRIPTS = {
@@ -40,10 +41,42 @@ const CAL_SCRIPTS = {
   loud: "OH MY GOD, DID YOU SEE THAT?! THAT WAS ABSOLUTELY INCREDIBLE! LET'S GO!"
 };
 
+const CAL_PLATFORMS = {
+  twitch:    { label: 'Twitch',    lufs: -14 },
+  youtube:   { label: 'YouTube',   lufs: -14 },
+  podcast:   { label: 'Podcast',   lufs: -16 },
+  broadcast: { label: 'Broadcast', lufs: -23 },
+  discord:   { label: 'Discord',   lufs: -16 },
+  custom:    { label: 'Custom',    lufs: -16 },
+};
+
+const CAL_STYLE_VARIANTS = {
+  neutral:  { label: 'Neutral',       desc: 'No tonal shaping' },
+  clarity:  { label: 'Voice Clarity',  desc: 'Presence boost for intelligibility' },
+  bass:     { label: 'Bass Heavy',     desc: 'Warm low-end emphasis' },
+  bright:   { label: 'Bright',         desc: 'Crisp high-frequency lift' },
+  warm:     { label: 'Warm',           desc: 'Smooth, rounded tone' },
+  podcast:  { label: 'Podcast',        desc: 'Broadcast-standard vocal EQ' },
+};
+
+const SPECTRUM_COLORS = {
+  hum:       'rgba(204,68,68,0.15)',
+  sibilance: 'rgba(212,160,64,0.12)',
+  proximity: 'rgba(68,136,204,0.12)',
+  hvac:      'rgba(140,100,60,0.10)',
+};
+
 const calibration = {
   step: null, audioCtx: null, stream: null, analyser: null,
   timeDomainBuf: null, intervalId: null, samples: [],
   measurements: {}, recommendations: null, obsSourceName: null, echoWarning: false,
+  rawAnalyser: null, freqBuf: null,
+  spectrumCanvas: null, spectrumCtx: null, animFrameId: null,
+  frozenSpectrum: null,
+  spectralData: { silence: [], normal: [], loud: [] },
+  platform: localStorage.getItem(CAL_PLATFORM_KEY) || 'twitch',
+  styleVariant: 'neutral',
+  customLufs: -16,
 };
 
 const SIGNAL_CHAIN_GROUPS_KEY = 'observe-signal-chain-groups';
@@ -65,11 +98,11 @@ let pendingHighlight = null; // { type: 'group'|'filter', groupId?, source?, fil
 const VISIBILITY_MATRIX = {
   'audio': {
     'simple':   ['audio-devices', 'filters', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
     'simple':   ['audio-devices', 'filters', 'scenes', 'stream-record', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
   },
   'video': {
     'simple':   ['filters', 'scenes', 'stream-record', 'ai'],
@@ -78,7 +111,7 @@ const VISIBILITY_MATRIX = {
 };
 
 const CONNECTION_REQUIRED_PANELS = new Set([
-  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture',
+  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture', 'pro-spectrum',
 ]);
 
 function applyPanelVisibility() {
@@ -379,6 +412,7 @@ function renderFullState() {
   updateMonitorUI();
   renderDuckingSources();
   renderActiveCaptures();
+  populateSpectrumSources();
 }
 
 function renderScenes() {
@@ -625,8 +659,11 @@ function updatePanKnob(wrap, pan) {
   }
 }
 
+let mixerEventsBound = false;
 function bindMixerEvents() {
   const container = $('#mixer-list');
+  if (mixerEventsBound) return;
+  mixerEventsBound = true;
 
   container.addEventListener('input', (e) => {
     if (!e.target.classList.contains('mixer-slider')) return;
@@ -946,6 +983,7 @@ function setDisconnectedUI() {
   if (calibration.step) cancelCalibration();
   const calPanel = document.getElementById('calibration-panel');
   if (calPanel) calPanel.hidden = true;
+  stopProSpectrum();
   applyPanelVisibility();
   updateModuleShading();
 }
@@ -1206,6 +1244,69 @@ function getKnownPresetPrefixes() {
   return cachedPresets.map(p => p.filterPrefix);
 }
 
+function buildCalGroupName(calData) {
+  const platform = calData?.platform ? (CAL_PLATFORMS[calData.platform]?.label || calData.platform) : '';
+  const style = calData?.styleVariant ? (CAL_STYLE_VARIANTS[calData.styleVariant]?.label || calData.styleVariant) : 'Neutral';
+  if (platform) return `Calibration \u2014 ${platform} \u2014 ${style}`;
+  return 'Calibration';
+}
+
+function updateCalGroupName(calData) {
+  if (!calibration.obsSourceName) return;
+  const groups = loadGroups(calibration.obsSourceName);
+  const calGroup = groups.find(g => g.type === 'calibration');
+  if (calGroup) {
+    calGroup.name = buildCalGroupName(calData);
+    saveGroups(calibration.obsSourceName, groups);
+  }
+}
+
+async function swapCalStyle(sourceName, newStyleKey) {
+  const calData = loadCalibrationData();
+  if (!calData) return;
+
+  const oldStyleName = CAL_FILTER_PREFIX + ' Air EQ';
+
+  // Remove existing Air EQ filter if present
+  try {
+    await invoke('remove_source_filter', { sourceName, filterName: oldStyleName });
+  } catch (_) {}
+
+  // Remove from group's filterNames
+  const groups = loadGroups(sourceName);
+  const calGroup = groups.find(g => g.type === 'calibration');
+  if (calGroup) {
+    calGroup.filterNames = calGroup.filterNames.filter(n => n !== oldStyleName);
+  }
+
+  // Create new Air EQ if non-neutral and VST available
+  if (newStyleKey !== 'neutral' && isVstAvailable('Air')) {
+    try {
+      await invoke('create_source_filter', {
+        sourceName,
+        filterName: oldStyleName,
+        filterKind: 'vst_filter',
+        filterSettings: { plugin_path: getVstPath('Air') }
+      });
+      if (calGroup && !calGroup.filterNames.includes(oldStyleName)) {
+        calGroup.filterNames.push(oldStyleName);
+      }
+    } catch (e) {
+      showFrameDropAlert('Style EQ creation failed: ' + e);
+    }
+  }
+
+  // Update saved data and group name
+  calData.styleVariant = newStyleKey;
+  saveCalibrationData(calData);
+  if (calGroup) {
+    calGroup.name = buildCalGroupName(calData);
+    saveGroups(sourceName, groups);
+  }
+
+  await refreshFullState();
+}
+
 function reconstructGroups(sourceName) {
   const saved = loadGroups(sourceName);
   const input = obsState?.inputs?.[sourceName];
@@ -1269,7 +1370,9 @@ function reconstructGroups(sourceName) {
   if (calUnclaimed.length > 0) {
     let calGroup = saved.find(g => g.type === 'calibration');
     if (!calGroup) {
-      calGroup = { id: 'cal-' + Date.now(), name: 'Calibration', type: 'calibration', filterPrefix: CAL_FILTER_PREFIX, filterNames: [], bypassed: false };
+      const calData = loadCalibrationData();
+      const calGroupName = buildCalGroupName(calData);
+      calGroup = { id: 'cal-' + Date.now(), name: calGroupName, type: 'calibration', filterPrefix: CAL_FILTER_PREFIX, filterNames: [], bypassed: false };
       saved.push(calGroup);
     }
     for (const name of calUnclaimed) {
@@ -1495,6 +1598,18 @@ function renderGroup(input, group) {
         </div>
       </div>` : '';
 
+  // Style variant dropdown for calibration groups
+  let calStyleHtml = '';
+  if (group.type === 'calibration' && isVstAvailable('Air')) {
+    const calData = loadCalibrationData();
+    const currentStyle = calData?.styleVariant || 'neutral';
+    const options = Object.entries(CAL_STYLE_VARIANTS).map(([key, v]) => {
+      const sel = key === currentStyle ? ' selected' : '';
+      return `<option value="${key}"${sel}>${v.label}</option>`;
+    }).join('');
+    calStyleHtml = `<select class="cal-group-style-select" data-cal-style-source="${esc(input.name)}" title="Change tonal style">${options}</select>`;
+  }
+
   const filterMap = {};
   for (const f of (input.filters || [])) filterMap[f.name] = f;
 
@@ -1512,6 +1627,7 @@ function renderGroup(input, group) {
     <div class="group-header">
       ${handleHtml}
       <span class="group-name">${esc(group.name)}</span>
+      ${calStyleHtml}
       ${addFilterHtml}
       <span class="group-led${ledClass}" data-group-bypass="${group.id}" data-group-source="${esc(input.name)}" title="${group.bypassed ? 'Enable group' : 'Bypass group'}"></span>
       ${removeHtml}
@@ -1708,6 +1824,14 @@ function bindFilterChainEvents() {
       }
     }
     debouncedSetFilterSettings(source, filter, { [param]: value });
+  });
+
+  container.addEventListener('change', (e) => {
+    const styleSelect = e.target.closest('.cal-group-style-select');
+    if (!styleSelect) return;
+    const sourceName = styleSelect.dataset.calStyleSource;
+    const newStyle = styleSelect.value;
+    swapCalStyle(sourceName, newStyle);
   });
 }
 
@@ -2159,7 +2283,7 @@ const MONITOR_CYCLE = [
   'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
 ];
 
-function cycleMonitorType() {
+async function cycleMonitorType() {
   const matched = matchObsInputsToDevice('input', selectedInputId);
   if (matched.length === 0 || !isConnected) return;
 
@@ -2168,11 +2292,23 @@ function cycleMonitorType() {
   const idx = MONITOR_CYCLE.indexOf(current);
   const next = MONITOR_CYCLE[(idx + 1) % MONITOR_CYCLE.length];
 
-  invoke('set_input_audio_monitor_type', { inputName: input.name, monitorType: next }).then(() => {
+  console.log('[MON] cycling:', input.name, current, '→', next);
+
+  try {
+    await invoke('set_input_audio_monitor_type', { inputName: input.name, monitorType: next });
+    console.log('[MON] set OK:', next);
+    // Update cached state immediately so UI reflects the change
+    if (obsState?.inputs?.[input.name]) {
+      obsState.inputs[input.name].monitorType = next;
+    }
+    updateMonitorUI();
     if (next === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
       showFrameDropAlert('Monitor + Output: audio goes to stream/recording. Use headphones to avoid feedback.');
     }
-  }).catch(e => showFrameDropAlert('Monitor change failed: ' + e));
+  } catch (e) {
+    console.error('[MON] set FAILED:', e);
+    showFrameDropAlert('Monitor change failed: ' + e);
+  }
 }
 
 function updateMonitorUI() {
@@ -2188,8 +2324,19 @@ function updateMonitorUI() {
     return;
   }
 
-  const monType = matched[0].monitorType || 'OBS_MONITORING_TYPE_NONE';
+  // Query OBS for fresh monitor type to prevent stale cache issues
+  const inputName = matched[0].name;
+  invoke('get_input_audio_monitor_type', { inputName }).then(fresh => {
+    if (obsState?.inputs?.[inputName]) {
+      obsState.inputs[inputName].monitorType = fresh;
+    }
+    applyMonitorUIState(btn, led, fresh);
+  }).catch(() => {
+    applyMonitorUIState(btn, led, matched[0].monitorType || 'OBS_MONITORING_TYPE_NONE');
+  });
+}
 
+function applyMonitorUIState(btn, led, monType) {
   btn.classList.remove('mon-only', 'mon-output');
   if (monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY') {
     btn.classList.add('mon-only');
@@ -2825,7 +2972,7 @@ async function togglePresetDropdown() {
 
   const presets = await ensurePresetsLoaded();
   const vstsInstalled = vstStatus?.installed ?? false;
-  dropdown.innerHTML = presets.map(p => {
+  let html = presets.map(p => {
     const isPro = p.pro;
     const disabled = isPro && !vstsInstalled;
     const disabledClass = disabled ? ' disabled' : '';
@@ -2839,14 +2986,77 @@ async function togglePresetDropdown() {
       </span>
     </button>`;
   }).join('');
+
+  const calProfiles = loadCalProfiles();
+  if (calProfiles.length > 0) {
+    html += '<div class="add-filter-section-header">Your Calibrations</div>';
+    html += calProfiles.map(p => {
+      const plat = CAL_PLATFORMS[p.platform]?.label || p.platform || '';
+      const style = CAL_STYLE_VARIANTS[p.styleVariant]?.label || p.styleVariant || '';
+      const dateStr = p.timestamp ? new Date(p.timestamp).toLocaleDateString() : '';
+      return `<button class="sc-preset-option" data-profile-id="${esc(p.id)}">
+        <span class="sc-preset-icon">&#127908;</span>
+        <span class="sc-preset-info">
+          <span class="sc-preset-name">${esc(p.name)}</span>
+          <span class="sc-preset-desc">${esc(plat)} &bull; ${esc(style)} &bull; ${esc(dateStr)}</span>
+        </span>
+        <span class="cal-profile-delete-btn" data-profile-delete="${esc(p.id)}" title="Delete profile">&times;</span>
+      </button>`;
+    }).join('');
+    html += `<div class="cal-profile-actions">
+      <button class="btn-secondary" id="btn-cal-export-profiles">Export</button>
+      <button class="btn-secondary" id="btn-cal-import-profiles">Import</button>
+      <input type="file" accept=".json" id="cal-import-input" hidden>
+    </div>`;
+  }
+
+  dropdown.innerHTML = html;
   dropdown.hidden = false;
 
-  dropdown.querySelectorAll('.sc-preset-option:not([disabled])').forEach(opt => {
+  dropdown.querySelectorAll('.sc-preset-option[data-preset-id]:not([disabled])').forEach(opt => {
     opt.addEventListener('click', () => {
       dropdown.hidden = true;
       handlePresetSelection(opt.dataset.presetId);
     });
   });
+
+  dropdown.querySelectorAll('.sc-preset-option[data-profile-id]').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      if (e.target.closest('.cal-profile-delete-btn')) return;
+      dropdown.hidden = true;
+      applyCalProfile(opt.dataset.profileId);
+    });
+  });
+
+  dropdown.querySelectorAll('.cal-profile-delete-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteCalProfile(btn.dataset.profileDelete);
+      renderCalProfileSelect();
+      dropdown.hidden = true;
+      setTimeout(() => togglePresetDropdown(), 0);
+    });
+  });
+
+  const exportBtn = dropdown.querySelector('#btn-cal-export-profiles');
+  if (exportBtn) exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportCalProfiles(); });
+
+  const importBtn = dropdown.querySelector('#btn-cal-import-profiles');
+  const importInput = dropdown.querySelector('#cal-import-input');
+  if (importBtn && importInput) {
+    importBtn.addEventListener('click', (e) => { e.stopPropagation(); importInput.click(); });
+    importInput.addEventListener('change', () => {
+      const file = importInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        importCalProfiles(reader.result);
+        dropdown.hidden = true;
+        setTimeout(() => togglePresetDropdown(), 0);
+      };
+      reader.readAsText(file);
+    });
+  }
 }
 
 async function handlePresetSelection(presetId) {
@@ -3068,6 +3278,7 @@ const PANEL_LABELS = {
   'obs-info': 'OBS Info',
   'system': 'System',
   'filters': 'Signal Chain',
+  'pro-spectrum': 'Pro Spectrum',
   'ai': 'AI Assistant',
 };
 
@@ -3197,6 +3408,22 @@ function renderPanelToggles() {
 
 // --- Calibration Wizard ---
 
+function getTargetLufs() {
+  if (calibration.platform === 'custom') return calibration.customLufs;
+  return CAL_PLATFORMS[calibration.platform]?.lufs || -14;
+}
+
+function isVstAvailable(pluginName) {
+  if (!vstStatus?.installed || !vstStatus.plugins) return false;
+  return vstStatus.plugins.some(p => p.installed && p.name === pluginName);
+}
+
+function getVstPath(pluginName) {
+  if (!vstStatus?.plugins) return null;
+  const p = vstStatus.plugins.find(pl => pl.installed && pl.name === pluginName);
+  return p ? p.fullPath : null;
+}
+
 async function beginCapture() {
   try {
     calibration.stream = await navigator.mediaDevices.getUserMedia({
@@ -3211,12 +3438,36 @@ async function beginCapture() {
   if (calibration.audioCtx.state === 'suspended') {
     await calibration.audioCtx.resume();
   }
-  const source = calibration.audioCtx.createMediaStreamSource(calibration.stream);
-  calibration.analyser = calibration.audioCtx.createAnalyser();
+  const ctx = calibration.audioCtx;
+  const source = ctx.createMediaStreamSource(calibration.stream);
+
+  // Unweighted path for FFT spectrum display
+  calibration.rawAnalyser = ctx.createAnalyser();
+  calibration.rawAnalyser.fftSize = 2048;
+  calibration.rawAnalyser.smoothingTimeConstant = 0.3;
+  source.connect(calibration.rawAnalyser);
+  calibration.freqBuf = new Float32Array(calibration.rawAnalyser.frequencyBinCount);
+
+  // K-weighted path for LUFS-approximate RMS (ITU-R BS.1770)
+  const highShelf = ctx.createBiquadFilter();
+  highShelf.type = 'highshelf';
+  highShelf.frequency.value = 1681;
+  highShelf.gain.value = 4;
+  const highPass = ctx.createBiquadFilter();
+  highPass.type = 'highpass';
+  highPass.frequency.value = 38;
+  highPass.Q.value = 0.5;
+
+  calibration.analyser = ctx.createAnalyser();
   calibration.analyser.fftSize = 2048;
   calibration.analyser.smoothingTimeConstant = 0;
-  source.connect(calibration.analyser);
+  source.connect(highShelf);
+  highShelf.connect(highPass);
+  highPass.connect(calibration.analyser);
+
   calibration.timeDomainBuf = new Float32Array(calibration.analyser.fftSize);
+  calibration.spectralData = { silence: [], normal: [], loud: [] };
+  calibration.frozenSpectrum = null;
   return true;
 }
 
@@ -3232,6 +3483,138 @@ function computeRms() {
   return Math.max(-96, db);
 }
 
+function initSpectrumCanvas(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const canvas = document.createElement('canvas');
+  canvas.className = 'cal-spectrum-canvas';
+  canvas.width = container.clientWidth || 400;
+  canvas.height = 120;
+  container.appendChild(canvas);
+  calibration.spectrumCanvas = canvas;
+  calibration.spectrumCtx = canvas.getContext('2d');
+}
+
+function freqToX(freq, w) {
+  if (freq <= 20) return 0;
+  return (Math.log10(freq / 20) / 3) * w; // 20Hz→20kHz = 3 decades
+}
+
+function drawFreqZone(ctx, w, h, freqLow, freqHigh, color) {
+  const x1 = freqToX(freqLow, w);
+  const x2 = freqToX(freqHigh, w);
+  ctx.fillStyle = color;
+  ctx.fillRect(x1, 0, x2 - x1, h);
+}
+
+function drawSpectrumLine(ctx, data, w, h, color, dashed) {
+  if (!data || data.length === 0) return;
+  const sr = calibration.audioCtx?.sampleRate || 48000;
+  const binCount = data.length;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = dashed ? 1 : 1.5;
+  if (dashed) ctx.setLineDash([4, 3]);
+  else ctx.setLineDash([]);
+  let started = false;
+  for (let i = 1; i < binCount; i++) {
+    const freq = (i * sr) / (binCount * 2);
+    if (freq < 20 || freq > 20000) continue;
+    const x = freqToX(freq, w);
+    const db = data[i];
+    const y = h - ((db + 100) / 100) * h;
+    if (!started) { ctx.moveTo(x, Math.max(0, Math.min(h, y))); started = true; }
+    else ctx.lineTo(x, Math.max(0, Math.min(h, y)));
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawFreqLabels(ctx, w, h) {
+  const labels = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
+  ctx.fillStyle = 'rgba(200,184,152,0.3)';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'center';
+  for (const freq of labels) {
+    const x = freqToX(freq, w);
+    ctx.fillRect(x, 0, 1, h);
+    const label = freq >= 1000 ? (freq / 1000) + 'k' : freq.toString();
+    ctx.fillText(label, x, h - 2);
+  }
+}
+
+function drawSpectrum(data) {
+  const canvas = calibration.spectrumCanvas;
+  const ctx = calibration.spectrumCtx;
+  if (!canvas || !ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#060504';
+  ctx.fillRect(0, 0, w, h);
+
+  // Frequency zone backgrounds
+  drawFreqZone(ctx, w, h, 20, 120, SPECTRUM_COLORS.hum);
+  drawFreqZone(ctx, w, h, 20, 200, SPECTRUM_COLORS.proximity);
+  drawFreqZone(ctx, w, h, 500, 2000, SPECTRUM_COLORS.hvac);
+  drawFreqZone(ctx, w, h, 4000, 10000, SPECTRUM_COLORS.sibilance);
+
+  drawFreqLabels(ctx, w, h);
+
+  // Frozen noise profile overlay
+  if (calibration.frozenSpectrum) {
+    drawSpectrumLine(ctx, calibration.frozenSpectrum, w, h, 'rgba(204,68,68,0.5)', true);
+  }
+
+  // Live spectrum
+  drawSpectrumLine(ctx, data, w, h, '#d4a040', false);
+}
+
+function startSpectrumAnimation() {
+  stopSpectrumAnimation();
+  if (!calibration.rawAnalyser || !calibration.freqBuf) return;
+  const loop = () => {
+    calibration.rawAnalyser.getFloatFrequencyData(calibration.freqBuf);
+    drawSpectrum(calibration.freqBuf);
+    calibration.animFrameId = requestAnimationFrame(loop);
+  };
+  // Throttle to ~30fps
+  let lastTime = 0;
+  const throttledLoop = (timestamp) => {
+    if (timestamp - lastTime >= 33) {
+      lastTime = timestamp;
+      if (calibration.rawAnalyser && calibration.freqBuf) {
+        calibration.rawAnalyser.getFloatFrequencyData(calibration.freqBuf);
+        drawSpectrum(calibration.freqBuf);
+      }
+    }
+    calibration.animFrameId = requestAnimationFrame(throttledLoop);
+  };
+  calibration.animFrameId = requestAnimationFrame(throttledLoop);
+}
+
+function stopSpectrumAnimation() {
+  if (calibration.animFrameId) {
+    cancelAnimationFrame(calibration.animFrameId);
+    calibration.animFrameId = null;
+  }
+}
+
+function averageSpectra(snapshots) {
+  if (!snapshots || snapshots.length === 0) return null;
+  const len = snapshots[0].length;
+  const avg = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    let sum = 0;
+    for (let j = 0; j < snapshots.length; j++) {
+      sum += snapshots[j][i];
+    }
+    avg[i] = sum / snapshots.length;
+  }
+  return avg;
+}
+
 function startSampling(durationMs, stepKey) {
   calibration.samples = [];
   const startTime = Date.now();
@@ -3245,6 +3628,12 @@ function startSampling(durationMs, stepKey) {
   calibration.intervalId = setInterval(() => {
     const db = computeRms();
     calibration.samples.push(db);
+
+    // Capture FFT snapshot for spectral analysis
+    if (calibration.rawAnalyser && calibration.freqBuf && calibration.spectralData[stepKey]) {
+      calibration.rawAnalyser.getFloatFrequencyData(calibration.freqBuf);
+      calibration.spectralData[stepKey].push(new Float32Array(calibration.freqBuf));
+    }
 
     if (meterFill) {
       const pct = Math.max(0, Math.min(100, ((db + 96) / 96) * 100));
@@ -3276,12 +3665,30 @@ function processPhaseResults(stepKey) {
     const mid = Math.floor(s.length / 2);
     calibration.measurements.noiseFloor = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
     calibration.measurements.noisePeak = s[s.length - 1];
+    // Freeze noise spectrum for overlay during speech phases
+    calibration.frozenSpectrum = averageSpectra(calibration.spectralData.silence);
   } else if (stepKey === 'normal') {
     const cutoff = Math.floor(s.length * 0.2);
     const top80 = s.slice(cutoff);
     calibration.measurements.speechAvg = top80.reduce((a, b) => a + b, 0) / top80.length;
     calibration.measurements.speechPeak = s[s.length - 1];
     calibration.measurements.speechDynamic = calibration.measurements.speechPeak - calibration.measurements.speechAvg;
+
+    // Approximate integrated LUFS (K-weighted RMS via dual-analyser)
+    const absGate = -70;
+    const aboveAbsGate = s.filter(v => v > absGate);
+    if (aboveAbsGate.length > 0) {
+      const ungatedMean = aboveAbsGate.reduce((a, b) => a + b, 0) / aboveAbsGate.length;
+      const relGate = ungatedMean - 10;
+      const aboveRelGate = aboveAbsGate.filter(v => v > relGate);
+      if (aboveRelGate.length > 0) {
+        calibration.measurements.integratedLufs = aboveRelGate.reduce((a, b) => a + b, 0) / aboveRelGate.length;
+      } else {
+        calibration.measurements.integratedLufs = ungatedMean;
+      }
+    } else {
+      calibration.measurements.integratedLufs = calibration.measurements.speechAvg;
+    }
   } else if (stepKey === 'loud') {
     const cutoff = Math.floor(s.length * 0.2);
     const top80 = s.slice(cutoff);
@@ -3291,25 +3698,196 @@ function processPhaseResults(stepKey) {
   }
 }
 
+function computeSpectralFloor(spectrum, startBin, endBin) {
+  const vals = [];
+  for (let i = startBin; i < endBin && i < spectrum.length; i++) {
+    vals.push(spectrum[i]);
+  }
+  vals.sort((a, b) => a - b);
+  const idx = Math.floor(vals.length * 0.25);
+  return vals[idx] || -100;
+}
+
+function freqToBin(freq, sampleRate, binCount) {
+  return Math.round((freq * binCount * 2) / sampleRate);
+}
+
+function checkHumSeries(spectrum, fundamental, sr, binCount, floor) {
+  let maxMag = -Infinity;
+  let detected = false;
+  for (let h = 1; h <= 7; h++) {
+    const f = fundamental * h;
+    const bin = freqToBin(f, sr, binCount);
+    if (bin >= 0 && bin < spectrum.length) {
+      const peak = Math.max(
+        spectrum[Math.max(0, bin - 1)] || -100,
+        spectrum[bin] || -100,
+        spectrum[Math.min(spectrum.length - 1, bin + 1)] || -100
+      );
+      const above = peak - floor;
+      if (above > 10) detected = true;
+      if (peak > maxMag) maxMag = peak;
+    }
+  }
+  return { detected, magnitude: maxMag };
+}
+
+function detectHum(silenceSpectrum, sr, binCount) {
+  if (!silenceSpectrum) return { humDetected: false, humFrequency: 0, humMagnitude: 0 };
+  const startBin = freqToBin(20, sr, binCount);
+  const endBin = freqToBin(20000, sr, binCount);
+  const floor = computeSpectralFloor(silenceSpectrum, startBin, endBin);
+
+  const hz50 = checkHumSeries(silenceSpectrum, 50, sr, binCount, floor);
+  const hz60 = checkHumSeries(silenceSpectrum, 60, sr, binCount, floor);
+
+  if (!hz50.detected && !hz60.detected) {
+    return { humDetected: false, humFrequency: 0, humMagnitude: 0 };
+  }
+  const winner = hz60.magnitude >= hz50.magnitude ? { freq: 60, mag: hz60.magnitude } : { freq: 50, mag: hz50.magnitude };
+  return { humDetected: true, humFrequency: winner.freq, humMagnitude: winner.mag - floor };
+}
+
+function computeHissRatio(silenceSpectrum, sr, binCount) {
+  if (!silenceSpectrum) return { hissRatio: 0, hissDetected: false };
+  const bin4k = freqToBin(4000, sr, binCount);
+  const bin20 = freqToBin(20, sr, binCount);
+  let highPower = 0, totalPower = 0;
+  for (let i = Math.max(1, bin20); i < binCount; i++) {
+    const p = Math.pow(10, (silenceSpectrum[i] || -100) / 10);
+    totalPower += p;
+    if (i >= bin4k) highPower += p;
+  }
+  const ratio = totalPower > 0 ? highPower / totalPower : 0;
+  return { hissRatio: ratio, hissDetected: ratio > 0.15 };
+}
+
+function detectHvac(silenceSpectrum, sr, binCount) {
+  if (!silenceSpectrum) return { hvacDetected: false };
+  const bin500 = freqToBin(500, sr, binCount);
+  const bin2k = freqToBin(2000, sr, binCount);
+  const startBin = freqToBin(20, sr, binCount);
+  const endBin = freqToBin(20000, sr, binCount);
+  const floor = computeSpectralFloor(silenceSpectrum, startBin, endBin);
+
+  let maxAbove = -Infinity;
+  for (let i = bin500; i <= bin2k && i < silenceSpectrum.length; i++) {
+    const above = (silenceSpectrum[i] || -100) - floor;
+    if (above > maxAbove) maxAbove = above;
+  }
+  return { hvacDetected: maxAbove > 8 };
+}
+
+function detectSibilance(speechSpectrum, silenceSpectrum, sr, binCount) {
+  if (!speechSpectrum) return { sibilanceDetected: false, sibilancePeakHz: 0, sibilanceMagnitude: 0 };
+  const bin1k = freqToBin(1000, sr, binCount);
+  const bin4k = freqToBin(4000, sr, binCount);
+  const bin10k = freqToBin(10000, sr, binCount);
+
+  // Mid-range baseline (1-4kHz)
+  let midSum = 0, midCount = 0;
+  for (let i = bin1k; i < bin4k && i < speechSpectrum.length; i++) {
+    let val = speechSpectrum[i] || -100;
+    if (silenceSpectrum) val -= ((silenceSpectrum[i] || -100) + 100); // subtract noise contribution
+    midSum += Math.pow(10, val / 10);
+    midCount++;
+  }
+  const midAvg = midCount > 0 ? midSum / midCount : 1e-10;
+
+  // Sibilance range (4-10kHz)
+  let sibilPeak = -Infinity, sibilPeakBin = bin4k;
+  for (let i = bin4k; i < bin10k && i < speechSpectrum.length; i++) {
+    let val = speechSpectrum[i] || -100;
+    if (silenceSpectrum) val -= ((silenceSpectrum[i] || -100) + 100);
+    const power = Math.pow(10, val / 10);
+    if (power > sibilPeak) { sibilPeak = power; sibilPeakBin = i; }
+  }
+
+  const sibilanceDetected = sibilPeak > midAvg * 2;
+  const peakHz = Math.round((sibilPeakBin * sr) / (binCount * 2));
+  return { sibilanceDetected, sibilancePeakHz: peakHz, sibilanceMagnitude: 10 * Math.log10(sibilPeak / Math.max(midAvg, 1e-10)) };
+}
+
+function detectProximity(speechSpectrum, silenceSpectrum, sr, binCount) {
+  if (!speechSpectrum) return { proximityDetected: false, proximityRatio: 0 };
+  const bin200 = freqToBin(200, sr, binCount);
+  const bin400 = freqToBin(400, sr, binCount);
+  const bin2k = freqToBin(2000, sr, binCount);
+
+  let lowPower = 0, midPower = 0;
+  for (let i = 1; i < bin200 && i < speechSpectrum.length; i++) {
+    let val = speechSpectrum[i] || -100;
+    if (silenceSpectrum) val = Math.max(val, (silenceSpectrum[i] || -100)) === val ? val : -100;
+    lowPower += Math.pow(10, val / 10);
+  }
+  for (let i = bin400; i < bin2k && i < speechSpectrum.length; i++) {
+    let val = speechSpectrum[i] || -100;
+    midPower += Math.pow(10, val / 10);
+  }
+  const normLow = bin200 > 1 ? lowPower / (bin200 - 1) : 0;
+  const normMid = (bin2k - bin400) > 0 ? midPower / (bin2k - bin400) : 1e-10;
+  const ratio = normMid > 0 ? normLow / normMid : 0;
+  return { proximityDetected: ratio > 3.0, proximityRatio: ratio };
+}
+
+function analyzeSpectralData() {
+  const sr = calibration.audioCtx?.sampleRate || 48000;
+  const binCount = calibration.rawAnalyser?.frequencyBinCount || 1024;
+  const silenceAvg = calibration.frozenSpectrum;
+  const speechAvg = averageSpectra(calibration.spectralData.normal);
+
+  const hum = detectHum(silenceAvg, sr, binCount);
+  const hiss = computeHissRatio(silenceAvg, sr, binCount);
+  const hvac = detectHvac(silenceAvg, sr, binCount);
+  const sibilance = detectSibilance(speechAvg, silenceAvg, sr, binCount);
+  const proximity = detectProximity(speechAvg, silenceAvg, sr, binCount);
+
+  calibration.measurements.spectral = { ...hum, ...hiss, ...hvac, ...sibilance, ...proximity };
+  return calibration.measurements.spectral;
+}
+
 function computeRecommendations() {
   const m = calibration.measurements;
+  const spec = analyzeSpectralData();
   const filters = [];
 
-  if (m.noiseFloor > -40) {
-    const suppress = Math.max(-60, Math.min(0, m.noiseFloor - 10));
+  // 1. High-pass via Gatelope VST (proximity effect)
+  if (spec.proximityDetected && isVstAvailable('Gatelope')) {
     filters.push({
-      kind: 'noise_suppress_filter_v2',
-      label: 'Noise Suppression',
-      settings: { suppress_level: Math.round(suppress) }
+      kind: 'vst_filter',
+      label: 'High-Pass (Gatelope)',
+      reason: `Proximity effect detected (ratio ${spec.proximityRatio.toFixed(1)}x)`,
+      settings: { plugin_path: getVstPath('Gatelope') }
     });
   }
 
+  // 2. Noise Suppression (spectral-aware aggressiveness)
+  if (m.noiseFloor > -40) {
+    let suppress = Math.max(-60, Math.min(0, m.noiseFloor - 10));
+    let reason = `Noise floor at ${m.noiseFloor.toFixed(1)} dB`;
+    if (spec.hissDetected) {
+      suppress -= 5;
+      reason += ', hiss detected — more aggressive';
+    } else if (spec.humDetected && !spec.hissDetected) {
+      suppress += 5;
+      reason += ', hum-only — lighter suppression';
+    }
+    filters.push({
+      kind: 'noise_suppress_filter_v2',
+      label: 'Noise Suppression',
+      reason,
+      settings: { suppress_level: Math.round(Math.max(-60, suppress)) }
+    });
+  }
+
+  // 3. Noise Gate
   if (m.noiseFloor > -50) {
     const gap = (m.speechAvg || -20) - m.noiseFloor;
     const openThresh = m.noiseFloor + gap * 0.4;
     filters.push({
       kind: 'noise_gate_filter',
       label: 'Noise Gate',
+      reason: `SNR gap: ${gap.toFixed(0)} dB`,
       settings: {
         open_threshold: Math.round(openThresh),
         close_threshold: Math.round(openThresh - 6),
@@ -3320,21 +3898,38 @@ function computeRecommendations() {
     });
   }
 
-  if ((m.speechAvg || -20) < -25) {
-    const gain = -18 - (m.speechAvg || -20);
+  // 4. De-esser via DeEss VST (sibilance)
+  if (spec.sibilanceDetected && isVstAvailable('DeEss')) {
+    filters.push({
+      kind: 'vst_filter',
+      label: 'De-Esser (DeEss)',
+      reason: `Sibilance peak at ${spec.sibilancePeakHz}Hz (+${spec.sibilanceMagnitude.toFixed(1)}dB)`,
+      settings: { plugin_path: getVstPath('DeEss') }
+    });
+  }
+
+  // 5. Gain (LUFS-based platform targeting)
+  const targetLufs = getTargetLufs();
+  const currentLufs = m.integratedLufs || m.speechAvg || -20;
+  const gain = targetLufs - currentLufs;
+  if (Math.abs(gain) > 1) {
+    const platformLabel = CAL_PLATFORMS[calibration.platform]?.label || calibration.platform;
     filters.push({
       kind: 'gain_filter',
       label: 'Gain',
+      reason: `${currentLufs.toFixed(1)} → ${targetLufs} LUFS (${platformLabel})`,
       settings: { db: Math.round(gain * 2) / 2 }
     });
   }
 
+  // 6. Compressor
   const crest = m.crestFactor || 0;
   if (crest > 12) {
     const ratio = Math.min(8, 2 + (crest - 12) / 3);
     filters.push({
       kind: 'compressor_filter',
       label: 'Compressor',
+      reason: `Crest factor ${crest.toFixed(1)} dB`,
       settings: {
         ratio: Math.round(ratio * 2) / 2,
         threshold: Math.round(((m.speechAvg || -20) + 6) * 2) / 2,
@@ -3345,10 +3940,12 @@ function computeRecommendations() {
     });
   }
 
+  // 7. Limiter
   const limiterThresh = Math.min(-1, Math.round(((m.loudPeak || -6) + 3) * 2) / 2);
   filters.push({
     kind: 'limiter_filter',
     label: 'Limiter',
+    reason: `Loud peak at ${(m.loudPeak || -6).toFixed(1)} dB`,
     settings: { threshold: limiterThresh, release_time: 60 }
   });
 
@@ -3372,6 +3969,9 @@ async function startCalibration() {
 
   calibration.measurements = {};
   calibration.recommendations = null;
+  calibration.spectralData = { silence: [], normal: [], loud: [] };
+  calibration.frozenSpectrum = null;
+  calibration.styleVariant = 'neutral';
   calibration.step = 'prep';
 
   const panel = document.getElementById('calibration-panel');
@@ -3425,6 +4025,7 @@ function cleanupCalibration() {
     clearInterval(calibration.intervalId);
     calibration.intervalId = null;
   }
+  stopSpectrumAnimation();
   if (calibration.stream) {
     calibration.stream.getTracks().forEach(t => t.stop());
     calibration.stream = null;
@@ -3434,9 +4035,16 @@ function cleanupCalibration() {
     calibration.audioCtx = null;
   }
   calibration.analyser = null;
+  calibration.rawAnalyser = null;
   calibration.timeDomainBuf = null;
+  calibration.freqBuf = null;
+  calibration.spectrumCanvas = null;
+  calibration.spectrumCtx = null;
+  calibration.frozenSpectrum = null;
+  calibration.spectralData = { silence: [], normal: [], loud: [] };
   calibration.samples = [];
   calibration.step = null;
+  calibration.styleVariant = 'neutral';
 
   const content = document.getElementById('cal-content');
   if (content) content.classList.remove('recording');
@@ -3478,6 +4086,12 @@ function renderCalPrep() {
     ? `<div class="cal-echo-warning">Warning: Your mic source has audio monitoring enabled. This may cause feedback during calibration. Consider disabling monitoring before proceeding.</div>`
     : '';
 
+  const platformOptions = Object.entries(CAL_PLATFORMS).map(([key, p]) => {
+    const sel = key === calibration.platform ? ' selected' : '';
+    const suffix = key === 'custom' ? '' : ` (${p.lufs} LUFS)`;
+    return `<option value="${key}"${sel}>${esc(p.label)}${suffix}</option>`;
+  }).join('');
+
   content.innerHTML = `
     <p class="cal-instruction">Prepare your environment for calibration:</p>
     <ul class="cal-checklist">
@@ -3488,9 +4102,31 @@ function renderCalPrep() {
     </ul>
     ${echoHtml}
     <p class="cal-instruction" style="margin-top:12px;">Source: <strong style="color:var(--amber);">${esc(calibration.obsSourceName)}</strong></p>
+    <div class="cal-platform-picker">
+      <label for="cal-platform-select">Target Platform</label>
+      <select id="cal-platform-select">${platformOptions}</select>
+      <div id="cal-custom-lufs" style="display:${calibration.platform === 'custom' ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:6px;">
+        <label for="cal-custom-lufs-input" style="font-size:11px;color:var(--cream-dim);">Target LUFS:</label>
+        <input type="number" id="cal-custom-lufs-input" min="-60" max="0" step="1" value="${calibration.customLufs}" style="width:60px;" class="hw-input">
+      </div>
+    </div>
     ${lastRunHtml}
     <button class="hw-btn" id="btn-cal-start" style="margin-top:14px;">Start Calibration</button>
   `;
+
+  document.getElementById('cal-platform-select').addEventListener('change', (e) => {
+    calibration.platform = e.target.value;
+    localStorage.setItem(CAL_PLATFORM_KEY, calibration.platform);
+    const customDiv = document.getElementById('cal-custom-lufs');
+    if (customDiv) customDiv.style.display = calibration.platform === 'custom' ? 'flex' : 'none';
+  });
+
+  const customInput = document.getElementById('cal-custom-lufs-input');
+  if (customInput) {
+    customInput.addEventListener('change', (e) => {
+      calibration.customLufs = Math.max(-60, Math.min(0, parseInt(e.target.value) || -16));
+    });
+  }
 
   document.getElementById('btn-cal-start').addEventListener('click', async () => {
     const ok = await beginCapture();
@@ -3508,8 +4144,11 @@ function renderCalSilence() {
     <div class="cal-timer" id="cal-timer">5s</div>
     <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
     <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+    <div id="cal-spectrum-container"></div>
   `;
 
+  initSpectrumCanvas('cal-spectrum-container');
+  startSpectrumAnimation();
   startSampling(5000, 'silence');
 }
 
@@ -3524,8 +4163,11 @@ function renderCalNormal() {
     <div class="cal-timer" id="cal-timer">8s</div>
     <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
     <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+    <div id="cal-spectrum-container"></div>
   `;
 
+  initSpectrumCanvas('cal-spectrum-container');
+  startSpectrumAnimation();
   startSampling(8000, 'normal');
 }
 
@@ -3540,18 +4182,105 @@ function renderCalLoud() {
     <div class="cal-timer" id="cal-timer">6s</div>
     <div class="cal-live-meter"><div class="cal-live-meter-fill" id="cal-meter-fill"></div></div>
     <div class="cal-live-db" id="cal-db-readout">-- dB</div>
+    <div id="cal-spectrum-container"></div>
   `;
 
+  initSpectrumCanvas('cal-spectrum-container');
+  startSpectrumAnimation();
   startSampling(6000, 'loud');
+}
+
+function drawSpectralAnnotations(spectral) {
+  const canvas = calibration.spectrumCanvas;
+  const ctx = calibration.spectrumCtx;
+  if (!canvas || !ctx || !spectral) return;
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+
+  if (spectral.humDetected) {
+    const x = freqToX(spectral.humFrequency, w);
+    ctx.strokeStyle = '#cc4444';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h - 12); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#cc4444';
+    ctx.fillText(`${spectral.humFrequency}Hz hum`, x, 10);
+  }
+
+  if (spectral.sibilanceDetected && spectral.sibilancePeakHz) {
+    const x = freqToX(spectral.sibilancePeakHz, w);
+    ctx.strokeStyle = '#d4a040';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h - 12); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#d4a040';
+    const label = spectral.sibilancePeakHz >= 1000
+      ? (spectral.sibilancePeakHz / 1000).toFixed(1) + 'kHz'
+      : spectral.sibilancePeakHz + 'Hz';
+    ctx.fillText(`sibilance ${label}`, x, 10);
+  }
+
+  if (spectral.proximityDetected) {
+    const x1 = freqToX(20, w);
+    const x2 = freqToX(200, w);
+    ctx.fillStyle = 'rgba(68,136,204,0.2)';
+    ctx.fillRect(x1, 0, x2 - x1, h);
+    ctx.fillStyle = '#4488cc';
+    ctx.fillText('proximity', (x1 + x2) / 2, h - 14);
+  }
+}
+
+function buildIssuesList(spectral) {
+  if (!spectral) return '';
+  const issues = [];
+  if (spectral.humDetected) {
+    issues.push({ color: '#cc4444', icon: '~', text: `${spectral.humFrequency}Hz hum detected (+${spectral.humMagnitude.toFixed(1)}dB above floor)` });
+  }
+  if (spectral.hissDetected) {
+    issues.push({ color: '#d4a040', icon: '^', text: `High-frequency hiss detected (ratio: ${(spectral.hissRatio * 100).toFixed(0)}%)` });
+  }
+  if (spectral.hvacDetected) {
+    issues.push({ color: '#8a6428', icon: '#', text: 'HVAC/mechanical noise detected (500-2000Hz)' });
+  }
+  if (spectral.sibilanceDetected) {
+    issues.push({ color: '#d4a040', icon: 's', text: `Sibilance peak at ${spectral.sibilancePeakHz}Hz (+${spectral.sibilanceMagnitude.toFixed(1)}dB)` });
+  }
+  if (spectral.proximityDetected) {
+    issues.push({ color: '#4488cc', icon: 'b', text: `Proximity effect (bass ratio: ${spectral.proximityRatio.toFixed(1)}x)` });
+  }
+  if (issues.length === 0) {
+    return '<div class="cal-issues-list"><div class="cal-issue-item" style="border-color:var(--green);"><span style="color:var(--green-bright);">No spectral issues detected</span></div></div>';
+  }
+  return '<div class="cal-issues-list">' + issues.map(iss =>
+    `<div class="cal-issue-item" style="border-color:${iss.color};"><span style="color:${iss.color};font-weight:600;margin-right:6px;">${iss.icon}</span>${esc(iss.text)}</div>`
+  ).join('') + '</div>';
 }
 
 function renderCalResults() {
   const content = document.getElementById('cal-content');
   if (!content) return;
   const m = calibration.measurements;
+  const spec = m.spectral || {};
   const recs = calibration.recommendations || [];
+  const targetLufs = getTargetLufs();
+  const platformLabel = CAL_PLATFORMS[calibration.platform]?.label || calibration.platform;
+  const hasAirVst = isVstAvailable('Air');
+
+  const styleButtonsHtml = hasAirVst
+    ? '<div class="cal-style-options">' + Object.entries(CAL_STYLE_VARIANTS).map(([key, v]) => {
+        const sel = key === calibration.styleVariant ? ' selected' : '';
+        return `<button class="cal-style-btn${sel}" data-style="${key}" title="${esc(v.desc)}">${esc(v.label)}</button>`;
+      }).join('') + '</div>'
+    : '<p style="font-size:10px;color:var(--cream-dim);margin-top:8px;font-style:italic;">Install Airwindows VSTs to enable style variants</p>';
 
   content.innerHTML = `
+    <div id="cal-results-spectrum-container"></div>
+    ${buildIssuesList(spec)}
     <div class="cal-results-grid">
       <div class="cal-result-card">
         <div class="cal-result-label">Noise Floor</div>
@@ -3560,8 +4289,8 @@ function renderCalResults() {
       </div>
       <div class="cal-result-card">
         <div class="cal-result-label">Speech Level</div>
-        <div class="cal-result-value">${(m.speechAvg || -96).toFixed(1)} dB</div>
-        <div class="cal-result-detail">Peak: ${(m.speechPeak || -96).toFixed(1)} dB</div>
+        <div class="cal-result-value">${(m.integratedLufs || m.speechAvg || -96).toFixed(1)} LUFS</div>
+        <div class="cal-result-detail">Target: ${targetLufs} LUFS (${esc(platformLabel)})</div>
       </div>
       <div class="cal-result-card">
         <div class="cal-result-label">Loud Peak</div>
@@ -3578,11 +4307,41 @@ function renderCalResults() {
     <div class="cal-filter-chain">
       ${recs.map((f, i) => {
         const arrow = i < recs.length - 1 ? '<span class="cal-filter-arrow">&rarr;</span>' : '';
-        return `<span class="cal-filter-chip">${esc(f.label)}</span>${arrow}`;
+        const tooltip = f.reason ? ` title="${esc(f.reason)}"` : '';
+        return `<span class="cal-filter-chip"${tooltip}>${esc(f.label)}</span>${arrow}`;
       }).join('')}
     </div>
-    <button class="hw-btn" id="btn-cal-apply" style="margin-top:12px;">Apply Filters</button>
+    <p class="cal-instruction" style="margin-top:14px;">Style Variant:</p>
+    ${styleButtonsHtml}
+    <button class="hw-btn" id="btn-cal-apply" style="margin-top:14px;">Apply Filters</button>
   `;
+
+  // Draw frozen spectrum with annotations in results
+  const specContainer = document.getElementById('cal-results-spectrum-container');
+  if (specContainer && calibration.frozenSpectrum) {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'cal-spectrum-canvas';
+    canvas.width = specContainer.clientWidth || 400;
+    canvas.height = 120;
+    specContainer.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    calibration.spectrumCanvas = canvas;
+    calibration.spectrumCtx = ctx;
+
+    // Draw speech spectrum with noise overlay
+    const speechAvg = averageSpectra(calibration.spectralData.normal);
+    drawSpectrum(speechAvg || calibration.frozenSpectrum);
+    drawSpectralAnnotations(spec);
+  }
+
+  // Style variant buttons
+  content.querySelectorAll('.cal-style-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      calibration.styleVariant = btn.dataset.style;
+      content.querySelectorAll('.cal-style-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+    });
+  });
 
   document.getElementById('btn-cal-apply').addEventListener('click', () => {
     const existingFilters = getExistingSourceFilters();
@@ -3597,6 +4356,7 @@ function renderCalResults() {
 }
 
 function cleanupCapture() {
+  stopSpectrumAnimation();
   if (calibration.stream) {
     calibration.stream.getTracks().forEach(t => t.stop());
     calibration.stream = null;
@@ -3606,13 +4366,18 @@ function cleanupCapture() {
     calibration.audioCtx = null;
   }
   calibration.analyser = null;
+  calibration.rawAnalyser = null;
   calibration.timeDomainBuf = null;
+  calibration.freqBuf = null;
+  calibration.spectrumCanvas = null;
+  calibration.spectrumCtx = null;
 }
 
 function renderCalApplied() {
   const content = document.getElementById('cal-content');
   if (!content) return;
   const recs = calibration.recommendations || [];
+  const showStyle = calibration.styleVariant !== 'neutral' && isVstAvailable('Air');
 
   content.innerHTML = `
     <p class="cal-instruction emphasis" style="color:var(--green-bright);">Calibration Complete</p>
@@ -3624,14 +4389,45 @@ function renderCalApplied() {
           <span class="pf-detail">Applied to ${esc(calibration.obsSourceName)}</span>
         </div>
       `).join('')}
+      ${showStyle ? `
+        <div class="pf-check pass">
+          <span class="pf-icon">+</span>
+          <span class="pf-label">${esc(CAL_FILTER_PREFIX)} Air EQ</span>
+          <span class="pf-detail">Style: ${esc(CAL_STYLE_VARIANTS[calibration.styleVariant]?.label || calibration.styleVariant)}</span>
+        </div>
+      ` : ''}
+    </div>
+    <div class="cal-profile-save-row">
+      <input type="text" id="cal-profile-name-input" value="${esc(defaultProfileName())}" maxlength="40" placeholder="Profile name...">
+      <button class="hw-btn" id="btn-cal-save-profile">Save Profile</button>
     </div>
     <button class="hw-btn" id="btn-cal-done" style="margin-top:12px;">Done</button>
   `;
+
+  document.getElementById('btn-cal-save-profile').addEventListener('click', () => {
+    const nameInput = document.getElementById('cal-profile-name-input');
+    const btn = document.getElementById('btn-cal-save-profile');
+    const name = (nameInput?.value || '').trim();
+    if (!name) { showFrameDropAlert('Enter a profile name'); return; }
+    const calData = loadCalibrationData();
+    if (!calData) { showFrameDropAlert('No calibration data'); return; }
+    createCalProfile(name, calData);
+    btn.disabled = true;
+    btn.textContent = 'Saved!';
+    renderCalProfileSelect();
+  });
 
   document.getElementById('btn-cal-done').addEventListener('click', () => {
     cancelCalibration();
     refreshFullState();
   });
+}
+
+function defaultProfileName() {
+  const platform = CAL_PLATFORMS[calibration.platform]?.label || calibration.platform || 'Custom';
+  const d = new Date();
+  const mon = d.toLocaleString('en', { month: 'short' });
+  return `${platform} - ${mon} ${d.getDate()}`;
 }
 
 function getExistingSourceFilters() {
@@ -3677,18 +4473,40 @@ async function applyCalibrationFilters(mode) {
     }
   }
 
+  // Apply style variant EQ if non-neutral and Air VST available
+  if (calibration.styleVariant !== 'neutral' && isVstAvailable('Air')) {
+    const styleName = CAL_FILTER_PREFIX + ' Air EQ';
+    try {
+      await invoke('create_source_filter', {
+        sourceName,
+        filterName: styleName,
+        filterKind: 'vst_filter',
+        filterSettings: { plugin_path: getVstPath('Air') }
+      });
+      appliedNames.push(styleName);
+    } catch (e) {
+      showFrameDropAlert('Style EQ creation failed: ' + e);
+    }
+  }
+
   const calData = {
     timestamp: Date.now(),
     deviceName: calibration.obsSourceName,
     measurements: { ...calibration.measurements },
-    recommendations: recs.map(r => ({ kind: r.kind, label: r.label, settings: r.settings })),
+    recommendations: recs.map(r => ({ kind: r.kind, label: r.label, settings: r.settings, reason: r.reason })),
     appliedTo: sourceName,
     filterNames: appliedNames,
+    platform: calibration.platform,
+    platformLufs: getTargetLufs(),
+    styleVariant: calibration.styleVariant,
   };
   saveCalibrationData(calData);
   updateCalStatusLabel();
 
   await refreshFullState();
+
+  // Update calibration group name with platform + style
+  updateCalGroupName(calData);
 
   calibration.step = 'applied';
   renderCalProgress();
@@ -3700,12 +4518,23 @@ async function applyCalibrationFilters(mode) {
 async function sendCalibrationSummaryToAI(calData) {
   if (!aiReady) return;
   const m = calData.measurements;
+  const spec = m.spectral || {};
   const filterList = calData.recommendations.map(r => r.label).join(', ');
+  const spectralIssues = [];
+  if (spec.humDetected) spectralIssues.push(`${spec.humFrequency}Hz hum`);
+  if (spec.hissDetected) spectralIssues.push('hiss');
+  if (spec.sibilanceDetected) spectralIssues.push(`sibilance at ${spec.sibilancePeakHz}Hz`);
+  if (spec.proximityDetected) spectralIssues.push('proximity effect');
+  if (spec.hvacDetected) spectralIssues.push('HVAC noise');
+  const issuesStr = spectralIssues.length > 0 ? `Spectral issues: ${spectralIssues.join(', ')}. ` : 'No spectral issues. ';
   const summary = `[Calibration completed] Source: ${calData.appliedTo}. ` +
+    `Platform: ${calData.platform} (${calData.platformLufs} LUFS). ` +
+    `Style: ${calData.styleVariant}. ` +
     `Noise floor: ${(m.noiseFloor || -96).toFixed(1)}dB, ` +
-    `Speech avg: ${(m.speechAvg || -96).toFixed(1)}dB, ` +
+    `Speech LUFS: ${(m.integratedLufs || m.speechAvg || -96).toFixed(1)}dB, ` +
     `Loud peak: ${(m.loudPeak || -96).toFixed(1)}dB, ` +
     `Crest: ${(m.crestFactor || 0).toFixed(1)}dB. ` +
+    issuesStr +
     `Applied filters: ${filterList}.`;
 
   try {
@@ -3727,17 +4556,174 @@ function saveCalibrationData(data) {
   localStorage.setItem(CALIBRATION_KEY, JSON.stringify(data));
 }
 
+const CAL_PROFILES_KEY = 'observe-calibration-profiles';
+
+function loadCalProfiles() {
+  try {
+    const raw = localStorage.getItem(CAL_PROFILES_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return [];
+}
+
+function saveCalProfiles(profiles) {
+  localStorage.setItem(CAL_PROFILES_KEY, JSON.stringify(profiles));
+}
+
+function createCalProfile(name, calData) {
+  if (!calData) return null;
+  const profiles = loadCalProfiles();
+  const profile = {
+    id: 'prof-' + Date.now(),
+    name,
+    platform: calData.platform || 'twitch',
+    platformLufs: calData.platformLufs || -14,
+    styleVariant: calData.styleVariant || 'neutral',
+    deviceName: calData.deviceName || calData.appliedTo || 'Mic/Aux',
+    measurements: calData.measurements ? { ...calData.measurements } : {},
+    recommendations: calData.recommendations ? calData.recommendations.map(r => ({ ...r })) : [],
+    timestamp: calData.timestamp || Date.now(),
+  };
+  profiles.push(profile);
+  saveCalProfiles(profiles);
+  return profile;
+}
+
+function deleteCalProfile(profileId) {
+  const profiles = loadCalProfiles().filter(p => p.id !== profileId);
+  saveCalProfiles(profiles);
+}
+
+function renameCalProfile(profileId, newName) {
+  const profiles = loadCalProfiles();
+  const p = profiles.find(pr => pr.id === profileId);
+  if (p) { p.name = newName; saveCalProfiles(profiles); }
+}
+
+function exportCalProfiles() {
+  const profiles = loadCalProfiles();
+  if (profiles.length === 0) { showFrameDropAlert('No profiles to export'); return; }
+  const blob = new Blob([JSON.stringify(profiles, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'observe-calibration-profiles.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showFrameDropAlert('Profiles exported');
+}
+
+function importCalProfiles(jsonString) {
+  try {
+    const arr = JSON.parse(jsonString);
+    if (!Array.isArray(arr)) throw new Error('Not an array');
+    for (const p of arr) {
+      if (!p.id || !p.name || !Array.isArray(p.recommendations)) throw new Error('Invalid profile shape');
+    }
+    saveCalProfiles(arr);
+    renderCalProfileSelect();
+    showFrameDropAlert(`Imported ${arr.length} profile(s)`);
+  } catch (e) {
+    showFrameDropAlert('Import failed: ' + e.message);
+  }
+}
+
 function updateCalStatusLabel() {
   const el = document.getElementById('cal-last-run');
   if (!el) return;
   const data = loadCalibrationData();
   if (data && data.timestamp) {
-    el.textContent = 'Last: ' + new Date(data.timestamp).toLocaleDateString();
+    const platform = data.platform ? (CAL_PLATFORMS[data.platform]?.label || '') : '';
+    const dateStr = new Date(data.timestamp).toLocaleDateString();
+    el.textContent = platform ? `${platform} \u2022 ${dateStr}` : `Last: ${dateStr}`;
     const btn = document.getElementById('btn-calibrate-mic');
     if (btn) btn.textContent = 'Recalibrate';
   } else {
     el.textContent = 'Not calibrated';
   }
+  renderCalProfileSelect();
+}
+
+function renderCalProfileSelect() {
+  const sel = document.getElementById('cal-profile-select');
+  if (!sel) return;
+  const profiles = loadCalProfiles();
+  if (profiles.length === 0) { sel.hidden = true; return; }
+  sel.hidden = false;
+  const active = loadCalibrationData();
+  const activeId = active?._profileId || null;
+  sel.innerHTML = '<option value="">Profiles...</option>' +
+    profiles.map(p => {
+      const plat = CAL_PLATFORMS[p.platform]?.label || p.platform || '';
+      const selected = (p.id === activeId) ? ' selected' : '';
+      return `<option value="${esc(p.id)}"${selected}>${esc(p.name)} (${esc(plat)})</option>`;
+    }).join('');
+}
+
+async function applyCalProfile(profileId) {
+  const profiles = loadCalProfiles();
+  const profile = profiles.find(p => p.id === profileId);
+  if (!profile) return;
+
+  const active = loadCalibrationData();
+  const sourceName = active?.appliedTo || profile.deviceName || resolveSourceForPreset();
+  if (!sourceName) { showFrameDropAlert('No source to apply to'); return; }
+
+  const groups = loadGroups(sourceName);
+  const calGroup = groups.find(g => g.type === 'calibration');
+  if (calGroup) {
+    for (const fn of calGroup.filterNames) {
+      try { await invoke('remove_source_filter', { sourceName, filterName: fn }); } catch (_) {}
+    }
+    calGroup.filterNames = [];
+  }
+
+  const appliedNames = [];
+  for (const rec of profile.recommendations) {
+    const filterName = CAL_FILTER_PREFIX + ' ' + rec.label;
+    try {
+      await invoke('create_source_filter', {
+        sourceName, filterName, filterKind: rec.kind, filterSettings: rec.settings
+      });
+      appliedNames.push(filterName);
+    } catch (e) { showFrameDropAlert('Filter failed: ' + e); }
+  }
+
+  if (profile.styleVariant && profile.styleVariant !== 'neutral' && isVstAvailable('Air')) {
+    const styleName = CAL_FILTER_PREFIX + ' Air EQ';
+    try {
+      await invoke('create_source_filter', {
+        sourceName, filterName: styleName, filterKind: 'vst_filter',
+        filterSettings: { plugin_path: getVstPath('Air') }
+      });
+      appliedNames.push(styleName);
+    } catch (e) { showFrameDropAlert('Style EQ failed: ' + e); }
+  }
+
+  if (calGroup) {
+    calGroup.filterNames = appliedNames;
+    calGroup.name = buildCalGroupName(profile);
+    saveGroups(sourceName, groups);
+  }
+
+  const calData = {
+    _profileId: profile.id,
+    timestamp: profile.timestamp,
+    deviceName: profile.deviceName,
+    measurements: profile.measurements ? { ...profile.measurements } : {},
+    recommendations: profile.recommendations.map(r => ({ ...r })),
+    appliedTo: sourceName,
+    filterNames: appliedNames,
+    platform: profile.platform,
+    platformLufs: profile.platformLufs,
+    styleVariant: profile.styleVariant,
+  };
+  saveCalibrationData(calData);
+  updateCalStatusLabel();
+  await refreshFullState();
+  showFrameDropAlert(`Applied profile "${profile.name}"`);
 }
 
 function initCalibration() {
@@ -3764,6 +4750,14 @@ function initCalibration() {
   const cancelApplyBtn = document.getElementById('btn-cal-cancel-apply');
   if (cancelApplyBtn) {
     cancelApplyBtn.addEventListener('click', () => applyCalibrationFilters('cancel'));
+  }
+
+  const profileSel = document.getElementById('cal-profile-select');
+  if (profileSel) {
+    profileSel.addEventListener('change', () => {
+      const id = profileSel.value;
+      if (id) applyCalProfile(id);
+    });
   }
 
   updateCalStatusLabel();
@@ -4212,6 +5206,488 @@ function renderActiveCaptures() {
   });
 }
 
+// --- Pro Spectrum Module ---
+
+const SPECTRUM_KNOBS = [
+  // EQ knobs ordered low→high frequency (left→right on spectrum)
+  { id: 'lo-shelf', label: 'Lo Shelf',  filterKind: null,                      param: null,             min: -12, max: 12,  step: 0.5, off: 0,   unit: 'dB',  filterPrefix: 'Pro Lo Shelf',   vst: true,  color: '#4488cc', colorAlpha: 'rgba(68,136,204,', vizType: 'eq-shelf-lo', centerFreq: 200  },
+  { id: 'hpf',      label: 'HPF',       filterKind: 'noise_suppress_filter_v2', param: 'hp_freq',        min: 20,  max: 300, step: 1,   off: 20,  unit: 'Hz',  filterPrefix: 'Pro HPF',        vst: false, color: '#44ccaa', colorAlpha: 'rgba(68,204,170,', vizType: 'hpf',         centerFreq: null },
+  { id: 'presence', label: 'Presence',  filterKind: null,                      param: null,             min: -12, max: 12,  step: 0.5, off: 0,   unit: 'dB',  filterPrefix: 'Pro Presence',   vst: true,  color: '#cc8844', colorAlpha: 'rgba(204,136,68,', vizType: 'eq-bell',     centerFreq: 4000 },
+  { id: 'air',      label: 'Air',       filterKind: null,                      param: null,             min: -12, max: 12,  step: 0.5, off: 0,   unit: 'dB',  filterPrefix: 'Pro Air',        vst: true,  color: '#88bbdd', colorAlpha: 'rgba(136,187,221,', vizType: 'eq-shelf-hi', centerFreq: 10000 },
+  // Dynamics knobs ordered by signal chain
+  { id: 'gate',     label: 'Gate',      filterKind: 'noise_gate_filter',       param: 'open_threshold', min: -96, max: 0,   step: 1,   off: -96, unit: 'dB',  filterPrefix: 'Pro Gate',       vst: false, color: '#44aa66', colorAlpha: 'rgba(68,170,102,', vizType: 'hline',       centerFreq: null },
+  { id: 'comp-t',   label: 'Comp T',    filterKind: 'compressor_filter',       param: 'threshold',      min: -60, max: 0,   step: 1,   off: 0,   unit: 'dB',  filterPrefix: 'Pro Compressor', vst: false, color: '#aa66cc', colorAlpha: 'rgba(170,102,204,', vizType: 'hline',       centerFreq: null },
+  { id: 'comp-r',   label: 'Comp R',    filterKind: 'compressor_filter',       param: 'ratio',          min: 1,   max: 20,  step: 0.5, off: 1,   unit: ':1',  filterPrefix: 'Pro Compressor', vst: false, color: '#aa66cc', colorAlpha: 'rgba(170,102,204,', vizType: 'none',        centerFreq: null },
+  { id: 'gain',     label: 'Gain',      filterKind: 'gain_filter',             param: 'db',             min: -30, max: 30,  step: 0.5, off: 0,   unit: 'dB',  filterPrefix: 'Pro Gain',       vst: false, color: '#d4a040', colorAlpha: 'rgba(212,160,64,',  vizType: 'hline',       centerFreq: null },
+  { id: 'limiter',  label: 'Limiter',   filterKind: 'limiter_filter',          param: 'threshold',      min: -30, max: 0,   step: 0.5, off: 0,   unit: 'dB',  filterPrefix: 'Pro Limiter',    vst: false, color: '#cc4444', colorAlpha: 'rgba(204,68,68,',   vizType: 'hline',       centerFreq: null },
+];
+
+let spectrumActive = false;
+let spectrumSource = '';
+let spectrumAnimId = null;
+let spectrumBins = null;
+let spectrumSampleRate = 48000;
+const spectrumKnobValues = {};
+
+function initProSpectrum() {
+  const select = $('#spectrum-source-select');
+  const resetBtn = $('#btn-spectrum-reset-lufs');
+
+  select.addEventListener('change', async () => {
+    const name = select.value;
+    if (!name) {
+      await stopProSpectrum();
+      return;
+    }
+    try {
+      await enforceMonitorOff(name);
+      await invoke('start_spectrum', { sourceName: name });
+      spectrumSource = name;
+      spectrumActive = true;
+      renderSpectrumKnobs(name);
+    } catch (e) {
+      showFrameDropAlert('Spectrum: ' + e);
+    }
+  });
+
+  resetBtn.addEventListener('click', async () => {
+    try {
+      await invoke('stop_spectrum');
+      if (spectrumSource) {
+        await invoke('start_spectrum', { sourceName: spectrumSource });
+      }
+    } catch (_) {}
+    $('#lufs-momentary').textContent = '--';
+    $('#lufs-short-term').textContent = '--';
+    $('#lufs-integrated').textContent = '--';
+    $('#lufs-true-peak').textContent = '--';
+  });
+
+  listen('audio://fft-data', (e) => {
+    spectrumBins = e.payload.bins;
+    spectrumSampleRate = e.payload.sampleRate || 48000;
+    if (!spectrumAnimId) {
+      spectrumAnimId = requestAnimationFrame(drawProSpectrum);
+    }
+  });
+
+  listen('audio://lufs-data', (e) => {
+    const p = e.payload;
+    $('#lufs-momentary').textContent = fmtLufs(p.momentary);
+    $('#lufs-short-term').textContent = fmtLufs(p.shortTerm);
+    $('#lufs-integrated').textContent = fmtLufs(p.integrated);
+    $('#lufs-true-peak').textContent = fmtLufs(p.truePeak);
+  });
+
+  const observer = new MutationObserver(() => {
+    const panel = $('#pro-spectrum-panel');
+    if (!panel) return;
+    if (panel.hidden && spectrumActive) {
+      stopProSpectrum();
+    } else if (!panel.hidden && !spectrumActive && isConnected) {
+      populateSpectrumSources();
+    }
+  });
+  const panel = $('#pro-spectrum-panel');
+  if (panel) observer.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+}
+
+function fmtLufs(val) {
+  if (val == null || !isFinite(val) || val < -70) return '--';
+  return val.toFixed(1);
+}
+
+function populateSpectrumSources() {
+  const select = $('#spectrum-source-select');
+  if (!select || !obsState) return;
+  const prev = select.value;
+  select.innerHTML = '<option value="">Select source...</option>';
+  for (const [name, info] of Object.entries(obsState.inputs)) {
+    if (!AUDIO_KINDS.some(k => info.kind.includes(k))) continue;
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  }
+  if (prev && select.querySelector(`option[value="${CSS.escape(prev)}"]`)) {
+    select.value = prev;
+  }
+}
+
+async function enforceMonitorOff(sourceName) {
+  if (!sourceName || !isConnected) return;
+  try {
+    // Query OBS directly for the actual monitor state (don't trust cache)
+    const actual = await invoke('get_input_audio_monitor_type', { inputName: sourceName });
+    if (actual && actual !== 'OBS_MONITORING_TYPE_NONE') {
+      console.warn('[Spectrum] Source', sourceName, 'has monitoring', actual, '— forcing off');
+      await invoke('set_input_audio_monitor_type', {
+        inputName: sourceName,
+        monitorType: 'OBS_MONITORING_TYPE_NONE',
+      });
+      if (obsState?.inputs?.[sourceName]) {
+        obsState.inputs[sourceName].monitorType = 'OBS_MONITORING_TYPE_NONE';
+      }
+      updateMonitorUI();
+      showFrameDropAlert('Monitoring was ON for "' + sourceName + '" — turned off to prevent feedback.');
+    }
+  } catch (e) {
+    console.error('[Spectrum] Failed to check/force monitor off:', e);
+  }
+}
+
+async function stopProSpectrum() {
+  try { await invoke('stop_spectrum'); } catch (_) {}
+  spectrumActive = false;
+  spectrumSource = '';
+  spectrumBins = null;
+  if (spectrumAnimId) {
+    cancelAnimationFrame(spectrumAnimId);
+    spectrumAnimId = null;
+  }
+  const canvas = $('#spectrum-canvas');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
+function drawProSpectrum() {
+  spectrumAnimId = null;
+  const canvas = $('#spectrum-canvas');
+  if (!canvas || !spectrumBins) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const bins = spectrumBins;
+  const sr = spectrumSampleRate;
+  const binCount = bins.length;
+  const freqPerBin = sr / (binCount * 2);
+  const dbToY = (db) => h * (1 - (db + 90) / 90);
+
+  ctx.clearRect(0, 0, w, h);
+
+  drawFreqLabels(ctx, w, h);
+
+  // dB grid lines
+  ctx.strokeStyle = 'rgba(200,184,152,0.1)';
+  ctx.lineWidth = 0.5;
+  for (let db = -80; db <= 0; db += 20) {
+    const y = dbToY(db);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  // dB labels
+  ctx.fillStyle = 'rgba(200,184,152,0.25)';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'left';
+  for (let db = -80; db <= 0; db += 20) {
+    ctx.fillText(`${db}`, 2, dbToY(db) - 2);
+  }
+
+  // --- Knob visualizations (drawn behind spectrum) ---
+  drawSpectrumOverlays(ctx, w, h, dbToY);
+
+  // Spectrum fill
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(212,160,64,0.9)');
+  grad.addColorStop(0.3, 'rgba(212,160,64,0.5)');
+  grad.addColorStop(0.7, 'rgba(140,100,40,0.2)');
+  grad.addColorStop(1, 'rgba(40,30,10,0.05)');
+
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  let started = false;
+
+  for (let i = 1; i < binCount; i++) {
+    const freq = i * freqPerBin;
+    if (freq < 20 || freq > 20000) continue;
+    const x = freqToX(freq, w);
+    const y = dbToY(bins[i]);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+
+  const lastFreq = Math.min((binCount - 1) * freqPerBin, 20000);
+  ctx.lineTo(freqToX(lastFreq, w), h);
+  ctx.lineTo(freqToX(20, w), h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Stroke line on top
+  ctx.beginPath();
+  started = false;
+  for (let i = 1; i < binCount; i++) {
+    const freq = i * freqPerBin;
+    if (freq < 20 || freq > 20000) continue;
+    const x = freqToX(freq, w);
+    const y = dbToY(bins[i]);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(212,160,64,0.8)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function drawSpectrumOverlays(ctx, w, h, dbToY) {
+  for (const knob of SPECTRUM_KNOBS) {
+    const val = spectrumKnobValues[knob.id];
+    if (val == null || val === knob.off) continue;
+
+    switch (knob.vizType) {
+      case 'hpf': {
+        const cutX = freqToX(val, w);
+        // Shaded cut region
+        ctx.fillStyle = knob.colorAlpha + '0.08)';
+        ctx.fillRect(0, 0, cutX, h);
+        // Vertical cutoff line
+        ctx.strokeStyle = knob.colorAlpha + '0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cutX, 0);
+        ctx.lineTo(cutX, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Label
+        ctx.fillStyle = knob.colorAlpha + '0.8)';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`HPF ${val}Hz`, cutX + 3, 10);
+        break;
+      }
+      case 'eq-shelf-lo': {
+        drawEqCurve(ctx, w, h, knob, val, 'shelf-lo');
+        break;
+      }
+      case 'eq-shelf-hi': {
+        drawEqCurve(ctx, w, h, knob, val, 'shelf-hi');
+        break;
+      }
+      case 'eq-bell': {
+        drawEqCurve(ctx, w, h, knob, val, 'bell');
+        break;
+      }
+      case 'hline': {
+        const y = dbToY(val);
+        ctx.strokeStyle = knob.colorAlpha + '0.6)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Label on right
+        ctx.fillStyle = knob.colorAlpha + '0.8)';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${knob.label} ${val}${knob.unit}`, w - 3, y - 3);
+        break;
+      }
+    }
+  }
+}
+
+function drawEqCurve(ctx, w, h, knob, gainDb, shape) {
+  const centerFreq = knob.centerFreq;
+  const midY = h / 2;
+  const gainPx = -(gainDb / 12) * (h * 0.25);
+
+  ctx.beginPath();
+  ctx.strokeStyle = knob.colorAlpha + '0.7)';
+  ctx.lineWidth = 1.5;
+
+  const steps = 100;
+  for (let s = 0; s <= steps; s++) {
+    const freq = 20 * Math.pow(1000, s / steps); // 20Hz to 20kHz
+    const x = freqToX(freq, w);
+    let offset = 0;
+
+    if (shape === 'shelf-lo') {
+      const ratio = freq / centerFreq;
+      if (ratio < 0.5) offset = gainPx;
+      else if (ratio < 2) offset = gainPx * (1 - (Math.log2(ratio) + 1) / 2);
+      else offset = 0;
+    } else if (shape === 'shelf-hi') {
+      const ratio = freq / centerFreq;
+      if (ratio > 2) offset = gainPx;
+      else if (ratio > 0.5) offset = gainPx * ((Math.log2(ratio) + 1) / 2);
+      else offset = 0;
+    } else if (shape === 'bell') {
+      const octaves = Math.log2(freq / centerFreq);
+      const bw = 1.5;
+      offset = gainPx * Math.exp(-(octaves * octaves) / (2 * bw * bw / 4));
+    }
+
+    const y = midY + offset;
+    if (s === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Shaded area between curve and center line
+  ctx.beginPath();
+  for (let s = 0; s <= steps; s++) {
+    const freq = 20 * Math.pow(1000, s / steps);
+    const x = freqToX(freq, w);
+    let offset = 0;
+
+    if (shape === 'shelf-lo') {
+      const ratio = freq / centerFreq;
+      if (ratio < 0.5) offset = gainPx;
+      else if (ratio < 2) offset = gainPx * (1 - (Math.log2(ratio) + 1) / 2);
+    } else if (shape === 'shelf-hi') {
+      const ratio = freq / centerFreq;
+      if (ratio > 2) offset = gainPx;
+      else if (ratio > 0.5) offset = gainPx * ((Math.log2(ratio) + 1) / 2);
+    } else if (shape === 'bell') {
+      const octaves = Math.log2(freq / centerFreq);
+      const bw = 1.5;
+      offset = gainPx * Math.exp(-(octaves * octaves) / (2 * bw * bw / 4));
+    }
+
+    const y = midY + offset;
+    if (s === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  // Close back along midline
+  ctx.lineTo(freqToX(20000, w), midY);
+  ctx.lineTo(freqToX(20, w), midY);
+  ctx.closePath();
+  ctx.fillStyle = knob.colorAlpha + '0.08)';
+  ctx.fill();
+
+  // Label at center frequency
+  const labelX = freqToX(centerFreq, w);
+  ctx.fillStyle = knob.colorAlpha + '0.8)';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'center';
+  const labelY = gainDb > 0 ? midY + gainPx - 4 : midY + gainPx + 10;
+  ctx.fillText(`${knob.label} ${gainDb > 0 ? '+' : ''}${gainDb}dB`, labelX, labelY);
+}
+
+function renderSpectrumKnobs(sourceName) {
+  const container = $('#spectrum-knobs');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const input = obsState?.inputs?.[sourceName];
+  const existingFilters = input?.filters || [];
+  const vstsAvailable = vstStatus?.installed || false;
+
+  for (const knob of SPECTRUM_KNOBS) {
+    const col = document.createElement('div');
+    col.className = 'spectrum-knob-col';
+    if (knob.vst && !vstsAvailable) col.classList.add('disabled');
+
+    const existing = existingFilters.find(f => f.name === knob.filterPrefix);
+    let currentVal = knob.off;
+    if (existing && knob.param && existing.settings) {
+      const sv = existing.settings[knob.param];
+      if (sv != null) currentVal = sv;
+    }
+    spectrumKnobValues[knob.id] = currentVal;
+
+    const knobEl = document.createElement('webaudio-knob');
+    knobEl.setAttribute('min', knob.min);
+    knobEl.setAttribute('max', knob.max);
+    knobEl.setAttribute('step', knob.step);
+    knobEl.setAttribute('value', currentVal);
+    knobEl.setAttribute('diameter', '44');
+    knobEl.setAttribute('colors', `${knob.color};#0c0a06;#1a1714`);
+    knobEl.dataset.specKnob = knob.id;
+
+    const label = document.createElement('div');
+    label.className = 'spectrum-knob-label';
+    label.style.color = knob.color;
+    label.textContent = knob.label;
+
+    const valDisp = document.createElement('div');
+    valDisp.className = 'spectrum-knob-value';
+    valDisp.style.color = knob.color;
+    valDisp.textContent = formatSpecKnobVal(knob, currentVal);
+
+    col.appendChild(knobEl);
+    col.appendChild(label);
+    col.appendChild(valDisp);
+    container.appendChild(col);
+
+    const updateKnob = (val) => {
+      spectrumKnobValues[knob.id] = val;
+      valDisp.textContent = formatSpecKnobVal(knob, val);
+      handleSpecKnobChange(sourceName, knob, val);
+    };
+
+    knobEl.addEventListener('input', () => {
+      const val = parseFloat(knobEl.value);
+      updateKnob(val);
+    });
+
+    // Double-click to reset to OFF
+    knobEl.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      knobEl.setValue(knob.off);
+      updateKnob(knob.off);
+    });
+
+    // Right-click to reset to OFF
+    knobEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      knobEl.setValue(knob.off);
+      updateKnob(knob.off);
+    });
+  }
+}
+
+function formatSpecKnobVal(knob, val) {
+  if (val === knob.off) return 'OFF';
+  return `${val}${knob.unit}`;
+}
+
+const specKnobFilterCreated = new Set();
+
+async function handleSpecKnobChange(sourceName, knob, value) {
+  if (!knob.filterKind || !knob.param) return;
+
+  const filterName = knob.filterPrefix;
+  const isOff = value === knob.off;
+
+  if (isOff) {
+    try {
+      await invoke('remove_source_filter', { sourceName, filterName });
+      specKnobFilterCreated.delete(filterName);
+    } catch (_) {}
+    return;
+  }
+
+  const input = obsState?.inputs?.[sourceName];
+  const exists = input?.filters?.some(f => f.name === filterName) || specKnobFilterCreated.has(filterName);
+
+  if (!exists) {
+    try {
+      const defaults = {};
+      defaults[knob.param] = value;
+      await invoke('create_source_filter', {
+        sourceName,
+        filterName,
+        filterKind: knob.filterKind,
+        filterSettings: defaults,
+      });
+      specKnobFilterCreated.add(filterName);
+    } catch (e) {
+      scWarn('Failed to create filter:', e);
+    }
+  } else {
+    debouncedSetFilterSettings(sourceName, filterName, { [knob.param]: value });
+  }
+}
+
 // --- Maximize on launch ---
 
 window.__TAURI__.window.getCurrentWindow().maximize();
@@ -4231,6 +5707,7 @@ initVoiceInput();
 initCalibration();
 initDucking();
 initAppCapture();
+initProSpectrum();
 
 (async () => {
   if (initialSettings.geminiApiKey) {
