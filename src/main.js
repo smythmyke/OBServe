@@ -28,9 +28,18 @@ let selectedInputId = null;
 let viewMode = 'audio-video';
 let viewComplexity = 'simple';
 let isConnected = false;
+let cachedDisplays = [];
+let studioMode = false;
+let previewScenes = [];
+let previewWidth = 640;
+const PREVIEW_MIN_WIDTH = 320;
+const PREVIEW_MAX_WIDTH = 960;
+const PREVIEW_SIZE_KEY = 'observe-preview-size';
 let voiceState = 'IDLE'; // IDLE | LISTENING | PROCESSING
 let recognition = null;
 let pttActive = false;
+let livePreviewStream = null;
+let vcamStartedByUs = false;
 
 const CALIBRATION_KEY = 'observe-calibration';
 const CAL_PLATFORM_KEY = 'observe-cal-platform';
@@ -101,17 +110,17 @@ const VISIBILITY_MATRIX = {
     'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
-    'simple':   ['audio-devices', 'filters', 'scenes', 'stream-record', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ai'],
+    'simple':   ['audio-devices', 'filters', 'scenes', 'webcam', 'stream-record', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'obs-info', 'system', 'ai'],
   },
   'video': {
-    'simple':   ['filters', 'scenes', 'stream-record', 'ai'],
-    'advanced': ['filters', 'scenes', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
+    'simple':   ['filters', 'scenes', 'webcam', 'stream-record', 'ai'],
+    'advanced': ['filters', 'scenes', 'webcam', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
   },
 };
 
 const CONNECTION_REQUIRED_PANELS = new Set([
-  'mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture', 'pro-spectrum',
+  'mixer', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture', 'pro-spectrum',
 ]);
 
 function applyPanelVisibility() {
@@ -259,6 +268,14 @@ function setupEventListeners() {
     renderScenes();
   });
 
+  listen('obs://scene-items-changed', () => {
+    refreshFullState().then(() => renderScenes());
+  });
+
+  listen('obs://scene-name-changed', () => {
+    refreshFullState().then(() => renderScenes());
+  });
+
   listen('obs://input-created', () => {
     refreshFullState();
     renderActiveCaptures();
@@ -329,6 +346,12 @@ function setupEventListeners() {
     for (const { deviceId, peak } of levels) {
       if (deviceId === selectedOutputId) updatePeakGauge('output-peak-fill', peak);
       if (deviceId === selectedInputId) updatePeakGauge('input-peak-fill', peak);
+    }
+  });
+
+  listen('obs://input-volume-meters', (e) => {
+    for (const input of e.payload.inputs) {
+      updateMixerMeter(input.inputName, input.channels);
     }
   });
 
@@ -429,21 +452,456 @@ function renderScenes() {
 function renderScenesPanel(scenes, current) {
   const grid = $('#scenes-grid');
   if (!grid) return;
+  const sceneItems = obsState ? (obsState.sceneItems || {}) : {};
   grid.innerHTML = scenes.map(s => {
-    const cls = s.name === current ? 'scene-btn active' : 'scene-btn';
+    const isPreviewing = previewScenes.includes(s.name);
+    const cls = s.name === current ? 'scene-card active' : (isPreviewing ? 'scene-card previewing' : 'scene-card');
     const ledCls = s.name === current ? 'led led-amber' : 'led led-off';
-    return `<div class="scene-col"><button class="${cls}" data-scene="${esc(s.name)}">${esc(s.name)}</button><span class="${ledCls}" style="width:6px;height:6px;"></span></div>`;
+    const itemCount = (sceneItems[s.name] || []).length;
+    const thumbId = 'scene-thumb-' + s.name.replace(/[^a-zA-Z0-9]/g, '_');
+    return `<div class="${cls}" data-scene="${esc(s.name)}">
+      <div class="scene-thumb-wrap">
+        <img class="scene-thumb" id="${thumbId}" src="" alt="" draggable="false">
+        <span class="scene-badge">${itemCount}</span>
+      </div>
+      <div class="scene-info">
+        <span class="${ledCls}" style="width:6px;height:6px;"></span>
+        <span class="scene-name">${esc(s.name)}</span>
+      </div>
+    </div>`;
   }).join('');
+  renderPreviewPanes();
+  refreshScenePreview(); refreshSceneThumbnails(true);
+}
+
+let previewLoopRunning = false;
+let thumbnailLoopRunning = false;
+
+async function refreshScenePreview() {
+  if (!obsState || !isConnected) return;
+  const panel = $('#scenes-panel');
+  if (panel && panel.hidden) return;
+  const previewPanes = document.querySelectorAll('.scene-preview-pane');
+  for (const pane of previewPanes) {
+    const sceneName = pane.dataset.scene;
+    if (!sceneName) continue;
+    const vid = pane.querySelector('.scene-preview-video');
+    if (vid && vid.style.display !== 'none') continue;
+    const img = pane.querySelector('.scene-preview-img');
+    if (!img) continue;
+    const w = Math.min(480, Math.max(160, pane.offsetWidth));
+    const h = Math.round(w * 9 / 16);
+    try {
+      const uri = await invoke('get_scene_screenshot', { sceneName, width: w, height: h });
+      if (uri) img.src = uri;
+    } catch (e) {
+      console.warn('[Preview] Screenshot failed for "' + sceneName + '":', e);
+    }
+  }
+}
+
+async function refreshSceneThumbnails(force) {
+  if (!obsState || !isConnected) return;
+  const panel = $('#scenes-panel');
+  if (panel && panel.hidden) return;
+  const scenes = obsState.scenes || [];
+
+  for (const s of scenes) {
+    const thumbId = 'scene-thumb-' + s.name.replace(/[^a-zA-Z0-9]/g, '_');
+    const img = document.getElementById(thumbId);
+    if (!img) continue;
+    try {
+      const dataUri = await invoke('get_scene_screenshot', { sceneName: s.name, width: 160, height: 90 });
+      if (dataUri) img.src = dataUri;
+    } catch (e) {
+      console.warn('[Thumbnail] Screenshot failed for scene "' + s.name + '":', e);
+    }
+  }
+}
+
+async function previewLoop() {
+  previewLoopRunning = true;
+  while (previewLoopRunning && isConnected) {
+    const t0 = performance.now();
+    await refreshScenePreview();
+    const elapsed = performance.now() - t0;
+    const delay = Math.max(50, 200 - elapsed);
+    await new Promise(r => setTimeout(r, delay));
+  }
+}
+
+async function thumbnailLoop() {
+  thumbnailLoopRunning = true;
+  while (thumbnailLoopRunning && isConnected) {
+    await refreshSceneThumbnails(false);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+}
+
+function startSceneThumbnailRefresh() {
+  stopSceneThumbnailRefresh();
+  previewLoop();
+  thumbnailLoop();
+}
+
+function stopSceneThumbnailRefresh() {
+  previewLoopRunning = false;
+  thumbnailLoopRunning = false;
+}
+
+async function findObsVirtualCam() {
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  let videoInputs = devices.filter(d => d.kind === 'videoinput');
+  console.log('[LivePreview] Devices before permission:', videoInputs.map(d => d.label || '(empty label)'));
+
+  const hasLabels = videoInputs.some(d => d.label);
+  if (!hasLabels && videoInputs.length > 0) {
+    console.log('[LivePreview] Labels empty, requesting camera permission to populate...');
+    try {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      for (const t of tempStream.getTracks()) t.stop();
+    } catch (e) {
+      console.log('[LivePreview] Permission request failed:', e);
+      return null;
+    }
+    devices = await navigator.mediaDevices.enumerateDevices();
+    videoInputs = devices.filter(d => d.kind === 'videoinput');
+    console.log('[LivePreview] Devices after permission:', videoInputs.map(d => d.label || '(empty label)'));
+  }
+
+  return videoInputs.find(d =>
+    d.label.toLowerCase().includes('obs virtual camera')
+  );
+}
+
+function getProgramPaneId() {
+  if (studioMode) return 'pane-program';
+  if (previewScenes.length > 0) {
+    const current = obsState ? obsState.currentScene || '' : '';
+    const idx = previewScenes.indexOf(current);
+    if (idx >= 0) return 'pane-multi-' + idx;
+    return null;
+  }
+  return 'scene-preview-program';
+}
+
+async function startLivePreview() {
+  try {
+    let vcamRunning = false;
+    try {
+      vcamRunning = await invoke('get_virtual_cam_status');
+    } catch (_) {
+      console.log('[LivePreview] Could not query virtual cam status, skipping');
+      return;
+    }
+    console.log('[LivePreview] Virtual cam already running:', vcamRunning);
+
+    if (!vcamRunning) {
+      try {
+        await invoke('start_virtual_cam');
+        vcamStartedByUs = true;
+        console.log('[LivePreview] Started virtual cam');
+      } catch (e) {
+        console.log('[LivePreview] Could not start virtual cam:', e);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    let vcamDevice = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      vcamDevice = await findObsVirtualCam();
+      if (vcamDevice) break;
+      console.log('[LivePreview] Device not found, retry ' + (attempt + 1) + '/3...');
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!vcamDevice) {
+      console.log('[LivePreview] OBS Virtual Camera device not found after retries, falling back to screenshots');
+      return;
+    }
+    console.log('[LivePreview] Found device:', vcamDevice.label, vcamDevice.deviceId);
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: vcamDevice.deviceId } }
+    });
+    livePreviewStream = stream;
+
+    const track = stream.getVideoTracks()[0];
+    if (track) {
+      const settings = track.getSettings();
+      console.log('[LivePreview] Stream track settings:', JSON.stringify({
+        width: settings.width, height: settings.height,
+        frameRate: settings.frameRate, deviceId: settings.deviceId
+      }));
+    }
+
+    attachLivePreviewToProgram();
+    console.log('[LivePreview] Live preview active via OBS Virtual Camera');
+  } catch (e) {
+    console.log('[LivePreview] Failed to start, falling back to screenshots:', e);
+  }
+}
+
+function attachLivePreviewToProgram() {
+  if (!livePreviewStream) return;
+  const paneId = getProgramPaneId();
+  if (!paneId) return;
+  const pane = document.getElementById(paneId);
+  if (!pane) return;
+  const video = pane.querySelector('.scene-preview-video');
+  const img = pane.querySelector('.scene-preview-img');
+  if (!video) return;
+  video.srcObject = livePreviewStream;
+  video.style.display = 'block';
+  if (img) img.style.display = 'none';
+}
+
+function detachLivePreviewFromAll() {
+  const allVideos = document.querySelectorAll('.scene-preview-video');
+  for (const vid of allVideos) {
+    vid.srcObject = null;
+    vid.style.display = 'none';
+  }
+  const allImgs = document.querySelectorAll('.scene-preview-pane .scene-preview-img');
+  for (const img of allImgs) {
+    if (img.closest('.scene-preview-pane').dataset.scene) {
+      img.style.display = 'block';
+    }
+  }
+}
+
+async function stopLivePreview() {
+  if (livePreviewStream) {
+    for (const track of livePreviewStream.getTracks()) {
+      track.stop();
+    }
+    livePreviewStream = null;
+  }
+  detachLivePreviewFromAll();
+  if (vcamStartedByUs) {
+    try {
+      await invoke('stop_virtual_cam');
+    } catch (_) {}
+    vcamStartedByUs = false;
+  }
 }
 
 function bindScenesPanelEvents() {
   $('#scenes-grid').addEventListener('click', (e) => {
-    const btn = e.target.closest('.scene-btn');
-    if (!btn) return;
-    const sceneName = btn.dataset.scene;
+    const card = e.target.closest('.scene-card');
+    if (!card) return;
+    const sceneName = card.dataset.scene;
+
+    if (e.ctrlKey) {
+      const idx = previewScenes.indexOf(sceneName);
+      if (idx >= 0) {
+        previewScenes.splice(idx, 1);
+      } else if (previewScenes.length < 4) {
+        previewScenes.push(sceneName);
+      }
+      renderPreviewPanes();
+      renderScenesPanel(obsState.scenes || [], obsState.currentScene || '');
+      refreshScenePreview(); refreshSceneThumbnails(true);
+      return;
+    }
+
+    if (studioMode) {
+      previewScenes = [sceneName];
+      renderPreviewPanes();
+      refreshScenePreview(); refreshSceneThumbnails(true);
+      return;
+    }
+
     invoke('set_current_scene', { sceneName }).catch(err => {
       showFrameDropAlert('Scene switch failed: ' + err);
     });
+  });
+  $('#btn-create-scene').addEventListener('click', () => promptCreateScene());
+
+  $('#btn-studio-mode').addEventListener('click', () => {
+    studioMode = !studioMode;
+    $('#btn-studio-mode').classList.toggle('active', studioMode);
+    if (studioMode) {
+      const scenes = obsState ? obsState.scenes || [] : [];
+      const current = obsState ? obsState.currentScene || '' : '';
+      const firstNonActive = scenes.find(s => s.name !== current);
+      previewScenes = firstNonActive ? [firstNonActive.name] : [];
+    } else {
+      previewScenes = [];
+    }
+    renderPreviewPanes();
+    renderScenesPanel(obsState ? obsState.scenes || [] : [], obsState ? obsState.currentScene || '' : '');
+    refreshScenePreview(); refreshSceneThumbnails(true);
+  });
+
+  initPreviewResize();
+}
+
+function makePreviewPane(sceneName, label, id) {
+  if (!sceneName) {
+    return `<div class="scene-preview-pane" id="${id}" data-scene="">
+      <img class="scene-preview-img" src="" alt="" draggable="false" style="display:none">
+      <video class="scene-preview-video" autoplay playsinline muted style="display:none"></video>
+      <div class="scene-preview-placeholder">${esc(label)}</div>
+      <div class="scene-preview-label">${esc(label)}</div>
+    </div>`;
+  }
+  return `<div class="scene-preview-pane" id="${id}" data-scene="${esc(sceneName)}">
+    <img class="scene-preview-img" src="" alt="${esc(label)}" draggable="false">
+    <video class="scene-preview-video" autoplay playsinline muted style="display:none"></video>
+    <div class="scene-preview-label">${esc(label)}</div>
+  </div>`;
+}
+
+function renderPreviewPanes() {
+  const container = $('#scene-preview-container');
+  const panesEl = $('#scene-preview-panes');
+  if (!container || !panesEl) return;
+
+  container.style.width = previewWidth + 'px';
+  const current = obsState ? obsState.currentScene || '' : '';
+  const sceneNames = obsState ? (obsState.scenes || []).map(s => s.name) : [];
+  previewScenes = previewScenes.filter(n => sceneNames.includes(n));
+
+  if (studioMode) {
+    const previewScene = previewScenes[0] || '';
+    panesEl.innerHTML =
+      makePreviewPane(previewScene, previewScene ? 'PREVIEW' : 'Click a scene', 'pane-preview')
+      + '<button class="scene-preview-transition" id="btn-transition" title="Transition">&rsaquo;</button>'
+      + makePreviewPane(current, 'PROGRAM', 'pane-program');
+    const transBtn = $('#btn-transition');
+    if (transBtn) {
+      transBtn.addEventListener('click', () => {
+        const ps = previewScenes[0];
+        if (!ps) return;
+        invoke('set_current_scene', { sceneName: ps }).catch(err => {
+          showFrameDropAlert('Transition failed: ' + err);
+        });
+      });
+    }
+  } else if (previewScenes.length > 0) {
+    panesEl.innerHTML = previewScenes.map((name, i) => {
+      const label = name === current ? name + ' (LIVE)' : name;
+      return makePreviewPane(name, label, 'pane-multi-' + i);
+    }).join('');
+  } else {
+    panesEl.innerHTML = makePreviewPane(current, current || 'No scene', 'scene-preview-program');
+  }
+  attachLivePreviewToProgram();
+}
+
+function initPreviewResize() {
+  previewWidth = parseInt(localStorage.getItem(PREVIEW_SIZE_KEY)) || 640;
+  const container = $('#scene-preview-container');
+  if (container) container.style.width = previewWidth + 'px';
+
+  const handle = $('#scene-preview-resize-handle');
+  if (!handle) return;
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = previewWidth;
+    document.body.classList.add('resizing-preview');
+
+    function onMove(ev) {
+      const newWidth = Math.max(PREVIEW_MIN_WIDTH, Math.min(PREVIEW_MAX_WIDTH, startWidth + (ev.clientX - startX)));
+      previewWidth = newWidth;
+      container.style.width = newWidth + 'px';
+    }
+
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.classList.remove('resizing-preview');
+      localStorage.setItem(PREVIEW_SIZE_KEY, String(previewWidth));
+      refreshScenePreview(); refreshSceneThumbnails(true);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+async function buildSceneContextMenu(sceneName, totalScenes) {
+  const items = [
+    { type: 'header', label: sceneName },
+    { label: 'Rename Scene', action: () => promptRenameScene(sceneName) },
+    { label: 'Duplicate Scene', action: () => promptDuplicateScene(sceneName) },
+  ];
+
+  const sceneItems = obsState ? (obsState.sceneItems || {})[sceneName] || [] : [];
+  const displayCaptures = sceneItems.filter(si =>
+    si.sourceKind && si.sourceKind.includes('monitor_capture')
+  );
+  if (displayCaptures.length > 0 && cachedDisplays.length > 0) {
+    items.push({ type: 'separator' });
+    for (const src of displayCaptures) {
+      let currentMonitor = -1;
+      try {
+        const settings = await invoke('get_input_settings', { inputName: src.sourceName });
+        if (settings && settings.monitor != null) currentMonitor = settings.monitor;
+      } catch (_) {}
+      items.push({ type: 'header', label: src.sourceName });
+      for (let i = 0; i < cachedDisplays.length; i++) {
+        const d = cachedDisplays[i];
+        const label = `Monitor ${i + 1}: ${d.adapter} (${d.width}x${d.height})`;
+        const monitorIndex = i;
+        items.push({
+          label,
+          checked: i === currentMonitor,
+          action: () => {
+            invoke('set_input_settings', {
+              inputName: src.sourceName,
+              inputSettings: { monitor: monitorIndex },
+            }).catch(err => showFrameDropAlert('Switch display failed: ' + err));
+          },
+        });
+      }
+    }
+    items.push({ type: 'separator' });
+  } else {
+    items.push({ type: 'separator' });
+  }
+
+  items.push(
+    { label: 'Move Up', disabled: true },
+    { label: 'Move Down', disabled: true },
+    { type: 'separator' },
+    { label: 'Delete Scene', action: () => confirmDeleteScene(sceneName) },
+  );
+  return items;
+}
+
+function promptCreateScene() {
+  const name = prompt('New scene name:');
+  if (!name || !name.trim()) return;
+  invoke('create_scene', { sceneName: name.trim() }).catch(err => {
+    showFrameDropAlert('Create scene failed: ' + err);
+  });
+}
+
+function promptRenameScene(oldName) {
+  const newName = prompt('Rename scene:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  invoke('rename_scene', { sceneName: oldName, newSceneName: newName.trim() }).catch(err => {
+    showFrameDropAlert('Rename scene failed: ' + err);
+  });
+}
+
+function promptDuplicateScene(name) {
+  const newName = prompt('New scene name:', name + ' Copy');
+  if (!newName || !newName.trim()) return;
+  invoke('create_scene', { sceneName: newName.trim() }).then(() => {
+    showFrameDropAlert('Empty scene created. Copy sources manually in OBS.');
+  }).catch(err => {
+    showFrameDropAlert('Duplicate scene failed: ' + err);
+  });
+}
+
+function confirmDeleteScene(name) {
+  if (!confirm('Delete scene "' + name + '"? This cannot be undone.')) return;
+  invoke('remove_scene', { sceneName: name }).catch(err => {
+    showFrameDropAlert('Delete scene failed: ' + err);
   });
 }
 
@@ -515,6 +973,14 @@ function renderAudioMixer() {
           ${[1,2,3,4,5,6].map(t => `<div class="track-led${tracks[String(t)] ? ' active' : ''}" data-track="${t}">${t}</div>`).join('')}
         </div>
       </div>
+    </div>
+    <div class="mixer-meter-row${mutedClass ? ' muted' : ''}" data-input="${esc(input.name)}">
+      <span class="obs-meter-label">post-filter</span>
+      <div class="obs-meter-stereo">
+        <div class="obs-meter"><div class="obs-meter-fill level-green" data-ch="0"></div></div>
+        <div class="obs-meter"><div class="obs-meter-fill level-green" data-ch="1"></div></div>
+      </div>
+      <span class="obs-meter-peak-db">-inf</span>
     </div>`;
   }).join('');
 
@@ -568,6 +1034,31 @@ function updateMixerItem(inputName) {
       const t = led.dataset.track;
       led.classList.toggle('active', !!input.audioTracks[String(t)]);
     });
+  }
+
+  const meterRow = document.querySelector(`.mixer-meter-row[data-input="${CSS.escape(inputName)}"]`);
+  if (meterRow) meterRow.classList.toggle('muted', input.muted);
+}
+
+function updateMixerMeter(inputName, channels) {
+  const row = document.querySelector(`.mixer-meter-row[data-input="${CSS.escape(inputName)}"]`);
+  if (!row) return;
+  let maxPeak = -100;
+  for (let i = 0; i < channels.length && i < 2; i++) {
+    const fill = row.querySelector(`.obs-meter-fill[data-ch="${i}"]`);
+    if (!fill) continue;
+    const db = channels[i].mag_db;
+    const pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+    fill.style.width = pct + '%';
+    fill.classList.toggle('level-green', db < -12);
+    fill.classList.toggle('level-amber', db >= -12 && db < -3);
+    fill.classList.toggle('level-red', db >= -3);
+    if (channels[i].peak_db > maxPeak) maxPeak = channels[i].peak_db;
+  }
+  const peakEl = row.querySelector('.obs-meter-peak-db');
+  if (peakEl) {
+    peakEl.textContent = maxPeak <= -100 ? '-inf' : maxPeak.toFixed(1) + ' dB';
+    peakEl.classList.toggle('clip', maxPeak > -0.5);
   }
 }
 
@@ -938,6 +1429,9 @@ function setConnectedUI(status) {
 
   checkRouting();
   refreshFullState();
+  startSceneThumbnailRefresh();
+  startLivePreview();
+  loadVideoDevices();
 
   invoke('get_source_filter_kinds').then(kinds => { discoveredFilterKinds = kinds; }).catch(() => {});
 
@@ -962,6 +1456,13 @@ function setDisconnectedUI() {
   $('#routing-results').innerHTML = '';
   $('#display-list').innerHTML = '';
   $('#scenes-grid').innerHTML = '';
+  studioMode = false;
+  previewScenes = [];
+  const studioBtn = $('#btn-studio-mode');
+  if (studioBtn) studioBtn.classList.remove('active');
+  renderPreviewPanes();
+  stopLivePreview();
+  stopSceneThumbnailRefresh();
   if (sysResourceInterval) {
     clearInterval(sysResourceInterval);
     sysResourceInterval = null;
@@ -2399,6 +2900,7 @@ async function loadSystemResources() {
 async function loadDisplays() {
   try {
     const displays = await invoke('get_displays');
+    cachedDisplays = displays;
     $('#display-list').innerHTML = displays.map(d => {
       const primary = d.isPrimary ? '<span class="primary-badge">PRIMARY</span>' : '';
       return `<li>${esc(d.adapter)} — ${d.width}x${d.height} @ ${d.refreshRate}Hz${primary}</li>`;
@@ -2406,6 +2908,102 @@ async function loadDisplays() {
   } catch (_) {
     $('#display-list').innerHTML = '<li>Could not enumerate displays</li>';
   }
+}
+
+// --- Webcam / Video Device Detection ---
+
+async function loadVideoDevices() {
+  const list = $('#webcam-list');
+  const guide = $('#webcam-guide');
+  if (!list) return;
+  try {
+    const devices = await invoke('get_video_devices');
+    renderVideoDevices(devices);
+  } catch (e) {
+    list.innerHTML = '<p class="error">Failed to detect cameras.</p>';
+    if (guide) guide.hidden = true;
+  }
+}
+
+function findObsSourceForDevice(deviceName) {
+  if (!obsState || !obsState.inputs) return null;
+  const lower = deviceName.toLowerCase();
+  for (const [inputName, info] of Object.entries(obsState.inputs)) {
+    if (info.kind === 'dshow_input') {
+      if (inputName.toLowerCase().includes(lower) || lower.includes(inputName.toLowerCase())) return inputName;
+    }
+  }
+  return null;
+}
+
+function renderVideoDevices(devices) {
+  const list = $('#webcam-list');
+  const guide = $('#webcam-guide');
+  if (!list) return;
+
+  if (!devices || devices.length === 0) {
+    list.innerHTML = '';
+    if (guide) {
+      guide.hidden = false;
+      guide.innerHTML = `
+        <div class="webcam-guide-title">No cameras detected</div>
+        <div class="webcam-guide-step"><strong>Windows 11 / Phone Link:</strong> Settings &rarr; Bluetooth &amp; devices &rarr; Mobile devices &rarr; Connected Camera</div>
+        <div class="webcam-guide-step"><strong>Android 14+:</strong> Connect your phone via USB &mdash; it may appear as a webcam automatically</div>
+        <div class="webcam-guide-step"><strong>Third-party apps:</strong> Install DroidCam or Iriun Webcam on your phone (free)</div>
+        <div class="webcam-guide-step"><strong>USB webcam:</strong> Plug in your webcam and click Refresh</div>
+      `;
+    }
+    return;
+  }
+
+  if (guide) guide.hidden = true;
+  const currentScene = obsState?.currentScene || '';
+
+  const html = '<div class="webcam-grid">' + devices.map(d => {
+    const existingSource = findObsSourceForDevice(d.name);
+    const btnLabel = existingSource ? `Add to "${esc(currentScene)}"` : 'Add to OBS';
+    const infoHtml = existingSource ? `<span class="webcam-in-obs-badge">Source exists in OBS</span>` : '';
+    return `<div class="webcam-card">
+      <div class="webcam-name" title="${esc(d.name)}">${esc(d.name)}</div>
+      <span class="webcam-kind ${d.kind}">${d.kind}</span>
+      <div class="webcam-actions">
+        ${infoHtml}
+        <button class="btn-secondary" data-add-webcam="${esc(d.id)}" data-webcam-name="${esc(d.name)}" data-existing-source="${esc(existingSource || '')}">${btnLabel}</button>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+
+  list.innerHTML = html;
+
+  list.querySelectorAll('[data-add-webcam]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const deviceId = btn.dataset.addWebcam;
+      const deviceName = btn.dataset.webcamName;
+      const existingSource = btn.dataset.existingSource;
+      const scene = obsState?.currentScene;
+      if (!scene) { showFrameDropAlert('No active scene in OBS'); return; }
+      btn.disabled = true;
+      btn.textContent = 'Adding...';
+      try {
+        if (existingSource) {
+          await invoke('create_scene_item', { sceneName: scene, sourceName: existingSource });
+        } else {
+          await invoke('create_input', {
+            sceneName: scene,
+            inputName: deviceName,
+            inputKind: 'dshow_input',
+            inputSettings: { video_device_id: deviceId },
+          });
+        }
+        showFrameDropAlert(`Added camera to scene "${scene}"`);
+        setTimeout(() => loadVideoDevices(), 500);
+      } catch (e) {
+        showFrameDropAlert('Failed: ' + e);
+        btn.disabled = false;
+        btn.textContent = existingSource ? `Add to "${scene}"` : 'Add to OBS';
+      }
+    });
+  });
 }
 
 function renderVideoSettings() {
@@ -2559,7 +3157,33 @@ $('#btn-disconnect').addEventListener('click', async () => {
 
 $('#btn-settings').addEventListener('click', (e) => {
   e.stopPropagation();
+  $('#hamburger-dropdown').classList.remove('open');
   $('#settings-dropdown').classList.toggle('open');
+});
+
+$('#btn-hamburger').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('#settings-dropdown').classList.remove('open');
+  $('#hamburger-dropdown').classList.toggle('open');
+});
+
+$('#btn-about').addEventListener('click', () => {
+  $('#hamburger-dropdown').classList.remove('open');
+  $('#about-modal').hidden = false;
+});
+
+$('#btn-about-close').addEventListener('click', () => {
+  $('#about-modal').hidden = true;
+});
+
+$('#btn-about-footer-close').addEventListener('click', () => {
+  $('#about-modal').hidden = true;
+});
+
+$('#about-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    $('#about-modal').hidden = true;
+  }
 });
 
 $('#btn-save-settings').addEventListener('click', async () => {
@@ -2584,9 +3208,11 @@ $('#btn-save-settings').addEventListener('click', async () => {
 });
 
 $('#settings-dropdown').addEventListener('click', (e) => e.stopPropagation());
+$('#hamburger-dropdown').addEventListener('click', (e) => e.stopPropagation());
 
 document.addEventListener('click', () => {
   $('#settings-dropdown').classList.remove('open');
+  $('#hamburger-dropdown').classList.remove('open');
   document.querySelectorAll('.add-filter-dropdown.open').forEach(d => d.classList.remove('open'));
 });
 
@@ -2594,6 +3220,7 @@ $('#btn-preflight-record').addEventListener('click', () => runPreflight('record'
 $('#btn-preflight-stream').addEventListener('click', () => runPreflight('stream'));
 $('#btn-check-routing').addEventListener('click', checkRouting);
 $('#btn-apply-setup').addEventListener('click', applyRecommendedSetup);
+$('#btn-refresh-webcams').addEventListener('click', loadVideoDevices);
 
 $('#btn-toggle-stream').addEventListener('click', () => {
   invoke('toggle_stream').catch(err => showFrameDropAlert('Stream toggle failed: ' + err));
@@ -3263,7 +3890,7 @@ function updateModuleShading() {
 
 // --- Panel Minimize / Remove ---
 
-const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture']);
+const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture']);
 const PANEL_STATE_KEY = 'observe-panel-states';
 
 const PANEL_LABELS = {
@@ -3279,6 +3906,7 @@ const PANEL_LABELS = {
   'system': 'System',
   'filters': 'Signal Chain',
   'pro-spectrum': 'Pro Spectrum',
+  'webcam': 'Cameras',
   'ai': 'AI Assistant',
 };
 
@@ -3498,6 +4126,14 @@ function initSpectrumCanvas(containerId) {
 function freqToX(freq, w) {
   if (freq <= 20) return 0;
   return (Math.log10(freq / 20) / 3) * w; // 20Hz→20kHz = 3 decades
+}
+
+function xToFreq(x, w) {
+  return 20 * Math.pow(10, 3 * x / w);
+}
+
+function yToGainDb(y, h) {
+  return 12 - (y / h) * 24;
 }
 
 function drawFreqZone(ctx, w, h, freqLow, freqHigh, color) {
@@ -4885,8 +5521,17 @@ function buildPanelToggleItems() {
   return items;
 }
 
-function buildContextItems(e) {
+async function buildContextItems(e) {
   const items = [];
+
+  const sceneCard = e.target.closest('.scene-card');
+  if (sceneCard) {
+    const sceneName = sceneCard.dataset.scene;
+    const sceneItems = await buildSceneContextMenu(sceneName, (obsState ? (obsState.scenes || []).length : 0));
+    items.push(...sceneItems);
+    items.push({ type: 'separator' });
+    return items.concat(buildPanelToggleItems());
+  }
 
   const filterCard = e.target.closest('.filter-card');
   if (filterCard) {
@@ -4992,9 +5637,9 @@ function initContextMenu() {
   const rackBody = document.querySelector('.rack-body');
   if (!rackBody) return;
 
-  rackBody.addEventListener('contextmenu', (e) => {
+  rackBody.addEventListener('contextmenu', async (e) => {
     e.preventDefault();
-    const items = buildContextItems(e);
+    const items = await buildContextItems(e);
     showContextMenu(e.clientX, e.clientY, items);
   });
 
@@ -5228,6 +5873,9 @@ let spectrumAnimId = null;
 let spectrumBins = null;
 let spectrumSampleRate = 48000;
 const spectrumKnobValues = {};
+let spectrumMode = localStorage.getItem('spectrumMode') || 'simple';
+let draggingEqPoint = null;
+const EQ_POINT_IDS = ['lo-shelf', 'hpf', 'presence', 'air'];
 
 function initProSpectrum() {
   const select = $('#spectrum-source-select');
@@ -5261,6 +5909,65 @@ function initProSpectrum() {
     $('#lufs-short-term').textContent = '--';
     $('#lufs-integrated').textContent = '--';
     $('#lufs-true-peak').textContent = '--';
+  });
+
+  document.querySelectorAll('[data-spectrum-mode]').forEach(btn => {
+    if (btn.dataset.spectrumMode === spectrumMode) btn.classList.add('active');
+    else btn.classList.remove('active');
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-spectrum-mode]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      spectrumMode = btn.dataset.spectrumMode;
+      localStorage.setItem('spectrumMode', spectrumMode);
+      applySpectrumMode();
+    });
+  });
+  applySpectrumMode();
+
+  const canvas = $('#spectrum-canvas');
+  canvas.addEventListener('mousedown', (e) => {
+    if (spectrumMode !== 'daw') return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    draggingEqPoint = findNearestEqPoint(mx, my, canvas.width, canvas.height);
+    if (draggingEqPoint) canvas.style.cursor = 'grabbing';
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (spectrumMode !== 'daw') return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    if (draggingEqPoint) {
+      const knob = SPECTRUM_KNOBS.find(k => k.id === draggingEqPoint);
+      if (!knob) return;
+      let newVal;
+      if (knob.id === 'hpf') {
+        newVal = Math.round(Math.max(knob.min, Math.min(knob.max, xToFreq(mx, canvas.width))));
+      } else {
+        newVal = Math.round(Math.max(knob.min, Math.min(knob.max, yToGainDb(my, canvas.height))) * 2) / 2;
+      }
+      spectrumKnobValues[knob.id] = newVal;
+      const knobEl = document.querySelector(`[data-spec-knob="${knob.id}"]`);
+      if (knobEl) {
+        knobEl.setValue(newVal);
+        knobEl.dispatchEvent(new Event('input'));
+      }
+    } else {
+      const near = findNearestEqPoint(mx, my, canvas.width, canvas.height);
+      canvas.style.cursor = near ? 'grab' : 'default';
+    }
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    draggingEqPoint = null;
+    canvas.style.cursor = spectrumMode === 'daw' ? 'default' : '';
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    draggingEqPoint = null;
+    canvas.style.cursor = '';
   });
 
   listen('audio://fft-data', (e) => {
@@ -5388,6 +6095,22 @@ function drawProSpectrum() {
     ctx.fillText(`${db}`, 2, dbToY(db) - 2);
   }
 
+  if (spectrumMode === 'daw') {
+    ctx.strokeStyle = 'rgba(100,180,255,0.08)';
+    ctx.lineWidth = 0.5;
+    ctx.fillStyle = 'rgba(100,180,255,0.2)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'right';
+    for (const gdb of [-12, -6, 0, 6, 12]) {
+      const gy = h / 2 - (gdb / 12) * (h / 2);
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(w, gy);
+      ctx.stroke();
+      ctx.fillText(`${gdb > 0 ? '+' : ''}${gdb}dB`, w - 3, gy - 2);
+    }
+  }
+
   // --- Knob visualizations (drawn behind spectrum) ---
   drawSpectrumOverlays(ctx, w, h, dbToY);
 
@@ -5432,6 +6155,10 @@ function drawProSpectrum() {
   ctx.strokeStyle = 'rgba(212,160,64,0.8)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
+
+  if (spectrumMode === 'daw') {
+    drawEqHandles(ctx, w, h);
+  }
 }
 
 function drawSpectrumOverlays(ctx, w, h, dbToY) {
@@ -5584,6 +6311,7 @@ function renderSpectrumKnobs(sourceName) {
   for (const knob of SPECTRUM_KNOBS) {
     const col = document.createElement('div');
     col.className = 'spectrum-knob-col';
+    if (EQ_POINT_IDS.includes(knob.id)) col.dataset.eq = 'true';
     if (knob.vst && !vstsAvailable) col.classList.add('disabled');
 
     const existing = existingFilters.find(f => f.name === knob.filterPrefix);
@@ -5642,6 +6370,86 @@ function renderSpectrumKnobs(sourceName) {
       knobEl.setValue(knob.off);
       updateKnob(knob.off);
     });
+  }
+  applySpectrumMode();
+}
+
+function applySpectrumMode() {
+  const panel = $('#pro-spectrum-panel');
+  const canvas = $('#spectrum-canvas');
+  if (!panel || !canvas) return;
+  if (spectrumMode === 'daw') {
+    panel.classList.add('pro-spectrum-daw');
+    canvas.height = 250;
+  } else {
+    panel.classList.remove('pro-spectrum-daw');
+    canvas.height = 150;
+  }
+}
+
+function getEqPointPos(knobDef, w, h) {
+  const val = spectrumKnobValues[knobDef.id];
+  if (val == null) return null;
+  let x, y;
+  if (knobDef.id === 'hpf') {
+    x = freqToX(val, w);
+    y = h / 2;
+  } else {
+    x = freqToX(knobDef.centerFreq, w);
+    y = h / 2 - (val / 12) * (h / 2);
+  }
+  return { x, y };
+}
+
+function findNearestEqPoint(mx, my, w, h) {
+  let best = null, bestDist = 15;
+  for (const id of EQ_POINT_IDS) {
+    const knob = SPECTRUM_KNOBS.find(k => k.id === id);
+    if (!knob) continue;
+    const pos = getEqPointPos(knob, w, h);
+    if (!pos) continue;
+    const dx = mx - pos.x, dy = my - pos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = id;
+    }
+  }
+  return best;
+}
+
+function drawEqHandles(ctx, w, h) {
+  for (const id of EQ_POINT_IDS) {
+    const knob = SPECTRUM_KNOBS.find(k => k.id === id);
+    if (!knob) continue;
+    const pos = getEqPointPos(knob, w, h);
+    if (!pos) continue;
+    const isActive = draggingEqPoint === id;
+    const r = isActive ? 10 : 8;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = knob.color;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = isActive ? 2.5 : 1.5;
+    ctx.stroke();
+    if (isActive) {
+      ctx.shadowColor = knob.color;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    const val = spectrumKnobValues[id];
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    const labelText = id === 'hpf'
+      ? `${Math.round(val)}Hz`
+      : `${val > 0 ? '+' : ''}${val}dB`;
+    ctx.fillText(`${knob.label}`, pos.x, pos.y - r - 8);
+    ctx.fillText(labelText, pos.x, pos.y - r - 1);
   }
 }
 

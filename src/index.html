@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OBServe</title>
+  <title>OBServe for OBS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -18,66 +21,81 @@
 
     <div class="rack-body">
 
-      <div class="title-module" data-tauri-drag-region>
-        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
-        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
-        <h1>OBServe</h1>
+      <div class="title-bar-wrapper">
+        <div class="title-bar" data-tauri-drag-region>
+          <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+          <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+          <h1><span class="title-observe">OBServe</span> <span class="title-for">for</span> <span class="title-obs">OBS</span></h1>
 
-        <div class="grip-strip" data-tauri-drag-region>
-          <div class="grip-ridges" data-tauri-drag-region></div>
+          <div class="grip-strip" data-tauri-drag-region>
+            <div class="grip-ridges" data-tauri-drag-region></div>
+          </div>
+
+          <div class="title-bar-right">
+            <button id="btn-settings" class="settings-btn" title="Settings">&#9881;</button>
+            <button id="btn-hamburger" class="hamburger-btn" title="Menu">
+              <span class="hamburger-line"></span>
+              <span class="hamburger-line"></span>
+              <span class="hamburger-line"></span>
+            </button>
+            <div class="window-controls">
+              <button class="win-btn" id="win-minimize" title="Minimize"><span class="win-icon">&#x2014;</span></button>
+              <button class="win-btn" id="win-maximize" title="Maximize"><span class="win-icon">&#x25A1;</span></button>
+              <button class="win-btn" id="win-close" title="Close"><span class="win-icon">&#x2715;</span></button>
+            </div>
+          </div>
+
+          <div id="settings-dropdown" class="settings-dropdown">
+            <div class="settings-row">
+              <label>Host <input type="text" id="obs-host" value="localhost"></label>
+            </div>
+            <div class="settings-row">
+              <label>Port <input type="number" id="obs-port" value="4455"></label>
+            </div>
+            <div class="settings-row">
+              <label>Password <input type="password" id="obs-password" placeholder="(optional)"></label>
+            </div>
+            <div class="settings-row">
+              <label>Gemini API Key <input type="password" id="gemini-api-key" placeholder="(for AI features)"></label>
+            </div>
+            <div class="toggle-row">
+              <label><input type="checkbox" id="auto-launch-obs"> Launch OBS on startup</label>
+            </div>
+            <div class="toggle-row">
+              <label><input type="checkbox" id="enable-voice-input" checked> Enable voice input</label>
+            </div>
+            <div class="settings-divider"></div>
+            <div class="settings-section-label">Panels</div>
+            <div id="panel-toggles" class="panel-toggles"></div>
+            <button id="btn-save-settings">Save</button>
+          </div>
+
+          <div id="hamburger-dropdown" class="hamburger-dropdown">
+            <button class="hamburger-menu-item" id="btn-about">About OBServe</button>
+          </div>
         </div>
 
-        <div class="title-center">
-          <div class="toolbar-group">
-            <span class="toolbar-label">Mode</span>
-            <button class="toggle-btn" data-mode="audio">Audio</button>
-            <button class="toggle-btn active" data-mode="audio-video">A+V</button>
-            <button class="toggle-btn" data-mode="video">Video</button>
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <div class="toolbar-group">
+              <span class="toolbar-label">Mode</span>
+              <button class="toggle-btn" data-mode="audio">Audio</button>
+              <button class="toggle-btn active" data-mode="audio-video">A+V</button>
+              <button class="toggle-btn" data-mode="video">Video</button>
+            </div>
+            <div class="toolbar-group">
+              <span class="toolbar-label">Detail</span>
+              <button class="toggle-btn active" data-complexity="simple">Simple</button>
+              <button class="toggle-btn" data-complexity="advanced">Advanced</button>
+            </div>
           </div>
-          <div class="toolbar-group">
-            <span class="toolbar-label">Detail</span>
-            <button class="toggle-btn active" data-complexity="simple">Simple</button>
-            <button class="toggle-btn" data-complexity="advanced">Advanced</button>
+          <div class="toolbar-right">
+            <p id="connection-error" class="header-error" hidden></p>
+            <button id="btn-connect" class="hw-btn">Connect</button>
+            <button id="btn-disconnect" class="hw-btn" disabled>Disconnect</button>
+            <span class="led" id="connection-led"></span>
+            <span id="connection-badge" class="badge disconnected">Disconnected</span>
           </div>
-        </div>
-
-        <div class="title-right">
-          <p id="connection-error" class="header-error" hidden></p>
-          <button id="btn-connect" class="hw-btn">Connect</button>
-          <button id="btn-disconnect" class="hw-btn" disabled>Disconnect</button>
-          <span class="led" id="connection-led"></span>
-          <span id="connection-badge" class="badge disconnected">Disconnected</span>
-          <button id="btn-settings" class="settings-btn" title="Settings">&#9881;</button>
-          <div class="window-controls">
-            <button class="win-btn" id="win-minimize" title="Minimize"><span class="win-icon">&#x2014;</span></button>
-            <button class="win-btn" id="win-maximize" title="Maximize"><span class="win-icon">&#x25A1;</span></button>
-            <button class="win-btn" id="win-close" title="Close"><span class="win-icon">&#x2715;</span></button>
-          </div>
-        </div>
-
-        <div id="settings-dropdown" class="settings-dropdown">
-          <div class="settings-row">
-            <label>Host <input type="text" id="obs-host" value="localhost"></label>
-          </div>
-          <div class="settings-row">
-            <label>Port <input type="number" id="obs-port" value="4455"></label>
-          </div>
-          <div class="settings-row">
-            <label>Password <input type="password" id="obs-password" placeholder="(optional)"></label>
-          </div>
-          <div class="settings-row">
-            <label>Gemini API Key <input type="password" id="gemini-api-key" placeholder="(for AI features)"></label>
-          </div>
-          <div class="toggle-row">
-            <label><input type="checkbox" id="auto-launch-obs"> Launch OBS on startup</label>
-          </div>
-          <div class="toggle-row">
-            <label><input type="checkbox" id="enable-voice-input" checked> Enable voice input</label>
-          </div>
-          <div class="settings-divider"></div>
-          <div class="settings-section-label">Panels</div>
-          <div id="panel-toggles" class="panel-toggles"></div>
-          <button id="btn-save-settings">Save</button>
         </div>
       </div>
 
@@ -136,7 +154,32 @@
         <div class="mod-screw bl"></div><div class="mod-screw br"></div>
         <span class="mod-title">Scenes</span>
         <h2>Scenes</h2>
+        <div class="scenes-toolbar">
+            <button class="scene-add-btn" id="btn-create-scene" title="Create new scene">+ New Scene</button>
+            <button class="toggle-btn" id="btn-studio-mode" title="Studio Mode">Studio</button>
+        </div>
+        <div class="scene-preview-container" id="scene-preview-container">
+            <div class="scene-preview-panes" id="scene-preview-panes">
+                <div class="scene-preview-pane" id="scene-preview-program">
+                    <img class="scene-preview-img" src="" alt="Program" draggable="false">
+                    <div class="scene-preview-label">PROGRAM</div>
+                </div>
+            </div>
+            <div class="scene-preview-resize-handle" id="scene-preview-resize-handle"></div>
+        </div>
         <div id="scenes-grid" class="scenes-grid"></div>
+      </section>
+
+      <section class="module panel" id="webcam-panel" data-panel="webcam" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Cameras</span>
+        <div class="webcam-header">
+          <h2>Cameras</h2>
+          <button class="btn-secondary" id="btn-refresh-webcams">Refresh</button>
+        </div>
+        <div id="webcam-list"></div>
+        <div id="webcam-guide" class="webcam-guide" hidden></div>
       </section>
 
       <section class="module panel" id="obs-info-panel" data-panel="obs-info" hidden>
@@ -364,6 +407,11 @@
         <div class="spectrum-toolbar">
           <h2>Pro Spectrum</h2>
           <div class="spectrum-actions">
+            <div class="spectrum-mode-group">
+              <span class="toolbar-label">View</span>
+              <button class="toggle-btn active" data-spectrum-mode="simple">Simple</button>
+              <button class="toggle-btn" data-spectrum-mode="daw">DAW</button>
+            </div>
             <select class="spectrum-source-select" id="spectrum-source-select">
               <option value="">Select source...</option>
             </select>
@@ -573,6 +621,25 @@
 
   <div id="ctx-menu" class="ctx-menu" hidden>
     <div id="ctx-menu-items"></div>
+  </div>
+
+  <div id="about-modal" class="about-modal-overlay" hidden>
+    <div class="about-modal">
+      <div class="about-modal-header">
+        <span>About OBServe</span>
+        <button class="about-modal-close" id="btn-about-close">&times;</button>
+      </div>
+      <div class="about-modal-body">
+        <p class="about-version">OBServe for OBS &mdash; v0.1.0</p>
+        <p>OBServe is an independent third-party application. It is not affiliated with, endorsed by, or sponsored by the OBS Project or its contributors.</p>
+        <p>OBS&reg; and OBS Studio&reg; are trademarks of the OBS Project.</p>
+        <p>OBServe modifies OBS Studio settings via the OBS WebSocket API. Use at your own risk.</p>
+        <p>Airwindows audio plugins bundled under MIT license by Chris Johnson.</p>
+      </div>
+      <div class="about-modal-footer">
+        <button class="hw-btn" id="btn-about-footer-close">Close</button>
+      </div>
+    </div>
   </div>
 
   <script src="webaudio-controls.js"></script>

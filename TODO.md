@@ -40,6 +40,34 @@
 ### Sidechain Ducking + Mixer Controls — DONE
 - Sidechain auto-ducking (ducking.rs), audio balance/pan, sync offset, track routing, app audio capture
 
+### Calibration 2.0 — Project 1: Spectral Analysis & Platform Targeting — DONE
+- Platform target picker (Twitch, YouTube, Podcast, Broadcast, Discord, Custom)
+- FFT frequency analysis during silence/speech phases (hum, hiss, sibilance, proximity detection)
+- Real-time spectrum visualization canvas in calibration wizard
+- LUFS-based gain targeting, style variants (Neutral, Voice Clarity, Bass Heavy, Bright, Warm, Podcast)
+- Expanded filter recommendations (high-pass, de-esser, frequency-aware suppression)
+- Annotated results screen showing detected issues on spectrum
+
+### Calibration 2.0 — Project 2: Calibration Profiles — DONE
+- Save/load calibration results as named profiles (name, platform, device, measurements, filters, style)
+- Profile selector dropdown in device widget calibration row
+- Switch profiles re-applies filter chain to OBS source
+- Profile management (rename, delete)
+- Style variant saved per profile
+
+### Calibration 2.0 — Project 3: Pro Spectrum Module — DONE
+- New panel with source selector dropdown
+- Live spectrum analyzer (canvas-based FFT at 30fps)
+- Simple mode: quick-access processing knobs (HPF, Shelf, Presence, Air, Gate, Comp, Gain, Limiter)
+- LUFS metering (integrated, short-term, momentary, true peak)
+- Rust-side FFT (rustfft) + ebur128 for OBS source audio monitoring
+- Tauri events for FFT data (audio://fft-data)
+
+### UI: Two-Bar Layout + Hamburger Menu — DONE
+- Split title bar into title bar (branding, grip, gear, hamburger, window controls) + toolbar (mode/detail toggles, connection)
+- Hamburger menu with About OBServe dropdown
+- About modal with legal disclaimer (independent app, OBS trademarks, use at own risk, Airwindows MIT)
+
 ### Bug Fixes & Improvements
 - [x] SourceFilterSettingsChanged event — real-time UI sync when filters edited in OBS
 - [x] getWidgetMatchedNames / post-AI-refresh fix — knob widgets now survive AI-triggered filter updates
@@ -49,21 +77,15 @@
 ## Active / Next Up
 
 ### Filter Expansion — Remaining Items
-- [ ] **Option E: OBS WebSocket audio features**
-  - [x] Audio Balance — stereo pan control per source (Get/SetInputAudioBalance)
-  - [x] Audio Sync Offset — ms delay for lip-sync (Get/SetInputAudioSyncOffset)
-  - [x] Audio Track Routing — 6-track assignment per source (Get/SetInputAudioTracks)
-  - [ ] OBS Peak Metering — subscribe to InputVolumeMeters for post-filter levels
-  - [x] Sidechain Ducking — auto-duck desktop audio when mic active (ducking.rs)
-  - [x] SourceFilterSettingsChanged event — sync UI when user edits filters in OBS
-  - [x] Application Audio Capture — wasapi_process_output_capture for per-app routing
+- [x] **Option E: OBS Peak Metering** — subscribe to InputVolumeMeters for post-filter levels
+  - Added event subscription bit 1<<16, InputVolumeMeters handler, mixer meter bars with color/clip indicators
 - [ ] **Option B: VST Catalog Browser** (RESEARCH)
   - In-app curated free VST catalog, one-click download+install
   - Catalog: ReaPlugs, TDR Nova, OTT, Wider, MeldaFreeBundle
 - [ ] **Option D: OBServe Native DSP** (LATER)
   - Rust DSP engine (fundsp/dasp), virtual audio device, custom EQ/de-esser/reverb
 
-### Phase 5: Advanced Features (from CLAUDE.md roadmap)
+### Phase 5: Advanced Features
 - [x] Auto-ducking (lower music when voice detected) — sidechain ducking in ducking.rs
 - [ ] Game/application detection
 - [ ] Dynamic quality adjustment based on system load
@@ -79,42 +101,38 @@
 - [ ] Auto-restore preferred device on hotplug steal
 - [ ] Settings toggle: "Auto-restore preferred device"
 
-### Voice-to-Action Pipeline (from PLAN.md, not yet started)
+### Voice-to-Action Pipeline (not yet started)
 - [ ] Whisper.cpp integration (base model, local STT)
 - [ ] Wake word detection ("Hey OBServe")
 - [ ] Web Speech API fallback (free tier)
 - [ ] Deepgram streaming (premium tier)
 
-### Project: Calibration 2.0 — Spectral Analysis & Platform Targeting
-> Spec: memory/calibration-2.0-spec.md (Project 1)
-- [ ] Platform target picker (Twitch, YouTube, Podcast, Broadcast, Discord, Custom)
-- [ ] FFT frequency analysis during silence phase (hum, hiss detection)
-- [ ] FFT analysis during speech phase (sibilance, proximity effect detection)
-- [ ] Real-time spectrum visualization canvas in calibration wizard
-- [ ] LUFS-based gain targeting (replace -18 dBFS RMS)
-- [ ] Style variants (Neutral, Voice Clarity, Bass Heavy, Bright, Warm, Podcast Standard)
-- [ ] Expanded filter recommendations (high-pass, de-esser, frequency-aware suppression)
-- [ ] Annotated results screen showing detected issues on spectrum
+### Pro Spectrum — DONE
+- [x] Full DAW mode: interactive parametric EQ curve with draggable points
+- [x] Mode toggle (Simple ↔ Full DAW)
 
-### Project: Calibration Profiles
-> Spec: memory/calibration-2.0-spec.md (Project 2)
-- [ ] Save calibration results as named profiles (name, platform, device, measurements, filters, style)
-- [ ] Profile selector in device widget calibration row (dropdown with saved profiles)
-- [ ] Profiles in Smart Presets dropdown ("Your Calibrations" section)
-- [ ] Switch profiles re-applies filter chain to OBS source
-- [ ] Profile management (rename, delete, export/import JSON)
-- [ ] Style variant saved per profile, changeable after creation
+### Phase 6: Video & Scenes
+- [ ] **V1: Scene Panel Upgrade** — thumbnails, create/rename/delete/reorder scenes
+- [ ] **V2: Source List & Visibility** — source list per scene, eye toggle show/hide, lock
+- [ ] **V3: Webcam & Capture Device Detection** — enumerate webcams + capture cards
+- [ ] **V4: Source Creation Wizard** — add display/window/game/webcam/image/text/browser sources
+- [ ] **V5: Source Transform Controls** — position, scale, rotation, crop, alignment presets
+- [ ] **V6: Transition Management** — transition picker, duration, per-scene overrides, studio mode
+- [ ] **V7: Recording & Streaming Upgrade** — pause/resume, replay buffer, virtual cam, format picker
+- [ ] **V8: Stream Health Dashboard** — bitrate graph, drop rate, quality score, AI suggestions
+- [ ] **V9: Video Pre-Flight Extension** — webcam check, encoder check, resolution match, source health
+- [ ] **V10: Encoding Advisor** — AI recommends codec/bitrate/resolution per hardware + platform
+- [ ] **V11: Smart Scene Templates** — one-click layouts (Tutorial, Gaming, Podcast) + audio presets
+- [ ] **V12: AI Scene Director** — natural language scene control, auto-switching rules
+- [ ] **V13: Direct-to-Media Publishing** — AI metadata + upload to YouTube/TikTok/Instagram
+- [ ] **V14: Live AI Director** — real-time voice-controlled production assistant
 
-### Project: Pro Spectrum Module
-> Spec: memory/calibration-2.0-spec.md (Project 3)
-- [ ] New collapsible panel with source selector dropdown
-- [ ] Live spectrum analyzer (canvas-based FFT at 30fps)
-- [ ] Simple mode: quick-access processing knobs (HPF, Shelf, Presence, Air, Gate, Comp, Gain, Limiter)
-- [ ] Full DAW mode: interactive parametric EQ curve with draggable points
-- [ ] Mode toggle (Simple ↔ Full DAW)
-- [ ] LUFS metering (integrated, short-term, momentary)
-- [ ] Rust-side FFT (rustfft or spectrum-analyzer crate) for OBS source audio monitoring
-- [ ] Tauri events for FFT data (audio://fft-data)
+### Phase 7: Visual Intelligence (AI-Powered)
+- [ ] **V15: AI Background Removal** — remove/blur/replace webcam background without green screen (ONNX + MediaPipe)
+- [ ] **V16: Auto-Frame (Face Tracking Zoom)** — camera auto-follows and frames face via SetSceneItemTransform
+- [ ] **V17: Face Filters & Overlays** — stickers, glasses, hats, borders rendered on face mesh (468 landmarks)
+- [ ] **V18: Gesture Actions** — hand gestures trigger OBS actions (thumbs up = overlay, wave = scene switch)
+- [ ] **V19: AI Visual Advisor** — AI analyzes webcam quality, suggests lighting/framing/color improvements
 
 ### Product / Business
 - [ ] Tier gating (Free/Pro/Streamer feature gates)
@@ -130,5 +148,10 @@
 - `signal-chain-groups-spec.md` — Signal Chain design spec (implemented)
 - `filter-expansion-plan.md` — Filter phases A-E detail
 - `audio-device-ui-plan.md` — Device UI redesign detail
+- `visual-augmentation-research.md` — Visual AI features research (background removal, face tracking, gestures)
+- `direct-to-media-research.md` — Platform publishing API research (YouTube, TikTok, Instagram)
+- `video-scenes-research.md` — Video feature competitive research
+- `video-feature-plan.md` — V1-V19 ordered implementation plan
+- `competitive-analysis.md` — Full competitor analysis + pricing strategy
 - Project root `PLAN.md` — Product vision, architecture decisions
 - Project root `CLAUDE.md` — Coding instructions, phase roadmap

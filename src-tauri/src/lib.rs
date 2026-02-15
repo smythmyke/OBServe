@@ -15,6 +15,7 @@ mod routing;
 mod system_monitor;
 mod tray;
 mod spectrum;
+mod video_devices;
 mod vst_manager;
 
 use ai_actions::SharedUndoStack;
@@ -94,6 +95,7 @@ pub fn run() {
             commands::get_displays,
             commands::refresh_video_settings,
             commands::set_input_settings,
+            commands::get_input_settings,
             commands::set_input_audio_monitor_type,
             commands::get_input_audio_monitor_type,
             commands::create_input,
@@ -109,6 +111,10 @@ pub fn run() {
             commands::set_gemini_api_key,
             commands::check_ai_status,
             commands::set_current_scene,
+            commands::create_scene,
+            commands::remove_scene,
+            commands::rename_scene,
+            commands::get_scene_screenshot,
             commands::toggle_stream,
             commands::toggle_record,
             commands::launch_obs,
@@ -126,6 +132,11 @@ pub fn run() {
             commands::get_audio_processes,
             commands::add_app_capture,
             commands::remove_app_capture,
+            commands::get_video_devices,
+            commands::create_scene_item,
+            commands::start_virtual_cam,
+            commands::stop_virtual_cam,
+            commands::get_virtual_cam_status,
             commands::open_devtools,
             spectrum::start_spectrum,
             spectrum::stop_spectrum,

@@ -115,8 +115,8 @@ impl ObsConnection {
             .to_string();
 
         // Event subscription bitmask:
-        // General(1) | Config(2) | Scenes(4) | Inputs(8) | Filters(32) | Outputs(64) | SceneItems(128) = 239
-        let event_subscriptions: u64 = 1 | 2 | 4 | 8 | 32 | 64 | 128;
+        // General(1) | Config(2) | Scenes(4) | Inputs(8) | Filters(32) | Outputs(64) | SceneItems(128) | InputVolumeMeters(1<<16)
+        let event_subscriptions: u64 = 1 | 2 | 4 | 8 | 32 | 64 | 128 | (1 << 16);
 
         let mut identify = json!({
             "op": 1,
@@ -683,6 +683,108 @@ async fn handle_event(
                 "obs://record-state-changed",
                 json!({"outputActive": active}),
             );
+        }
+        "InputVolumeMeters" => {
+            if let Some(inputs) = event_data["inputs"].as_array() {
+                let mut meters = Vec::new();
+                for input in inputs {
+                    let name = input["inputName"].as_str().unwrap_or("");
+                    if name.is_empty() { continue; }
+                    let mut channels = Vec::new();
+                    if let Some(levels) = input["inputLevelsMul"].as_array() {
+                        for ch in levels {
+                            if let Some(ch_arr) = ch.as_array() {
+                                let mag = ch_arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                let peak = ch_arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                let mag_db = if mag > 0.0 { (20.0 * mag.log10()).max(-100.0) } else { -100.0 };
+                                let peak_db = if peak > 0.0 { (20.0 * peak.log10()).max(-100.0) } else { -100.0 };
+                                channels.push(json!({"mag_db": mag_db, "peak_db": peak_db}));
+                            }
+                        }
+                    }
+                    if !channels.is_empty() {
+                        meters.push(json!({"inputName": name, "channels": channels}));
+                    }
+                }
+                if !meters.is_empty() {
+                    let _ = app.emit("obs://input-volume-meters", json!({"inputs": meters}));
+                }
+            }
+        }
+        "SceneItemCreated" => {
+            let scene = event_data["sceneName"].as_str().unwrap_or("").to_string();
+            let source = event_data["sourceName"].as_str().unwrap_or("").to_string();
+            let item_id = event_data["sceneItemId"].as_u64().unwrap_or(0);
+            let source_kind = event_data["inputKind"].as_str().unwrap_or("").to_string();
+            {
+                let mut s = state.write().await;
+                let items = s.scene_items.entry(scene).or_insert_with(Vec::new);
+                items.push(crate::obs_state::SceneItemInfo {
+                    source_name: source,
+                    source_kind,
+                    scene_item_id: item_id,
+                    enabled: true,
+                });
+            }
+            let _ = app.emit("obs://scene-items-changed", json!({}));
+        }
+        "SceneItemRemoved" => {
+            let scene = event_data["sceneName"].as_str().unwrap_or("").to_string();
+            let item_id = event_data["sceneItemId"].as_u64().unwrap_or(0);
+            {
+                let mut s = state.write().await;
+                if let Some(items) = s.scene_items.get_mut(&scene) {
+                    items.retain(|i| i.scene_item_id != item_id);
+                }
+            }
+            let _ = app.emit("obs://scene-items-changed", json!({}));
+        }
+        "SceneItemEnableStateChanged" => {
+            let scene = event_data["sceneName"].as_str().unwrap_or("").to_string();
+            let item_id = event_data["sceneItemId"].as_u64().unwrap_or(0);
+            let enabled = event_data["sceneItemEnabled"].as_bool().unwrap_or(true);
+            {
+                let mut s = state.write().await;
+                if let Some(items) = s.scene_items.get_mut(&scene) {
+                    if let Some(item) = items.iter_mut().find(|i| i.scene_item_id == item_id) {
+                        item.enabled = enabled;
+                    }
+                }
+            }
+            let _ = app.emit("obs://scene-items-changed", json!({}));
+        }
+        "SceneItemListReindexed" => {
+            let scene = event_data["sceneName"].as_str().unwrap_or("").to_string();
+            if let Some(new_items) = event_data["sceneItems"].as_array() {
+                let mut s = state.write().await;
+                if let Some(items) = s.scene_items.get_mut(&scene) {
+                    let mut reordered = Vec::new();
+                    for new_item in new_items {
+                        let id = new_item["sceneItemId"].as_u64().unwrap_or(0);
+                        if let Some(existing) = items.iter().find(|i| i.scene_item_id == id) {
+                            reordered.push(existing.clone());
+                        }
+                    }
+                    if !reordered.is_empty() {
+                        *items = reordered;
+                    }
+                }
+            }
+            let _ = app.emit("obs://scene-items-changed", json!({}));
+        }
+        "SceneNameChanged" => {
+            let old_name = event_data["oldSceneName"].as_str().unwrap_or("").to_string();
+            let new_name = event_data["sceneName"].as_str().unwrap_or("").to_string();
+            {
+                let mut s = state.write().await;
+                if let Some(items) = s.scene_items.remove(&old_name) {
+                    s.scene_items.insert(new_name.clone(), items);
+                }
+                if s.current_scene == old_name {
+                    s.current_scene = new_name.clone();
+                }
+            }
+            let _ = app.emit("obs://scene-name-changed", json!({"oldSceneName": old_name, "sceneName": new_name}));
         }
         _ => {}
     }

@@ -2,6 +2,7 @@ use crate::ai_actions::{self, ActionResult, SharedUndoStack};
 use crate::app_capture::{self, AudioProcess};
 use crate::audio;
 use crate::audio_monitor::{AudioMetrics, SharedAudioMetrics};
+use crate::video_devices;
 use crate::ducking::{DuckingConfig, SharedDuckingConfig};
 use crate::gemini::{AiAction, SharedGeminiClient};
 use crate::obs_launcher::{self, ObsLaunchStatus};
@@ -81,6 +82,13 @@ pub async fn get_obs_state(
 #[tauri::command]
 pub async fn get_audio_devices() -> Result<Vec<audio::AudioDevice>, String> {
     tokio::task::spawn_blocking(audio::enumerate_audio_devices)
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn get_video_devices() -> Result<Vec<video_devices::VideoDevice>, String> {
+    tokio::task::spawn_blocking(video_devices::enumerate_video_devices)
         .await
         .map_err(|e| format!("Task failed: {}", e))?
 }
@@ -482,6 +490,21 @@ pub async fn set_input_settings(
 }
 
 #[tauri::command]
+pub async fn get_input_settings(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    input_name: String,
+) -> Result<Value, String> {
+    let conn = conn_state.lock().await;
+    let resp = conn
+        .send_request(
+            "GetInputSettings",
+            Some(json!({ "inputName": input_name })),
+        )
+        .await?;
+    Ok(resp["inputSettings"].clone())
+}
+
+#[tauri::command]
 pub async fn set_input_audio_monitor_type(
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
@@ -552,6 +575,24 @@ pub async fn create_input(
         data["inputSettings"] = settings;
     }
     conn.send_request("CreateInput", Some(data)).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_scene_item(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+    source_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "CreateSceneItem",
+        Some(json!({
+            "sceneName": scene_name,
+            "sourceName": source_name,
+        })),
+    )
+    .await?;
     Ok(())
 }
 
@@ -833,6 +874,70 @@ pub async fn set_current_scene(
 }
 
 #[tauri::command]
+pub async fn create_scene(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("CreateScene", Some(json!({ "sceneName": scene_name })))
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_scene(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("RemoveScene", Some(json!({ "sceneName": scene_name })))
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_scene(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+    new_scene_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetSceneName",
+        Some(json!({ "sceneName": scene_name, "newSceneName": new_scene_name })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_scene_screenshot(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    let conn = conn_state.lock().await;
+    let resp = conn
+        .send_request(
+            "GetSourceScreenshot",
+            Some(json!({
+                "sourceName": scene_name,
+                "imageFormat": "jpg",
+                "imageWidth": width,
+                "imageHeight": height,
+                "imageCompressionQuality": 25
+            })),
+        )
+        .await?;
+    let image_data = resp["imageData"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    Ok(image_data)
+}
+
+#[tauri::command]
 pub async fn toggle_stream(
     conn_state: tauri::State<'_, SharedObsConnection>,
 ) -> Result<(), String> {
@@ -990,6 +1095,33 @@ pub async fn remove_app_capture(
     conn.send_request("RemoveInput", Some(json!({"inputName": input_name})))
         .await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn start_virtual_cam(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("StartVirtualCam", None).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_virtual_cam(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request("StopVirtualCam", None).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_virtual_cam_status(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<bool, String> {
+    let conn = conn_state.lock().await;
+    let resp = conn.send_request("GetVirtualCamStatus", None).await?;
+    Ok(resp["outputActive"].as_bool().unwrap_or(false))
 }
 
 #[tauri::command]
