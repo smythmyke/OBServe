@@ -68,9 +68,30 @@
 - Hamburger menu with About OBServe dropdown
 - About modal with legal disclaimer (independent app, OBS trademarks, use at own risk, Airwindows MIT)
 
+### Live Scene Preview via OBS Virtual Camera — DONE
+- Real-time ~55 FPS scene preview using OBS Virtual Camera + getUserMedia (replaces 1 FPS screenshots)
+- Auto-start/stop virtual camera on connect/disconnect, graceful fallback to screenshots
+- Works in single pane, multi-pane (ctrl-click), and studio mode
+- Fire-on-response screenshot loop for non-live panes (~5-10 FPS vs old 1 FPS)
+- Video device enumeration (DirectShow/MediaFoundation) and camera panel UI
+
 ### Bug Fixes & Improvements
 - [x] SourceFilterSettingsChanged event — real-time UI sync when filters edited in OBS
 - [x] getWidgetMatchedNames / post-AI-refresh fix — knob widgets now survive AI-triggered filter updates
+
+---
+
+### Auto-Detect & Auto-Create Camera Scenes — IN PROGRESS
+- [x] `set_scene_item_transform` command (Fit to Screen via OBS bounds)
+- [x] `auto_setup_cameras` command (detect → check → create scene + source → fit)
+- [x] Scene naming: clean camera name by stripping parenthetical suffixes
+- [x] Device matching by `video_device_id` (authoritative, not fuzzy name match)
+- [x] Orphaned source cleanup: removes stale dshow_input before re-creating
+- [x] 15-second polling interval while connected (detects cameras plugged in mid-session)
+- [x] JS `autoSetupCameras()` called on connect + polling, toast on scene creation
+- [ ] **Dark screen issue**: Scene + source are created correctly (confirmed in OBS), but camera feed shows black — may need to set `active: true` or trigger device re-acquisition in dshow_input settings
+- [ ] **Fit to Screen**: Red border visible in OBS screenshot — verify bounds transform is working correctly, may need `positionX`/`positionY` alignment or different `boundsType`
+- [ ] Test full cycle: plug camera → auto-creates → shows live feed → unplug → replug → no duplicates
 
 ---
 
@@ -91,7 +112,7 @@
 - [ ] Dynamic quality adjustment based on system load
 - [ ] Scene auto-switching
 - [ ] Voice commands (Whisper.cpp integration)
-- [ ] Webcam/capture device detection and preview
+- [x] Webcam/capture device detection and preview — video_devices.rs + camera panel + live preview
 - [ ] Stream health dashboard
 - [ ] Recording quality report generation
 
@@ -114,7 +135,7 @@
 ### Phase 6: Video & Scenes
 - [ ] **V1: Scene Panel Upgrade** — thumbnails, create/rename/delete/reorder scenes
 - [ ] **V2: Source List & Visibility** — source list per scene, eye toggle show/hide, lock
-- [ ] **V3: Webcam & Capture Device Detection** — enumerate webcams + capture cards
+- [x] **V3: Webcam & Capture Device Detection** — enumerate webcams + capture cards
 - [ ] **V4: Source Creation Wizard** — add display/window/game/webcam/image/text/browser sources
 - [ ] **V5: Source Transform Controls** — position, scale, rotation, crop, alignment presets
 - [ ] **V6: Transition Management** — transition picker, duration, per-scene overrides, studio mode

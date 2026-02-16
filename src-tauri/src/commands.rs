@@ -1125,6 +1125,193 @@ pub async fn get_virtual_cam_status(
 }
 
 #[tauri::command]
+pub async fn set_scene_item_transform(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    scene_name: String,
+    scene_item_id: u64,
+    transform: Value,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetSceneItemTransform",
+        Some(json!({
+            "sceneName": scene_name,
+            "sceneItemId": scene_item_id,
+            "sceneItemTransform": transform,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn auto_setup_cameras(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    obs_state: tauri::State<'_, SharedObsState>,
+) -> Result<Vec<String>, String> {
+    let devices = tokio::task::spawn_blocking(video_devices::enumerate_video_devices)
+        .await
+        .map_err(|e| format!("Task failed: {}", e))??;
+
+    // Filter to physical and phone cameras only
+    let cameras: Vec<_> = devices
+        .into_iter()
+        .filter(|d| d.kind == "physical" || d.kind == "phone")
+        .collect();
+
+    if cameras.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let conn = conn_state.lock().await;
+
+    // Get canvas dimensions for fit-to-screen
+    let (base_width, base_height) = {
+        let s = obs_state.read().await;
+        (s.video_settings.base_width, s.video_settings.base_height)
+    };
+
+    // Collect all existing dshow_input sources and their configured device IDs
+    let input_names: Vec<String> = {
+        let s = obs_state.read().await;
+        s.inputs
+            .iter()
+            .filter(|(_, info)| info.kind == "dshow_input")
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+
+    let mut existing_device_ids: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for input_name in &input_names {
+        if let Ok(resp) = conn
+            .send_request(
+                "GetInputSettings",
+                Some(json!({"inputName": input_name})),
+            )
+            .await
+        {
+            if let Some(dev_id) = resp["inputSettings"]["video_device_id"].as_str() {
+                if !dev_id.is_empty() {
+                    existing_device_ids.insert(dev_id.to_string(), input_name.clone());
+                }
+            }
+        }
+    }
+
+    // Check which sources are already in scenes
+    let sources_in_scenes: std::collections::HashSet<String> = {
+        let s = obs_state.read().await;
+        s.scene_items
+            .values()
+            .flat_map(|items| items.iter().map(|item| item.source_name.clone()))
+            .collect()
+    };
+
+    let mut created_scenes = Vec::new();
+
+    for camera in &cameras {
+        // Check if any existing dshow_input already uses this device
+        if let Some(source_name) = existing_device_ids.get(&camera.id) {
+            if sources_in_scenes.contains(source_name) {
+                // Already set up in a scene — skip
+                continue;
+            }
+            // Orphaned source exists but not in any scene — remove it so we
+            // can create a fresh input that properly re-acquires the device.
+            let _ = conn
+                .send_request(
+                    "RemoveInput",
+                    Some(json!({"inputName": source_name})),
+                )
+                .await;
+            // Fall through to the "no existing source" path below
+        }
+
+        // No existing source — create scene + source
+        let scene_name = clean_camera_name(&camera.name);
+
+        // Check if a scene with this name already exists
+        {
+            let s = obs_state.read().await;
+            if s.scenes.iter().any(|sc| sc.name == scene_name) {
+                continue;
+            }
+        }
+
+        if let Err(e) = conn
+            .send_request("CreateScene", Some(json!({"sceneName": &scene_name})))
+            .await
+        {
+            log::warn!("Failed to create scene '{}': {}", scene_name, e);
+            continue;
+        }
+
+        match conn
+            .send_request(
+                "CreateInput",
+                Some(json!({
+                    "sceneName": &scene_name,
+                    "inputName": &camera.name,
+                    "inputKind": "dshow_input",
+                    "inputSettings": {
+                        "video_device_id": &camera.id,
+                    }
+                })),
+            )
+            .await
+        {
+            Ok(resp) => {
+                let item_id = resp["sceneItemId"].as_u64().unwrap_or(0);
+                if item_id > 0 && base_width > 0 && base_height > 0 {
+                    let _ = conn
+                        .send_request(
+                            "SetSceneItemTransform",
+                            Some(json!({
+                                "sceneName": &scene_name,
+                                "sceneItemId": item_id,
+                                "sceneItemTransform": {
+                                    "boundsType": "OBS_BOUNDS_SCALE_INNER",
+                                    "boundsWidth": base_width as f64,
+                                    "boundsHeight": base_height as f64,
+                                }
+                            })),
+                        )
+                        .await;
+                }
+                created_scenes.push(scene_name);
+            }
+            Err(e) => {
+                log::warn!("Failed to create camera input: {}", e);
+                // Clean up the empty scene
+                let _ = conn
+                    .send_request("RemoveScene", Some(json!({"sceneName": &scene_name})))
+                    .await;
+            }
+        }
+    }
+
+    // Refresh state cache if we created anything
+    if !created_scenes.is_empty() {
+        drop(conn);
+        let conn = conn_state.lock().await;
+        let _ = obs_state::populate_initial_state(&conn, obs_state.inner()).await;
+    }
+
+    Ok(created_scenes)
+}
+
+fn clean_camera_name(raw: &str) -> String {
+    // Remove parenthetical suffixes: "Pixel 8a (Windows Virtual Camera)" → "Pixel 8a"
+    let name = if let Some(idx) = raw.rfind('(') {
+        raw[..idx].trim()
+    } else {
+        raw.trim()
+    };
+    if name.is_empty() { raw.trim().to_string() } else { name.to_string() }
+}
+
+#[tauri::command]
 pub async fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
 }

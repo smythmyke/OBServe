@@ -137,6 +137,8 @@ pub fn run() {
             commands::start_virtual_cam,
             commands::stop_virtual_cam,
             commands::get_virtual_cam_status,
+            commands::set_scene_item_transform,
+            commands::auto_setup_cameras,
             commands::open_devtools,
             spectrum::start_spectrum,
             spectrum::stop_spectrum,

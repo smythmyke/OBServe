@@ -19,6 +19,7 @@ const AUDIO_KINDS = [
 let obsState = null;
 const draggingSliders = new Set();
 let sysResourceInterval = null;
+let cameraPollingInterval = null;
 
 const PREFERRED_DEVICES_KEY = 'observe-preferred-devices';
 const VIEW_PREFS_KEY = 'observe-view-prefs';
@@ -1432,6 +1433,8 @@ function setConnectedUI(status) {
   startSceneThumbnailRefresh();
   startLivePreview();
   loadVideoDevices();
+  autoSetupCameras();
+  cameraPollingInterval = setInterval(autoSetupCameras, 15000);
 
   invoke('get_source_filter_kinds').then(kinds => { discoveredFilterKinds = kinds; }).catch(() => {});
 
@@ -1466,6 +1469,10 @@ function setDisconnectedUI() {
   if (sysResourceInterval) {
     clearInterval(sysResourceInterval);
     sysResourceInterval = null;
+  }
+  if (cameraPollingInterval) {
+    clearInterval(cameraPollingInterval);
+    cameraPollingInterval = null;
   }
   obsState = null;
   discoveredFilterKinds = null;
@@ -2911,6 +2918,19 @@ async function loadDisplays() {
 }
 
 // --- Webcam / Video Device Detection ---
+
+async function autoSetupCameras() {
+  try {
+    const created = await invoke('auto_setup_cameras');
+    if (created.length > 0) {
+      showFrameDropAlert('Auto-created camera scenes: ' + created.join(', '));
+      await refreshFullState();
+      loadVideoDevices();
+    }
+  } catch (e) {
+    console.log('[AutoSetup] Camera auto-setup skipped:', e);
+  }
+}
 
 async function loadVideoDevices() {
   const list = $('#webcam-list');
