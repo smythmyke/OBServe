@@ -575,6 +575,18 @@ pub async fn create_input(
         data["inputSettings"] = settings;
     }
     conn.send_request("CreateInput", Some(data)).await?;
+    // Activate dshow_input sources so the capture device starts
+    if input_kind == "dshow_input" {
+        let _ = conn
+            .send_request(
+                "SetInputSettings",
+                Some(json!({
+                    "inputName": input_name,
+                    "inputSettings": { "active": true }
+                })),
+            )
+            .await;
+    }
     Ok(())
 }
 
@@ -1125,6 +1137,118 @@ pub async fn get_virtual_cam_status(
 }
 
 #[tauri::command]
+pub async fn ensure_virtual_cam_program(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<String, String> {
+    let conn = conn_state.lock().await;
+
+    // Find OBS scene collection JSON
+    let appdata = std::env::var("APPDATA")
+        .map_err(|_| "APPDATA not set".to_string())?;
+    let scenes_dir = std::path::PathBuf::from(&appdata)
+        .join("obs-studio")
+        .join("basic")
+        .join("scenes");
+
+    // Find the active scene collection file (first .json that isn't .bak)
+    let scene_file = std::fs::read_dir(&scenes_dir)
+        .map_err(|e| format!("Cannot read scenes dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.ends_with(".json") && !name.ends_with(".bak")
+        })
+        .ok_or("No scene collection found")?;
+
+    let path = scene_file.path();
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    // Check virtual-camera.type2 — 3 = Program
+    const VCAM_TYPE_PROGRAM: u64 = 3;
+    let vcam = json.get("virtual-camera");
+    let current_type = vcam
+        .and_then(|v| v.get("type2"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX);
+
+    if current_type == VCAM_TYPE_PROGRAM {
+        return Ok("already_program".to_string());
+    }
+
+    // Set to Program (type2: 0) — need to stop vcam, update file, restart
+    let was_active = conn.send_request("GetVirtualCamStatus", None).await
+        .map(|r| r["outputActive"].as_bool().unwrap_or(false))
+        .unwrap_or(false);
+
+    if was_active {
+        let _ = conn.send_request("StopVirtualCam", None).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // Update the JSON
+    json["virtual-camera"] = json!({"type2": VCAM_TYPE_PROGRAM});
+    let updated = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("JSON serialize failed: {}", e))?;
+    std::fs::write(&path, &updated)
+        .map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
+
+    // OBS doesn't re-read config while running. Force reload by:
+    // 1. Create temp collection (saves current to disk with old values)
+    // 2. Overwrite the file with our change
+    // 3. Switch back (loads our modified file)
+    let resp = conn.send_request("GetSceneCollectionList", None).await
+        .map_err(|e| format!("GetSceneCollectionList failed: {}", e))?;
+    let current_name = resp["currentSceneCollectionName"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    if current_name.is_empty() {
+        return Err("Cannot determine current scene collection".to_string());
+    }
+
+    let temp_name = "OBServe_vcam_temp";
+
+    // Step 1: Create temp collection (auto-switches to it, saving current)
+    let _ = conn.send_request(
+        "CreateSceneCollection",
+        Some(json!({"sceneCollectionName": temp_name})),
+    ).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Step 2: Now overwrite the original file (OBS just saved it, but we overwrite after)
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot re-read {}: {}", path.display(), e))?;
+    let mut json2: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON on re-read: {}", e))?;
+    json2["virtual-camera"] = json!({"type2": VCAM_TYPE_PROGRAM});
+    let updated = serde_json::to_string_pretty(&json2)
+        .map_err(|e| format!("JSON serialize failed: {}", e))?;
+    std::fs::write(&path, &updated)
+        .map_err(|e| format!("Cannot write {}: {}", path.display(), e))?;
+
+    // Step 3: Switch back to original (loads our modified file)
+    let _ = conn.send_request(
+        "SetCurrentSceneCollection",
+        Some(json!({"sceneCollectionName": current_name})),
+    ).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+    // Clean up temp collection file
+    let temp_file = scenes_dir.join(format!("{}.json", temp_name));
+    let _ = std::fs::remove_file(&temp_file);
+
+    if was_active {
+        let _ = conn.send_request("StartVirtualCam", None).await;
+    }
+
+    Ok("set_to_program".to_string())
+}
+
+#[tauri::command]
 pub async fn set_scene_item_transform(
     conn_state: tauri::State<'_, SharedObsConnection>,
     scene_name: String,
@@ -1214,7 +1338,26 @@ pub async fn auto_setup_cameras(
         // Check if any existing dshow_input already uses this device
         if let Some(source_name) = existing_device_ids.get(&camera.id) {
             if sources_in_scenes.contains(source_name) {
-                // Already set up in a scene — skip
+                // Already in a scene — ensure it's active
+                if let Ok(resp) = conn
+                    .send_request(
+                        "GetInputSettings",
+                        Some(json!({"inputName": source_name})),
+                    )
+                    .await
+                {
+                    if resp["inputSettings"]["active"].as_bool() != Some(true) {
+                        let _ = conn
+                            .send_request(
+                                "SetInputSettings",
+                                Some(json!({
+                                    "inputName": source_name,
+                                    "inputSettings": { "active": true }
+                                })),
+                            )
+                            .await;
+                    }
+                }
                 continue;
             }
             // Orphaned source exists but not in any scene — remove it so we
@@ -1228,7 +1371,14 @@ pub async fn auto_setup_cameras(
             // Fall through to the "no existing source" path below
         }
 
-        // No existing source — create scene + source
+        // No existing source by device ID — check by name before creating
+        {
+            let s = obs_state.read().await;
+            if s.inputs.contains_key(&camera.name) {
+                continue;
+            }
+        }
+
         let scene_name = clean_camera_name(&camera.name);
 
         // Check if a scene with this name already exists
@@ -1262,6 +1412,17 @@ pub async fn auto_setup_cameras(
             .await
         {
             Ok(resp) => {
+                // Activate the source so the capture device starts
+                let _ = conn
+                    .send_request(
+                        "SetInputSettings",
+                        Some(json!({
+                            "inputName": &camera.name,
+                            "inputSettings": { "active": true }
+                        })),
+                    )
+                    .await;
+
                 let item_id = resp["sceneItemId"].as_u64().unwrap_or(0);
                 if item_id > 0 && base_width > 0 && base_height > 0 {
                     let _ = conn

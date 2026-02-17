@@ -1,5 +1,6 @@
 use tauri::{
     AppHandle, Manager, Runtime,
+    image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
 };
@@ -15,7 +16,10 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::err
         .item(&quit)
         .build()?;
 
+    let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+
     TrayIconBuilder::new()
+        .icon(icon)
         .tooltip("OBServe - Disconnected")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {

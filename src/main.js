@@ -262,6 +262,8 @@ function setupEventListeners() {
   listen('obs://current-scene-changed', (e) => {
     if (obsState) obsState.currentScene = e.payload.sceneName;
     renderScenes();
+    renderPreviewPanes();
+    refreshScenePreview();
   });
 
   listen('obs://scene-list-changed', (e) => {
@@ -567,12 +569,21 @@ async function findObsVirtualCam() {
     }
     devices = await navigator.mediaDevices.enumerateDevices();
     videoInputs = devices.filter(d => d.kind === 'videoinput');
-    console.log('[LivePreview] Devices after permission:', videoInputs.map(d => d.label || '(empty label)'));
   }
 
-  return videoInputs.find(d =>
+  console.log('[LivePreview] All video devices:', videoInputs.map(d => ({
+    label: d.label, deviceId: d.deviceId.substring(0, 20) + '...'
+  })));
+
+  const obsVcam = videoInputs.find(d =>
     d.label.toLowerCase().includes('obs virtual camera')
   );
+  if (obsVcam) {
+    console.log('[LivePreview] Matched OBS Virtual Camera:', obsVcam.label);
+  } else {
+    console.log('[LivePreview] No device matched "obs virtual camera"');
+  }
+  return obsVcam;
 }
 
 function getProgramPaneId() {
@@ -588,6 +599,14 @@ function getProgramPaneId() {
 
 async function startLivePreview() {
   try {
+    // Ensure virtual camera is set to Program output
+    try {
+      const result = await invoke('ensure_virtual_cam_program');
+      console.log('[LivePreview] VCam config:', result);
+    } catch (e) {
+      console.log('[LivePreview] Could not configure virtual cam:', e);
+    }
+
     let vcamRunning = false;
     try {
       vcamRunning = await invoke('get_virtual_cam_status');
@@ -618,6 +637,7 @@ async function startLivePreview() {
     }
     if (!vcamDevice) {
       console.log('[LivePreview] OBS Virtual Camera device not found after retries, falling back to screenshots');
+      showFrameDropAlert('[LivePreview] OBS Virtual Camera not found — using screenshots');
       return;
     }
     console.log('[LivePreview] Found device:', vcamDevice.label, vcamDevice.deviceId);
