@@ -16,6 +16,7 @@ mod system_monitor;
 mod tray;
 mod spectrum;
 mod video_devices;
+mod video_editor;
 mod vst_manager;
 
 use ai_actions::SharedUndoStack;
@@ -26,6 +27,7 @@ use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
 use spectrum::SharedSpectrumState;
+use video_editor::SharedVideoEditorState;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
@@ -49,6 +51,7 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(audio_monitor::AudioMetrics::default())) as SharedAudioMetrics)
         .manage(Arc::new(RwLock::new(ducking::DuckingConfig::default())) as SharedDuckingConfig)
         .manage(Arc::new(Mutex::new(spectrum::SpectrumState::new())) as SharedSpectrumState)
+        .manage(Arc::new(Mutex::new(video_editor::VideoEditorState::new())) as SharedVideoEditorState)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -140,10 +143,29 @@ pub fn run() {
             commands::ensure_virtual_cam_program,
             commands::set_scene_item_transform,
             commands::auto_setup_cameras,
+            commands::open_source_properties,
             commands::open_devtools,
             spectrum::start_spectrum,
             spectrum::stop_spectrum,
             spectrum::reset_lufs,
+            video_editor::detect_ffmpeg,
+            video_editor::list_recordings,
+            video_editor::remux_to_mp4,
+            video_editor::get_video_info,
+            video_editor::get_video_thumbnail,
+            video_editor::open_file_location,
+            video_editor::delete_recording,
+            video_editor::preview_edit,
+            video_editor::pick_image_file,
+            video_editor::export_video,
+            video_editor::get_export_progress,
+            video_editor::cancel_export,
+            video_editor::save_edit_project,
+            video_editor::load_edit_project,
+            video_editor::set_ffmpeg_path,
+            video_editor::install_ffmpeg_winget,
+            video_editor::browse_for_ffmpeg,
+            video_editor::browse_save_location,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

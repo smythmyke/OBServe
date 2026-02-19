@@ -575,15 +575,12 @@ pub async fn create_input(
         data["inputSettings"] = settings;
     }
     conn.send_request("CreateInput", Some(data)).await?;
-    // Activate dshow_input sources so the capture device starts
+    // Open Properties dialog to fully initialize dshow_input capture devices
     if input_kind == "dshow_input" {
         let _ = conn
             .send_request(
-                "SetInputSettings",
-                Some(json!({
-                    "inputName": input_name,
-                    "inputSettings": { "active": true }
-                })),
+                "OpenInputPropertiesDialog",
+                Some(json!({"inputName": input_name})),
             )
             .await;
     }
@@ -597,6 +594,25 @@ pub async fn create_scene_item(
     source_name: String,
 ) -> Result<(), String> {
     let conn = conn_state.lock().await;
+
+    // Check if source already exists in this scene
+    let scene_items = conn
+        .send_request(
+            "GetSceneItemList",
+            Some(json!({ "sceneName": scene_name })),
+        )
+        .await?;
+    if let Some(items) = scene_items["sceneItems"].as_array() {
+        for item in items {
+            if item["sourceName"].as_str() == Some(&source_name) {
+                return Err(format!(
+                    "'{}' is already in scene '{}'",
+                    source_name, scene_name
+                ));
+            }
+        }
+    }
+
     conn.send_request(
         "CreateSceneItem",
         Some(json!({
@@ -605,6 +621,25 @@ pub async fn create_scene_item(
         })),
     )
     .await?;
+
+    // Open Properties dialog to fully initialize dshow_input capture devices
+    if let Ok(info) = conn
+        .send_request(
+            "GetInputSettings",
+            Some(json!({ "inputName": source_name })),
+        )
+        .await
+    {
+        if info["inputKind"].as_str() == Some("dshow_input") {
+            let _ = conn
+                .send_request(
+                    "OpenInputPropertiesDialog",
+                    Some(json!({"inputName": source_name})),
+                )
+                .await;
+        }
+    }
+
     Ok(())
 }
 
@@ -716,6 +751,7 @@ pub struct FullChatResponse {
     pub message: String,
     pub action_results: Vec<ActionResult>,
     pub pending_dangerous: Vec<AiAction>,
+    pub frontend_actions: Vec<AiAction>,
 }
 
 #[tauri::command]
@@ -749,9 +785,23 @@ pub async fn send_chat_message(
         )
         .await?;
 
+    let frontend_actions: Vec<AiAction> = chat_response
+        .actions
+        .iter()
+        .filter(|a| a.action_type == "video_editor")
+        .cloned()
+        .collect();
+
+    let backend_actions: Vec<AiAction> = chat_response
+        .actions
+        .iter()
+        .filter(|a| a.action_type != "video_editor")
+        .cloned()
+        .collect();
+
     let conn = conn_state.lock().await;
     let results =
-        ai_actions::execute_actions(&chat_response.actions, &conn, &state_snapshot, &undo_stack)
+        ai_actions::execute_actions(&backend_actions, &conn, &state_snapshot, &undo_stack)
             .await;
 
     let pending: Vec<AiAction> = results
@@ -771,6 +821,7 @@ pub async fn send_chat_message(
         message: chat_response.message,
         action_results,
         pending_dangerous: pending,
+        frontend_actions,
     })
 }
 
@@ -1268,11 +1319,18 @@ pub async fn set_scene_item_transform(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct AutoCamResult {
+    pub created: Vec<String>,
+    pub logs: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn auto_setup_cameras(
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
-) -> Result<Vec<String>, String> {
+) -> Result<AutoCamResult, String> {
+    let mut logs: Vec<String> = Vec::new();
     let devices = tokio::task::spawn_blocking(video_devices::enumerate_video_devices)
         .await
         .map_err(|e| format!("Task failed: {}", e))??;
@@ -1284,7 +1342,14 @@ pub async fn auto_setup_cameras(
         .collect();
 
     if cameras.is_empty() {
-        return Ok(vec![]);
+        return Ok(AutoCamResult { created: vec![], logs: vec!["No cameras found".into()] });
+    }
+    macro_rules! cam_log {
+        ($($arg:tt)*) => {{
+            let msg = format!($($arg)*);
+            log::info!("{}", msg);
+            logs.push(msg);
+        }};
     }
 
     let conn = conn_state.lock().await;
@@ -1332,36 +1397,26 @@ pub async fn auto_setup_cameras(
             .collect()
     };
 
+    cam_log!("[AutoCam] Found {} cameras, {} existing dshow inputs, {} sources in scenes",
+        cameras.len(), existing_device_ids.len(), sources_in_scenes.len());
+    for (dev_id, src_name) in &existing_device_ids {
+        cam_log!("[AutoCam] Existing dshow: '{}' -> device '{}'", src_name, dev_id);
+    }
+
     let mut created_scenes = Vec::new();
 
     for camera in &cameras {
+        cam_log!("[AutoCam] Processing camera: '{}' id='{}' kind='{}'",
+            camera.name, camera.id, camera.kind);
+
         // Check if any existing dshow_input already uses this device
         if let Some(source_name) = existing_device_ids.get(&camera.id) {
+            cam_log!("[AutoCam] BRANCH: device ID matched existing source '{}'", source_name);
             if sources_in_scenes.contains(source_name) {
-                // Already in a scene — ensure it's active
-                if let Ok(resp) = conn
-                    .send_request(
-                        "GetInputSettings",
-                        Some(json!({"inputName": source_name})),
-                    )
-                    .await
-                {
-                    if resp["inputSettings"]["active"].as_bool() != Some(true) {
-                        let _ = conn
-                            .send_request(
-                                "SetInputSettings",
-                                Some(json!({
-                                    "inputName": source_name,
-                                    "inputSettings": { "active": true }
-                                })),
-                            )
-                            .await;
-                    }
-                }
+                cam_log!("[AutoCam] Source '{}' already in a scene — skipping (user must activate manually)", source_name);
                 continue;
             }
-            // Orphaned source exists but not in any scene — remove it so we
-            // can create a fresh input that properly re-acquires the device.
+            cam_log!("[AutoCam] Source '{}' orphaned (not in any scene) — removing", source_name);
             let _ = conn
                 .send_request(
                     "RemoveInput",
@@ -1375,7 +1430,72 @@ pub async fn auto_setup_cameras(
         {
             let s = obs_state.read().await;
             if s.inputs.contains_key(&camera.name) {
+                cam_log!("[AutoCam] BRANCH: source '{}' exists by name (not by device ID)", camera.name);
+                let scene_name = clean_camera_name(&camera.name);
+                let scene_exists = s.scenes.iter().any(|sc| sc.name == scene_name);
+                drop(s);
+                cam_log!("[AutoCam] Scene '{}' exists={}", scene_name, scene_exists);
+
+                if scene_exists {
+                    cam_log!("[AutoCam] Source and scene both exist — skipping");
+                    continue;
+                }
+
+                // Source exists but no scene — create scene, add source, scene-switch to activate
+                cam_log!("[AutoCam] Creating scene '{}' for orphaned source", scene_name);
+                if let Err(e) = conn
+                    .send_request("CreateScene", Some(json!({"sceneName": &scene_name})))
+                    .await
+                {
+                    cam_log!("[AutoCam] Failed to create scene '{}': {}", scene_name, e);
+                    continue;
+                }
+                match conn
+                    .send_request(
+                        "CreateSceneItem",
+                        Some(json!({
+                            "sceneName": &scene_name,
+                            "sourceName": &camera.name,
+                        })),
+                    )
+                    .await
+                {
+                    Ok(resp) => {
+                        cam_log!("[AutoCam] Created scene item, resp: {}", resp);
+                        let item_id = resp["sceneItemId"].as_u64().unwrap_or(0);
+                        if item_id > 0 && base_width > 0 && base_height > 0 {
+                            let _ = conn
+                                .send_request(
+                                    "SetSceneItemTransform",
+                                    Some(json!({
+                                        "sceneName": &scene_name,
+                                        "sceneItemId": item_id,
+                                        "sceneItemTransform": {
+                                            "boundsType": "OBS_BOUNDS_SCALE_INNER",
+                                            "boundsWidth": base_width as f64,
+                                            "boundsHeight": base_height as f64,
+                                        }
+                                    })),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(e) => {
+                        cam_log!("[AutoCam] Failed to create scene item: {}", e);
+                    }
+                }
+                // Open Properties dialog to trigger full device initialization
+                cam_log!("[AutoCam] Opening Properties for '{}' to activate device", camera.name);
+                let _ = conn
+                    .send_request(
+                        "OpenInputPropertiesDialog",
+                        Some(json!({"inputName": &camera.name})),
+                    )
+                    .await;
+                created_scenes.push(scene_name);
                 continue;
+            } else {
+                cam_log!("[AutoCam] BRANCH: no existing source for '{}' — will create fresh", camera.name);
             }
         }
 
@@ -1385,15 +1505,17 @@ pub async fn auto_setup_cameras(
         {
             let s = obs_state.read().await;
             if s.scenes.iter().any(|sc| sc.name == scene_name) {
+                cam_log!("[AutoCam] Scene '{}' already exists, skipping", scene_name);
                 continue;
             }
         }
 
+        cam_log!("[AutoCam] Creating fresh scene '{}' + input '{}'", scene_name, camera.name);
         if let Err(e) = conn
             .send_request("CreateScene", Some(json!({"sceneName": &scene_name})))
             .await
         {
-            log::warn!("Failed to create scene '{}': {}", scene_name, e);
+            cam_log!("[AutoCam] Failed to create scene '{}': {}", scene_name, e);
             continue;
         }
 
@@ -1412,16 +1534,7 @@ pub async fn auto_setup_cameras(
             .await
         {
             Ok(resp) => {
-                // Activate the source so the capture device starts
-                let _ = conn
-                    .send_request(
-                        "SetInputSettings",
-                        Some(json!({
-                            "inputName": &camera.name,
-                            "inputSettings": { "active": true }
-                        })),
-                    )
-                    .await;
+                cam_log!("[AutoCam] Created input '{}'", camera.name);
 
                 let item_id = resp["sceneItemId"].as_u64().unwrap_or(0);
                 if item_id > 0 && base_width > 0 && base_height > 0 {
@@ -1440,10 +1553,20 @@ pub async fn auto_setup_cameras(
                         )
                         .await;
                 }
+
+                // Open Properties dialog to trigger full device initialization
+                cam_log!("[AutoCam] Opening Properties for '{}' to activate device", camera.name);
+                let _ = conn
+                    .send_request(
+                        "OpenInputPropertiesDialog",
+                        Some(json!({"inputName": &camera.name})),
+                    )
+                    .await;
+
                 created_scenes.push(scene_name);
             }
             Err(e) => {
-                log::warn!("Failed to create camera input: {}", e);
+                cam_log!("[AutoCam] Failed to create camera input: {}", e);
                 // Clean up the empty scene
                 let _ = conn
                     .send_request("RemoveScene", Some(json!({"sceneName": &scene_name})))
@@ -1459,7 +1582,7 @@ pub async fn auto_setup_cameras(
         let _ = obs_state::populate_initial_state(&conn, obs_state.inner()).await;
     }
 
-    Ok(created_scenes)
+    Ok(AutoCamResult { created: created_scenes, logs })
 }
 
 fn clean_camera_name(raw: &str) -> String {
@@ -1470,6 +1593,20 @@ fn clean_camera_name(raw: &str) -> String {
         raw.trim()
     };
     if name.is_empty() { raw.trim().to_string() } else { name.to_string() }
+}
+
+#[tauri::command]
+pub async fn open_source_properties(
+    conn_state: tauri::State<'_, SharedObsConnection>,
+    source_name: String,
+) -> Result<(), String> {
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "OpenInputPropertiesDialog",
+        Some(json!({ "inputName": source_name })),
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]

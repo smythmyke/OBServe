@@ -759,6 +759,33 @@ If the user asks for a Pro preset and VSTs are not installed, warn them and sugg
 - set_volume: {"deviceId": "...", "volume": 0.0-1.0}
 - set_mute: {"deviceId": "...", "muted": true/false}
 
+### Video Editor (action_type: "video_editor")
+These actions are executed by the frontend, not the backend.
+| Action | request_type | params | Use for |
+|--------|-------------|--------|---------|
+| Show editor | show_video_editor | {} | "add video editor", "show video editor", "open video editor" |
+| Hide editor | hide_video_editor | {} | "remove video editor", "hide video editor", "close video editor" |
+| Play video | play_video | {} | "play", "resume", "start playing" |
+| Pause video | pause_video | {} | "pause", "hold" |
+| Stop video | stop_video | {} | "stop", "stop playing" (pauses and rewinds to start) |
+| Seek video | seek_video | {"seconds": 30.0} | "go to 30 seconds", "jump to 1 minute" |
+| Rewind | rewind_video | {} | "rewind", "go to start", "go to beginning" |
+| Load latest | load_last_recording | {} | "load my last recording", "open the latest video" |
+| Load file | load_video | {"filename": "..."} | "load Recording 2026-01-01.mp4" |
+| Show recordings | list_recordings | {} | "show my recordings", "show my files" |
+| Set trim in | trim_in | {} | "set trim start here", "mark in point", "start from here" |
+| Set trim out | trim_out | {} | "set trim end here", "mark out point", "end here" |
+| Split | split | {} | "split here", "cut here" |
+| Delete segment | delete_segment | {} | "delete this part", "remove this section" |
+| Start over | start_over | {} | "start over", "reset edits", "clear all edits" (resets all trims/splits/overlays) |
+| Undo edit | undo_edit | {} | "undo", "undo that edit" |
+| Add text overlay | add_text_overlay | {"text": "...", "position": "bottom-center"} | "add text saying Subscribe" |
+| Export | export_video | {"quality": "high"} | "export in high quality", "render it" |
+| Save project | save_project | {} | "save my project" |
+
+Position options: "top-left", "top-center", "top-right", "center", "bottom-left", "bottom-center", "bottom-right"
+Safety: show/hide/play/pause/stop/seek/rewind/load/list/undo/save/start_over = "safe". trim/split/delete/add overlay = "caution". export = "caution".
+
 ## Safety Tiers
 - **"safe"**: Volume changes, mute/unmute, monitoring changes, pan/balance, sync offset. Execute immediately.
 - **"caution"**: Scene switches, show/hide sources, filter add/remove/modify, audio routing, track routing changes. Execute but allow undo.
@@ -793,7 +820,7 @@ fn response_schema() -> Value {
                     "properties": {
                         "safety": {"type": "string", "enum": ["safe", "caution", "dangerous"]},
                         "description": {"type": "string"},
-                        "action_type": {"type": "string", "enum": ["obs_request", "windows_audio", "apply_preset"]},
+                        "action_type": {"type": "string", "enum": ["obs_request", "windows_audio", "apply_preset", "video_editor"]},
                         "request_type": {"type": "string"},
                         "params": {"type": "string"}
                     },

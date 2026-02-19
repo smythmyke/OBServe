@@ -162,6 +162,7 @@ async fn dispatch_action_inner(action: &AiAction, conn: &ObsConnection) -> Resul
             .await
             .map_err(|e| format!("Task failed: {}", e))?
         }
+        "video_editor" => Ok(()),
         other => Err(format!("Unknown action_type: {}", other)),
     }
 }

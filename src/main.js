@@ -111,12 +111,12 @@ const VISIBILITY_MATRIX = {
     'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
-    'simple':   ['audio-devices', 'filters', 'scenes', 'webcam', 'stream-record', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'obs-info', 'system', 'ai'],
+    'simple':   ['audio-devices', 'filters', 'scenes', 'webcam', 'stream-record', 'video-editor', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'video-editor', 'obs-info', 'system', 'ai'],
   },
   'video': {
-    'simple':   ['filters', 'scenes', 'webcam', 'stream-record', 'ai'],
-    'advanced': ['filters', 'scenes', 'webcam', 'stream-record', 'preflight', 'obs-info', 'system', 'ai'],
+    'simple':   ['filters', 'scenes', 'webcam', 'stream-record', 'video-editor', 'ai'],
+    'advanced': ['filters', 'scenes', 'webcam', 'stream-record', 'video-editor', 'preflight', 'obs-info', 'system', 'ai'],
   },
 };
 
@@ -2941,9 +2941,12 @@ async function loadDisplays() {
 
 async function autoSetupCameras() {
   try {
-    const created = await invoke('auto_setup_cameras');
-    if (created.length > 0) {
-      showFrameDropAlert('Auto-created camera scenes: ' + created.join(', '));
+    const result = await invoke('auto_setup_cameras');
+    if (result.logs && result.logs.length > 0) {
+      result.logs.forEach(l => console.log('[AutoCam]', l));
+    }
+    if (result.created && result.created.length > 0) {
+      showFrameDropAlert('Auto-created camera scenes: ' + result.created.join(', '));
       await refreshFullState();
       loadVideoDevices();
     }
@@ -3003,11 +3006,13 @@ function renderVideoDevices(devices) {
     const existingSource = findObsSourceForDevice(d.name);
     const btnLabel = existingSource ? `Add to "${esc(currentScene)}"` : 'Add to OBS';
     const infoHtml = existingSource ? `<span class="webcam-in-obs-badge">Source exists in OBS</span>` : '';
+    const activateBtn = existingSource ? `<button class="btn-secondary" data-activate-source="${esc(existingSource)}">Activate Camera</button>` : '';
     return `<div class="webcam-card">
       <div class="webcam-name" title="${esc(d.name)}">${esc(d.name)}</div>
       <span class="webcam-kind ${d.kind}">${d.kind}</span>
       <div class="webcam-actions">
         ${infoHtml}
+        ${activateBtn}
         <button class="btn-secondary" data-add-webcam="${esc(d.id)}" data-webcam-name="${esc(d.name)}" data-existing-source="${esc(existingSource || '')}">${btnLabel}</button>
       </div>
     </div>`;
@@ -3042,6 +3047,22 @@ function renderVideoDevices(devices) {
         btn.disabled = false;
         btn.textContent = existingSource ? `Add to "${scene}"` : 'Add to OBS';
       }
+    });
+  });
+
+  list.querySelectorAll('[data-activate-source]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const sourceName = btn.dataset.activateSource;
+      btn.disabled = true;
+      btn.textContent = 'Activating...';
+      try {
+        await invoke('open_source_properties', { sourceName });
+        showFrameDropAlert(`Properties opened for "${sourceName}" — click OK in OBS to activate`);
+      } catch (e) {
+        showFrameDropAlert('Failed to open properties: ' + e);
+      }
+      btn.disabled = false;
+      btn.textContent = 'Activate Camera';
     });
   });
 }
@@ -3336,6 +3357,9 @@ async function sendChatMessage() {
     const resp = await invoke('send_chat_message', { message, calibrationData });
     loadingEl.remove();
     appendAssistantMessage(resp);
+    if (resp.frontendActions && resp.frontendActions.length > 0) {
+      handleVideoEditorActions(resp.frontendActions);
+    }
     if (resp.actionResults && resp.actionResults.length > 0) {
       setTimeout(() => refreshFullState(), 300);
     }
@@ -3930,7 +3954,7 @@ function updateModuleShading() {
 
 // --- Panel Minimize / Remove ---
 
-const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'obs-info', 'system', 'ducking', 'app-capture']);
+const REMOVABLE_PANELS = new Set(['mixer', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'video-editor', 'obs-info', 'system', 'ducking', 'app-capture']);
 const PANEL_STATE_KEY = 'observe-panel-states';
 
 const PANEL_LABELS = {
@@ -3942,6 +3966,7 @@ const PANEL_LABELS = {
   'preflight': 'Pre-Flight',
   'scenes': 'Scenes',
   'stream-record': 'Stream & Record',
+  'video-editor': 'Video Editor',
   'obs-info': 'OBS Info',
   'system': 'System',
   'filters': 'Signal Chain',
@@ -6536,6 +6561,1138 @@ async function handleSpecKnobChange(sourceName, knob, value) {
   }
 }
 
+// ══════════════════════════════════════════════════════
+// ── Video Editor Module ──
+// ══════════════════════════════════════════════════════
+
+const ve = {
+  ffmpegReady: false,
+  videoLoaded: false,
+  sourcePath: null,
+  playablePath: null,
+  videoInfo: null,
+  segments: [],
+  undoStack: [],
+  overlays: [],
+  selectedOverlay: null,
+  nextOverlayId: 1,
+  fileBrowserOpen: false,
+  recordingDir: null,
+  timelineAnimFrame: null,
+  dragOverlay: null,
+  dirty: false,
+  projectPath: null,
+};
+
+function convertFileSrc(path) {
+  if (window.__TAURI__?.core?.convertFileSrc) {
+    return window.__TAURI__.core.convertFileSrc(path);
+  }
+  return 'https://asset.localhost/' + encodeURIComponent(path);
+}
+
+const veThumbnailCache = new Map();
+
+function veGenerateThumbnailHtml5(filePath) {
+  if (veThumbnailCache.has(filePath)) return Promise.resolve(veThumbnailCache.get(filePath));
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+    video.style.cssText = 'position:fixed;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
+    document.body.appendChild(video);
+    video.src = convertFileSrc(filePath);
+
+    let settled = false;
+    const cleanup = () => { if (video.parentNode) video.parentNode.removeChild(video); };
+    const done = (val, err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      err ? reject(err) : resolve(val);
+    };
+
+    video.addEventListener('loadeddata', () => {
+      video.currentTime = Math.min(2, (video.duration || 1) * 0.1);
+    }, { once: true });
+
+    video.addEventListener('seeked', () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = Math.round(320 * (video.videoHeight / (video.videoWidth || 1))) || 180;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        veThumbnailCache.set(filePath, dataUrl);
+        video.src = '';
+        done(dataUrl);
+      } catch (e) {
+        done(null, e);
+      }
+    }, { once: true });
+
+    video.addEventListener('error', (e) => {
+      done(null, new Error('Video load failed: ' + (video.error?.message || 'unknown')));
+    }, { once: true });
+
+    setTimeout(() => done(null, new Error('Thumbnail timeout')), 10000);
+  });
+}
+
+async function initVideoEditor() {
+  try {
+    const status = await invoke('detect_ffmpeg');
+    ve.ffmpegReady = status.found;
+    const badge = $('#ve-ffmpeg-badge');
+    if (badge) {
+      if (status.found) {
+        badge.textContent = 'FFmpeg OK';
+        badge.classList.remove('not-found');
+      } else {
+        badge.textContent = 'FFmpeg missing';
+        badge.classList.add('not-found');
+        badge.title = 'Install FFmpeg for thumbnails, MKV remux, and export. MP4 playback works without it.';
+      }
+    }
+    if (status.found) {
+      log.info('FFmpeg found:', status.path);
+    }
+  } catch (e) {
+    console.warn('FFmpeg detection failed:', e);
+  }
+
+  listen('obs://record-state-changed', async (event) => {
+    const { outputActive, outputPath } = event.payload;
+    if (!outputActive && outputPath) {
+      await veLoadVideo(outputPath);
+    }
+  });
+
+  listen('video-editor://export-progress', (event) => {
+    const progress = event.payload;
+    veUpdateExportProgress(progress);
+  });
+
+  $('#btn-ve-browse-files')?.addEventListener('click', veToggleFileBrowser);
+  $('#btn-ve-save-project')?.addEventListener('click', veSaveProjectDialog);
+  $('#btn-ve-export')?.addEventListener('click', veShowExportModal);
+  $('#btn-ve-refresh-files')?.addEventListener('click', veRefreshFiles);
+
+  $('#btn-ve-trim-in')?.addEventListener('click', () => veSetTrimIn());
+  $('#btn-ve-trim-out')?.addEventListener('click', () => veSetTrimOut());
+  $('#btn-ve-split')?.addEventListener('click', () => veSplit());
+  $('#btn-ve-delete-seg')?.addEventListener('click', () => veDeleteSegment());
+  $('#btn-ve-undo')?.addEventListener('click', () => veUndoEdit());
+
+  $('#btn-ve-add-text')?.addEventListener('click', veAddTextOverlay);
+  $('#btn-ve-add-image')?.addEventListener('click', veAddImageOverlay);
+  $('#btn-ve-add-watermark')?.addEventListener('click', veAddWatermark);
+
+  $('#btn-export-start')?.addEventListener('click', veStartExport);
+  $('#btn-export-cancel')?.addEventListener('click', veCancelExport);
+  $('#btn-export-close')?.addEventListener('click', () => { $('#export-modal').hidden = true; });
+  $('#btn-export-browse')?.addEventListener('click', veExportBrowse);
+  $('#export-format')?.addEventListener('change', () => {
+    const input = $('#export-filename');
+    if (input && input.value) {
+      input.value = input.value.replace(/\.[^.\\]+$/, '.' + $('#export-format').value);
+    }
+  });
+
+  $('#btn-ve-props-close')?.addEventListener('click', () => { $('#ve-overlay-props').hidden = true; });
+  $('#btn-ve-prop-apply')?.addEventListener('click', veApplyOverlayProps);
+  $('#btn-ve-prop-delete')?.addEventListener('click', veDeleteSelectedOverlay);
+
+  const timeline = $('#ve-timeline');
+  if (timeline) {
+    timeline.addEventListener('click', veTimelineClick);
+  }
+
+  const video = $('#ve-video');
+  if (video) {
+    video.addEventListener('timeupdate', veOnTimeUpdate);
+    video.addEventListener('loadedmetadata', veOnVideoLoaded);
+  }
+
+  const playerContainer = $('#ve-player-container');
+  if (playerContainer) {
+    playerContainer.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    playerContainer.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        const path = files[0].path || files[0].name;
+        if (path) await veLoadVideo(path);
+      }
+    });
+  }
+
+  document.addEventListener('keydown', veHandleKeyboard);
+
+  // FFmpeg setup modal
+  const ffmpegBadge = $('#ve-ffmpeg-badge');
+  if (ffmpegBadge) {
+    ffmpegBadge.style.cursor = 'pointer';
+    ffmpegBadge.addEventListener('click', veShowFfmpegSetup);
+  }
+  $('#btn-ffmpeg-close')?.addEventListener('click', () => { $('#ffmpeg-setup-modal').hidden = true; });
+  $('#btn-ffmpeg-winget')?.addEventListener('click', veInstallFfmpegWinget);
+  $('#btn-ffmpeg-browse')?.addEventListener('click', veBrowseForFfmpeg);
+  $('#btn-ffmpeg-retry')?.addEventListener('click', veRetryFfmpegDetect);
+
+  // Auto-open file browser so recordings are visible immediately
+  ve.fileBrowserOpen = true;
+  const browser = $('#ve-file-browser');
+  if (browser) browser.hidden = false;
+  veRefreshFiles();
+}
+
+function veShowFfmpegSetup() {
+  const modal = $('#ffmpeg-setup-modal');
+  if (!modal) return;
+  modal.hidden = false;
+  const status = $('#ffmpeg-setup-status');
+  if (status) {
+    status.textContent = ve.ffmpegReady ? 'FFmpeg is installed and working.' : '';
+    status.style.color = ve.ffmpegReady ? 'var(--green)' : '';
+  }
+}
+
+async function veInstallFfmpegWinget() {
+  const status = $('#ffmpeg-setup-status');
+  const btn = $('#btn-ffmpeg-winget');
+  if (status) { status.textContent = 'Installing via winget... this may take a minute.'; status.style.color = 'var(--amber)'; }
+  if (btn) btn.disabled = true;
+  try {
+    const result = await invoke('install_ffmpeg_winget');
+    if (status) { status.textContent = 'Installed! Re-detecting...'; status.style.color = 'var(--green)'; }
+    await veRetryFfmpegDetect();
+  } catch (e) {
+    if (status) { status.innerHTML = 'winget failed: ' + e + '<br>Try: <code>winget install Gyan.FFmpeg</code> in a terminal.'; status.style.color = 'var(--red)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function veBrowseForFfmpeg() {
+  const status = $('#ffmpeg-setup-status');
+  try {
+    const path = await invoke('browse_for_ffmpeg');
+    if (!path) return;
+    const result = await invoke('set_ffmpeg_path', { path });
+    ve.ffmpegReady = result.found;
+    veUpdateFfmpegBadge();
+    if (status) { status.textContent = 'FFmpeg configured: ' + result.path; status.style.color = 'var(--green)'; }
+    veRefreshFiles();
+  } catch (e) {
+    if (status) { status.textContent = 'Error: ' + e; status.style.color = 'var(--red)'; }
+  }
+}
+
+async function veRetryFfmpegDetect() {
+  const status = $('#ffmpeg-setup-status');
+  try {
+    const result = await invoke('detect_ffmpeg');
+    ve.ffmpegReady = result.found;
+    veUpdateFfmpegBadge();
+    if (result.found) {
+      if (status) { status.textContent = 'FFmpeg found: ' + result.path; status.style.color = 'var(--green)'; }
+      veRefreshFiles();
+      $('#btn-ve-export').disabled = !ve.videoLoaded;
+    } else {
+      if (status) { status.textContent = 'FFmpeg not found. Install it or browse to locate it.'; status.style.color = 'var(--red)'; }
+    }
+  } catch (e) {
+    if (status) { status.textContent = 'Detection failed: ' + e; status.style.color = 'var(--red)'; }
+  }
+}
+
+function veUpdateFfmpegBadge() {
+  const badge = $('#ve-ffmpeg-badge');
+  if (!badge) return;
+  if (ve.ffmpegReady) {
+    badge.textContent = 'FFmpeg OK';
+    badge.classList.remove('not-found');
+    badge.title = '';
+  } else {
+    badge.textContent = 'FFmpeg missing';
+    badge.classList.add('not-found');
+    badge.title = 'Click to set up FFmpeg';
+  }
+}
+
+async function veLoadVideo(sourcePath) {
+  if (ve.dirty && ve.videoLoaded) {
+    if (!confirm('You have unsaved edits. Load a new video without saving?')) return;
+  }
+
+  const ext = sourcePath.split('.').pop().toLowerCase();
+
+  if (ext !== 'mp4' && !ve.ffmpegReady) {
+    alert('FFmpeg is required to play .' + ext + ' files. Install FFmpeg or record in MP4 format.');
+    return;
+  }
+
+  ve.sourcePath = sourcePath;
+
+  try {
+    let playPath = sourcePath;
+    if (ext !== 'mp4') {
+      playPath = await invoke('remux_to_mp4', { sourcePath });
+    }
+    ve.playablePath = playPath;
+
+    const video = $('#ve-video');
+    const wrapper = $('#ve-video-wrapper');
+    const noVideo = $('#ve-no-video');
+
+    video.src = convertFileSrc(playPath);
+    wrapper.hidden = false;
+    noVideo.hidden = true;
+
+    // Try ffprobe for detailed info, fall back to HTML5 video metadata
+    let info = null;
+    try {
+      info = await invoke('get_video_info', { path: playPath });
+    } catch (_) {}
+
+    if (info) {
+      ve.videoInfo = info;
+    } else {
+      // Wait for video metadata to load, then extract info
+      await new Promise((resolve) => {
+        if (video.readyState >= 1) { resolve(); return; }
+        video.addEventListener('loadedmetadata', resolve, { once: true });
+        video.addEventListener('error', resolve, { once: true });
+      });
+      ve.videoInfo = {
+        duration: video.duration || 0,
+        width: video.videoWidth || 1920,
+        height: video.videoHeight || 1080,
+        fps: 30,
+        videoCodec: ext.toUpperCase(),
+        audioCodec: '',
+      };
+    }
+
+    ve.segments = [{ start: 0, end: ve.videoInfo.duration, deleted: false }];
+    ve.undoStack = [];
+    ve.overlays = [];
+    ve.selectedOverlay = null;
+    ve.videoLoaded = true;
+
+    const infoBar = $('#ve-info-bar');
+    infoBar.hidden = false;
+    const name = sourcePath.split(/[/\\]/).pop();
+    $('#ve-filename').textContent = name;
+    $('#ve-duration').textContent = veFormatTime(ve.videoInfo.duration);
+    $('#ve-resolution').textContent = `${ve.videoInfo.width}x${ve.videoInfo.height}`;
+    $('#ve-codec').textContent = ve.videoInfo.videoCodec + (ve.videoInfo.fps ? ` ${Math.round(ve.videoInfo.fps)}fps` : '');
+
+    $('#ve-timeline-container').hidden = false;
+    $('#ve-overlay-toolbar').hidden = false;
+    $('#btn-ve-export').disabled = !ve.ffmpegReady;
+    $('#btn-ve-save-project').disabled = false;
+    ve.dirty = false;
+
+    veStartTimelineRender();
+    veRenderOverlayList();
+  } catch (e) {
+    console.error('Failed to load video:', e);
+  }
+}
+
+function veOnVideoLoaded() {
+  const video = $('#ve-video');
+  const canvas = $('#ve-overlay-canvas');
+  if (canvas && video.videoWidth) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+}
+
+function veOnTimeUpdate() {
+  veRenderOverlaysOnCanvas();
+}
+
+function veFormatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// ── Timeline Rendering ──
+
+function veStartTimelineRender() {
+  if (ve.timelineAnimFrame) cancelAnimationFrame(ve.timelineAnimFrame);
+  function render() {
+    veDrawTimeline();
+    ve.timelineAnimFrame = requestAnimationFrame(render);
+  }
+  render();
+}
+
+function veDrawTimeline() {
+  const canvas = $('#ve-timeline');
+  if (!canvas || !ve.videoInfo) return;
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * window.devicePixelRatio;
+  canvas.height = 60 * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const w = rect.width;
+  const h = 60;
+  const duration = ve.videoInfo.duration;
+  if (duration <= 0) return;
+
+  ctx.clearRect(0, 0, w, h);
+
+  for (const seg of ve.segments) {
+    const x1 = (seg.start / duration) * w;
+    const x2 = (seg.end / duration) * w;
+    ctx.fillStyle = seg.deleted ? 'rgba(204,68,68,0.2)' : 'rgba(90,170,90,0.25)';
+    ctx.fillRect(x1, 8, x2 - x1, h - 16);
+    ctx.strokeStyle = seg.deleted ? '#cc4444' : '#5aaa5a';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x1, 8, x2 - x1, h - 16);
+  }
+
+  for (const ov of ve.overlays) {
+    const x1 = (ov.start_time / duration) * w;
+    const x2 = (ov.end_time / duration) * w;
+    ctx.fillStyle = ov.id === ve.selectedOverlay ? 'rgba(212,160,64,0.4)' : 'rgba(212,160,64,0.15)';
+    ctx.fillRect(x1, h - 10, x2 - x1, 6);
+  }
+
+  const video = $('#ve-video');
+  if (video && !isNaN(video.currentTime)) {
+    const px = (video.currentTime / duration) * w;
+    ctx.strokeStyle = '#d4a040';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, h);
+    ctx.stroke();
+    ctx.fillStyle = '#d4a040';
+    ctx.beginPath();
+    ctx.moveTo(px - 5, 0);
+    ctx.lineTo(px + 5, 0);
+    ctx.lineTo(px, 7);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#7a6a50';
+  ctx.font = '9px sans-serif';
+  const step = veTimeStep(duration);
+  for (let t = 0; t <= duration; t += step) {
+    const x = (t / duration) * w;
+    ctx.fillRect(x, h - 3, 1, 3);
+    if (t > 0 && t < duration - step * 0.5) {
+      ctx.fillText(veFormatTime(t), x + 2, h - 1);
+    }
+  }
+}
+
+function veTimeStep(duration) {
+  if (duration < 30) return 5;
+  if (duration < 120) return 15;
+  if (duration < 600) return 60;
+  return 300;
+}
+
+function veTimelineClick(e) {
+  if (!ve.videoInfo) return;
+  const canvas = $('#ve-timeline');
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const t = (x / rect.width) * ve.videoInfo.duration;
+  const video = $('#ve-video');
+  if (video) video.currentTime = Math.max(0, Math.min(t, ve.videoInfo.duration));
+}
+
+// ── Trim / Split / Delete ──
+
+function vePushUndo() {
+  ve.undoStack.push(JSON.parse(JSON.stringify(ve.segments)));
+  if (ve.undoStack.length > 30) ve.undoStack.shift();
+  ve.dirty = true;
+}
+
+function veSetTrimIn() {
+  const video = $('#ve-video');
+  if (!video || !ve.videoLoaded) return;
+  const t = video.currentTime;
+  vePushUndo();
+  if (ve.segments.length > 0) {
+    const first = ve.segments.find(s => !s.deleted);
+    if (first && t > first.start && t < first.end) {
+      first.start = t;
+    }
+  }
+}
+
+function veSetTrimOut() {
+  const video = $('#ve-video');
+  if (!video || !ve.videoLoaded) return;
+  const t = video.currentTime;
+  vePushUndo();
+  const segs = ve.segments.filter(s => !s.deleted);
+  if (segs.length > 0) {
+    const last = segs[segs.length - 1];
+    if (t > last.start && t < last.end) {
+      last.end = t;
+    }
+  }
+}
+
+function veSplit() {
+  const video = $('#ve-video');
+  if (!video || !ve.videoLoaded) return;
+  const t = video.currentTime;
+  vePushUndo();
+  for (let i = 0; i < ve.segments.length; i++) {
+    const seg = ve.segments[i];
+    if (!seg.deleted && t > seg.start + 0.1 && t < seg.end - 0.1) {
+      const newSeg = { start: t, end: seg.end, deleted: false };
+      seg.end = t;
+      ve.segments.splice(i + 1, 0, newSeg);
+      return;
+    }
+  }
+}
+
+function veDeleteSegment() {
+  const video = $('#ve-video');
+  if (!video || !ve.videoLoaded) return;
+  const t = video.currentTime;
+  vePushUndo();
+  for (const seg of ve.segments) {
+    if (!seg.deleted && t >= seg.start && t <= seg.end) {
+      seg.deleted = true;
+      return;
+    }
+  }
+}
+
+function veUndoEdit() {
+  if (ve.undoStack.length === 0) return;
+  ve.segments = ve.undoStack.pop();
+}
+
+// ── Overlays ──
+
+function veAddTextOverlay() {
+  if (!ve.videoLoaded) return;
+  ve.dirty = true;
+  const video = $('#ve-video');
+  const t = video?.currentTime || 0;
+  const ov = {
+    id: 'ov_' + ve.nextOverlayId++,
+    overlay_type: 'text',
+    content: 'Text',
+    x: 50, y: 50,
+    width: 200, height: 40,
+    start_time: t,
+    end_time: Math.min(t + 5, ve.videoInfo.duration),
+    style: { font_size: 24, font_color: '#ffffff', background_color: 'transparent', opacity: 1.0, bold: false },
+  };
+  ve.overlays.push(ov);
+  ve.selectedOverlay = ov.id;
+  veRenderOverlayList();
+  veShowOverlayProps(ov);
+}
+
+async function veAddImageOverlay() {
+  if (!ve.videoLoaded) return;
+  try {
+    const path = await invoke('pick_image_file');
+    if (!path) return;
+    const video = $('#ve-video');
+    const t = video?.currentTime || 0;
+    const ov = {
+      id: 'ov_' + ve.nextOverlayId++,
+      overlay_type: 'image',
+      content: path,
+      x: 50, y: 50,
+      width: 200, height: 150,
+      start_time: t,
+      end_time: Math.min(t + 10, ve.videoInfo.duration),
+      style: { font_size: 24, font_color: '#ffffff', background_color: 'transparent', opacity: 1.0, bold: false },
+    };
+    ve.overlays.push(ov);
+    ve.selectedOverlay = ov.id;
+    veRenderOverlayList();
+  } catch (e) {
+    console.warn('Image picker failed:', e);
+  }
+}
+
+function veAddWatermark() {
+  if (!ve.videoLoaded) return;
+  const ov = {
+    id: 'ov_' + ve.nextOverlayId++,
+    overlay_type: 'text',
+    content: 'OBServe',
+    x: 10, y: 10,
+    width: 100, height: 20,
+    start_time: 0,
+    end_time: ve.videoInfo.duration,
+    style: { font_size: 14, font_color: '#ffffff', background_color: 'transparent', opacity: 0.5, bold: false },
+  };
+  ve.overlays.push(ov);
+  ve.selectedOverlay = ov.id;
+  veRenderOverlayList();
+  veShowOverlayProps(ov);
+}
+
+function veRenderOverlayList() {
+  const list = $('#ve-overlay-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const ov of ve.overlays) {
+    const chip = document.createElement('div');
+    chip.className = 've-overlay-chip' + (ov.id === ve.selectedOverlay ? ' selected' : '');
+    const label = ov.overlay_type === 'text' ? ov.content.substring(0, 15) : 'Image';
+    chip.textContent = label;
+    chip.addEventListener('click', () => {
+      ve.selectedOverlay = ov.id;
+      veRenderOverlayList();
+      veShowOverlayProps(ov);
+    });
+    list.appendChild(chip);
+  }
+}
+
+function veShowOverlayProps(ov) {
+  const panel = $('#ve-overlay-props');
+  if (!panel) return;
+  panel.hidden = false;
+  $('#ve-prop-text').value = ov.content;
+  $('#ve-prop-fontsize').value = ov.style.font_size;
+  $('#ve-prop-color').value = ov.style.font_color;
+  $('#ve-prop-opacity').value = ov.style.opacity;
+  $('#ve-prop-start').value = ov.start_time;
+  $('#ve-prop-end').value = ov.end_time;
+}
+
+function veApplyOverlayProps() {
+  const ov = ve.overlays.find(o => o.id === ve.selectedOverlay);
+  if (!ov) return;
+  ov.content = $('#ve-prop-text').value;
+  ov.style.font_size = parseInt($('#ve-prop-fontsize').value) || 24;
+  ov.style.font_color = $('#ve-prop-color').value;
+  ov.style.opacity = parseFloat($('#ve-prop-opacity').value) || 1.0;
+  ov.start_time = parseFloat($('#ve-prop-start').value) || 0;
+  ov.end_time = parseFloat($('#ve-prop-end').value) || ve.videoInfo.duration;
+
+  const pos = $('#ve-prop-position').value;
+  if (pos !== 'custom' && ve.videoInfo) {
+    const positions = {
+      'top-left': [10, 10],
+      'top-center': [ve.videoInfo.width / 2 - 100, 10],
+      'top-right': [ve.videoInfo.width - 210, 10],
+      'center': [ve.videoInfo.width / 2 - 100, ve.videoInfo.height / 2 - 20],
+      'bottom-left': [10, ve.videoInfo.height - 50],
+      'bottom-center': [ve.videoInfo.width / 2 - 100, ve.videoInfo.height - 50],
+      'bottom-right': [ve.videoInfo.width - 210, ve.videoInfo.height - 50],
+    };
+    if (positions[pos]) {
+      ov.x = positions[pos][0];
+      ov.y = positions[pos][1];
+    }
+  }
+  veRenderOverlayList();
+}
+
+function veDeleteSelectedOverlay() {
+  if (!ve.selectedOverlay) return;
+  ve.overlays = ve.overlays.filter(o => o.id !== ve.selectedOverlay);
+  ve.selectedOverlay = null;
+  $('#ve-overlay-props').hidden = true;
+  veRenderOverlayList();
+}
+
+function veRenderOverlaysOnCanvas() {
+  const canvas = $('#ve-overlay-canvas');
+  const video = $('#ve-video');
+  if (!canvas || !video) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth || 1;
+    canvas.height = video.videoHeight || 1;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const t = video.currentTime;
+
+  for (const ov of ve.overlays) {
+    if (t < ov.start_time || t > ov.end_time) continue;
+    ctx.globalAlpha = ov.style.opacity;
+
+    if (ov.overlay_type === 'text') {
+      const weight = ov.style.bold ? 'bold ' : '';
+      ctx.font = `${weight}${ov.style.font_size}px sans-serif`;
+      ctx.fillStyle = ov.style.font_color;
+      ctx.fillText(ov.content, ov.x, ov.y + ov.style.font_size);
+
+      if (ov.id === ve.selectedOverlay) {
+        ctx.strokeStyle = '#d4a040';
+        ctx.lineWidth = 1;
+        const metrics = ctx.measureText(ov.content);
+        ctx.strokeRect(ov.x - 2, ov.y, metrics.width + 4, ov.style.font_size + 6);
+      }
+    }
+    ctx.globalAlpha = 1.0;
+  }
+}
+
+// ── File Browser ──
+
+async function veToggleFileBrowser() {
+  ve.fileBrowserOpen = !ve.fileBrowserOpen;
+  const browser = $('#ve-file-browser');
+  if (browser) browser.hidden = !ve.fileBrowserOpen;
+  if (ve.fileBrowserOpen) await veRefreshFiles();
+}
+
+async function veRefreshFiles() {
+  const list = $('#ve-file-list');
+  if (!list) return;
+  list.innerHTML = '<div class="ve-hint">Loading...</div>';
+
+  try {
+    const files = await invoke('list_recordings', { dir: null });
+    list.innerHTML = '';
+    if (files.length === 0) {
+      list.innerHTML = '<div class="ve-hint">No recordings found</div>';
+      return;
+    }
+    for (const file of files) {
+      const card = document.createElement('div');
+      card.className = 've-file-card' + (file.path === ve.sourcePath ? ' active' : '');
+      const thumb = document.createElement('div');
+      thumb.className = 've-file-thumb';
+      thumb.innerHTML = '<span class="ve-thumb-placeholder">Loading...</span>';
+      const nameEl = document.createElement('div');
+      nameEl.className = 've-file-name';
+      nameEl.textContent = file.name;
+      nameEl.title = file.name;
+      const meta = document.createElement('div');
+      meta.className = 've-file-meta';
+      const sizeMB = (file.sizeBytes / (1024 * 1024)).toFixed(1);
+      const date = new Date(file.modified * 1000);
+      meta.textContent = `${sizeMB} MB | ${date.toLocaleDateString()}`;
+      card.appendChild(thumb);
+      card.appendChild(nameEl);
+      card.appendChild(meta);
+      card.addEventListener('click', () => veLoadVideo(file.path));
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY, [
+          { label: 'Load', action: () => veLoadVideo(file.path) },
+          { label: 'Open in Explorer', action: () => invoke('open_file_location', { path: file.path }) },
+          { type: 'separator' },
+          { label: 'Delete', action: () => veConfirmDelete(file.path, file.name) },
+        ]);
+      });
+      list.appendChild(card);
+
+      (async () => {
+        try {
+          if (ve.ffmpegReady) {
+            const thumbData = await invoke('get_video_thumbnail', { path: file.path, timestamp: 2.0 });
+            thumb.innerHTML = '';
+            const img = document.createElement('img');
+            img.src = thumbData;
+            thumb.appendChild(img);
+          } else {
+            const dataUrl = await veGenerateThumbnailHtml5(file.path);
+            thumb.innerHTML = '';
+            const img = document.createElement('img');
+            img.src = dataUrl;
+            thumb.appendChild(img);
+          }
+        } catch (_) {
+          thumb.innerHTML = '<span class="ve-thumb-placeholder">No preview</span>';
+        }
+      })();
+    }
+  } catch (e) {
+    list.innerHTML = `<div class="ve-hint">Error: ${e}</div>`;
+  }
+}
+
+async function veConfirmDelete(path, name) {
+  if (!confirm(`Move "${name}" to Recycle Bin?`)) return;
+  try {
+    await invoke('delete_recording', { path });
+    await veRefreshFiles();
+  } catch (e) {
+    alert('Delete failed: ' + e);
+  }
+}
+
+// ── Export ──
+
+function veShowExportModal() {
+  if (!ve.videoLoaded) return;
+  const modal = $('#export-modal');
+  if (modal) {
+    modal.hidden = false;
+    $('#export-progress-section').hidden = true;
+    $('#btn-export-start').hidden = false;
+    $('#btn-export-cancel').hidden = true;
+    // Set default filename
+    const srcName = ve.sourcePath.split(/[/\\]/).pop().replace(/\.[^.]+$/, '');
+    const srcDir = veDefaultProjectDir();
+    const format = $('#export-format').value || 'mp4';
+    $('#export-filename').value = `${srcDir}\\${srcName} - Edited.${format}`;
+  }
+}
+
+async function veExportBrowse() {
+  const format = $('#export-format').value || 'mp4';
+  const srcName = ve.sourcePath.split(/[/\\]/).pop().replace(/\.[^.]+$/, '');
+  const filterMap = { mp4: 'MP4 Video (*.mp4)|*.mp4', mkv: 'MKV Video (*.mkv)|*.mkv', mov: 'MOV Video (*.mov)|*.mov' };
+  try {
+    const path = await invoke('browse_save_location', {
+      defaultName: `${srcName} - Edited.${format}`,
+      filter: (filterMap[format] || filterMap.mp4) + '|All Files|*.*',
+    });
+    if (path) $('#export-filename').value = path;
+  } catch (_) {}
+}
+
+async function veStartExport() {
+  if (!ve.videoLoaded || !ve.sourcePath) return;
+
+  const format = $('#export-format').value;
+  const quality = $('#export-quality').value;
+  const videoCodec = $('#export-codec').value;
+  const outputPath = $('#export-filename').value.trim();
+
+  if (!outputPath) {
+    alert('Please enter a filename for the export.');
+    return;
+  }
+
+  const request = {
+    sourcePath: ve.sourcePath,
+    segments: ve.segments,
+    overlays: ve.overlays,
+    outputPath,
+    format,
+    videoCodec,
+    quality,
+    resolution: null,
+  };
+
+  $('#export-progress-section').hidden = false;
+  $('#btn-export-start').hidden = true;
+  $('#btn-export-cancel').hidden = false;
+  $('#export-progress-fill').style.width = '0%';
+  $('#export-progress-pct').textContent = '0%';
+  $('#export-eta').textContent = '';
+
+  try {
+    await invoke('export_video', { request });
+  } catch (e) {
+    alert('Export failed: ' + e);
+    $('#btn-export-start').hidden = false;
+    $('#btn-export-cancel').hidden = true;
+  }
+}
+
+function veUpdateExportProgress(progress) {
+  const fill = $('#export-progress-fill');
+  const pct = $('#export-progress-pct');
+  const eta = $('#export-eta');
+  if (fill) fill.style.width = progress.percent.toFixed(1) + '%';
+  if (pct) pct.textContent = progress.percent.toFixed(1) + '%';
+  if (eta && progress.etaSeconds > 0) {
+    eta.textContent = `ETA: ${veFormatTime(progress.etaSeconds)}`;
+  }
+  if (progress.status === 'done') {
+    if (pct) pct.textContent = '100% - Done!';
+    if (eta) eta.textContent = '';
+    $('#btn-export-start').hidden = false;
+    $('#btn-export-cancel').hidden = true;
+  } else if (progress.status === 'error') {
+    if (pct) pct.textContent = 'Error';
+    if (eta) eta.textContent = progress.error || '';
+    $('#btn-export-start').hidden = false;
+    $('#btn-export-cancel').hidden = true;
+  } else if (progress.status === 'cancelled') {
+    if (pct) pct.textContent = 'Cancelled';
+    if (eta) eta.textContent = '';
+    $('#btn-export-start').hidden = false;
+    $('#btn-export-cancel').hidden = true;
+  }
+}
+
+async function veCancelExport() {
+  try {
+    await invoke('cancel_export');
+  } catch (_) {}
+}
+
+// ── Save / Load Project ──
+
+function veDefaultProjectName() {
+  const srcName = (ve.sourcePath || 'untitled').split(/[/\\]/).pop().replace(/\.[^.]+$/, '');
+  return srcName + '.obsproj';
+}
+
+function veDefaultProjectDir() {
+  return ve.sourcePath
+    ? (ve.sourcePath.substring(0, ve.sourcePath.lastIndexOf('\\')) || ve.sourcePath.substring(0, ve.sourcePath.lastIndexOf('/')))
+    : '';
+}
+
+async function veSaveProjectDialog() {
+  if (!ve.videoLoaded) return;
+  // If already saved once, save to same path
+  if (ve.projectPath) {
+    await veSaveProjectToPath(ve.projectPath);
+    return;
+  }
+  const defaultName = veDefaultProjectName();
+  try {
+    const path = await invoke('browse_save_location', {
+      defaultName,
+      filter: 'OBServe Project (*.obsproj)|*.obsproj|All Files|*.*',
+    });
+    if (!path) return;
+    await veSaveProjectToPath(path);
+  } catch (e) {
+    alert('Save failed: ' + e);
+  }
+}
+
+async function veSaveProjectToPath(path) {
+  const project = {
+    sourcePath: ve.sourcePath,
+    segments: ve.segments,
+    overlays: ve.overlays,
+    duration: ve.videoInfo.duration,
+  };
+  try {
+    await invoke('save_edit_project', { project, path });
+    ve.projectPath = path;
+    ve.dirty = false;
+    const name = path.split(/[/\\]/).pop();
+    showToast('Saved: ' + name);
+  } catch (e) {
+    showToast('Save failed: ' + e);
+  }
+}
+
+// ── Keyboard Shortcuts ──
+
+function veHandleKeyboard(e) {
+  const panel = $('#video-editor-panel');
+  if (!panel || panel.hidden || !ve.videoLoaded) return;
+
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
+
+  const video = $('#ve-video');
+  if (!video) return;
+
+  switch (e.key) {
+    case ' ':
+      e.preventDefault();
+      if (video.paused) video.play(); else video.pause();
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      video.currentTime = Math.max(0, video.currentTime - (e.shiftKey ? 10 : 5));
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      video.currentTime = Math.min(ve.videoInfo.duration, video.currentTime + (e.shiftKey ? 10 : 5));
+      break;
+    case '[':
+      e.preventDefault();
+      veSetTrimIn();
+      break;
+    case ']':
+      e.preventDefault();
+      veSetTrimOut();
+      break;
+    case 's':
+    case 'S':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        veSaveProjectDialog();
+      } else {
+        e.preventDefault();
+        veSplit();
+      }
+      break;
+    case 'Delete':
+      e.preventDefault();
+      veDeleteSegment();
+      break;
+    case 'z':
+    case 'Z':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        veUndoEdit();
+      }
+      break;
+    case 'e':
+    case 'E':
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        veShowExportModal();
+      }
+      break;
+  }
+}
+
+// ── AI Action Handler ──
+
+function handleVideoEditorActions(actions) {
+  if (!actions || actions.length === 0) return;
+  const video = $('#ve-video');
+
+  for (const action of actions) {
+    let params = {};
+    try {
+      params = typeof action.params === 'string' ? JSON.parse(action.params) : action.params;
+    } catch (_) {}
+
+    switch (action.request_type || action.requestType) {
+      case 'show_video_editor':
+        restorePanel('video-editor');
+        break;
+      case 'hide_video_editor': {
+        const vePanel = document.querySelector('[data-panel="video-editor"]');
+        if (vePanel) removePanel(vePanel);
+        break;
+      }
+      case 'play_video':
+        if (video && ve.videoLoaded) video.play();
+        break;
+      case 'pause_video':
+        if (video) video.pause();
+        break;
+      case 'stop_video':
+        if (video) { video.pause(); video.currentTime = 0; }
+        break;
+      case 'start_over':
+        if (ve.videoLoaded && ve.videoInfo) {
+          ve.segments = [{ start: 0, end: ve.videoInfo.duration, deleted: false }];
+          ve.undoStack = [];
+          ve.overlays = [];
+          ve.selectedOverlay = null;
+          ve.nextOverlayId = 1;
+          veRenderOverlayList();
+          if (video) video.currentTime = 0;
+        }
+        break;
+      case 'seek_video':
+        if (video && params.seconds != null) {
+          video.currentTime = Math.max(0, Math.min(params.seconds, ve.videoInfo?.duration || Infinity));
+        }
+        break;
+      case 'rewind_video':
+        if (video) video.currentTime = 0;
+        break;
+      case 'load_last_recording':
+        veLoadLatestRecording();
+        break;
+      case 'load_video':
+        if (params.filename) veLoadVideoByName(params.filename);
+        break;
+      case 'list_recordings':
+        ve.fileBrowserOpen = true;
+        const browser = $('#ve-file-browser');
+        if (browser) browser.hidden = false;
+        veRefreshFiles();
+        break;
+      case 'trim_in':
+        veSetTrimIn();
+        break;
+      case 'trim_out':
+        veSetTrimOut();
+        break;
+      case 'split':
+        veSplit();
+        break;
+      case 'delete_segment':
+        veDeleteSegment();
+        break;
+      case 'undo_edit':
+        veUndoEdit();
+        break;
+      case 'add_text_overlay':
+        if (params.text) {
+          veAddTextOverlay();
+          const ov = ve.overlays[ve.overlays.length - 1];
+          if (ov) {
+            ov.content = params.text;
+            if (params.position && ve.videoInfo) {
+              const positions = {
+                'top-left': [10, 10],
+                'top-center': [ve.videoInfo.width / 2 - 100, 10],
+                'top-right': [ve.videoInfo.width - 210, 10],
+                'center': [ve.videoInfo.width / 2 - 100, ve.videoInfo.height / 2 - 20],
+                'bottom-left': [10, ve.videoInfo.height - 50],
+                'bottom-center': [ve.videoInfo.width / 2 - 100, ve.videoInfo.height - 50],
+                'bottom-right': [ve.videoInfo.width - 210, ve.videoInfo.height - 50],
+              };
+              if (positions[params.position]) {
+                ov.x = positions[params.position][0];
+                ov.y = positions[params.position][1];
+              }
+            }
+            veRenderOverlayList();
+          }
+        }
+        break;
+      case 'export_video':
+        veShowExportModal();
+        break;
+      case 'save_project':
+        veSaveProjectDialog();
+        break;
+    }
+  }
+}
+
+async function veLoadLatestRecording() {
+  try {
+    const files = await invoke('list_recordings', { dir: null });
+    if (files.length > 0) {
+      await veLoadVideo(files[0].path);
+    }
+  } catch (e) {
+    console.warn('Failed to load latest recording:', e);
+  }
+}
+
+async function veLoadVideoByName(filename) {
+  try {
+    const files = await invoke('list_recordings', { dir: null });
+    const match = files.find(f => f.name.toLowerCase().includes(filename.toLowerCase()));
+    if (match) {
+      await veLoadVideo(match.path);
+    }
+  } catch (e) {
+    console.warn('Failed to load video by name:', e);
+  }
+}
+
 // --- Maximize on launch ---
 
 window.__TAURI__.window.getCurrentWindow().maximize();
@@ -6556,6 +7713,7 @@ initCalibration();
 initDucking();
 initAppCapture();
 initProSpectrum();
+initVideoEditor();
 
 (async () => {
   if (initialSettings.geminiApiKey) {

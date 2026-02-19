@@ -672,6 +672,10 @@ async fn handle_event(
         "RecordStateChanged" => {
             let active =
                 event_data["outputActive"].as_bool().unwrap_or(false);
+            let output_path = event_data["outputPath"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             {
                 let mut s = state.write().await;
                 s.record_status.active = active;
@@ -681,7 +685,7 @@ async fn handle_event(
             }
             let _ = app.emit(
                 "obs://record-state-changed",
-                json!({"outputActive": active}),
+                json!({"outputActive": active, "outputPath": output_path}),
             );
         }
         "InputVolumeMeters" => {

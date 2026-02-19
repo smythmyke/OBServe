@@ -538,12 +538,71 @@
         <div id="filters-chain-list"></div>
       </section>
 
+      <section class="module panel" id="video-editor-panel" data-panel="video-editor" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Video Editor</span>
+        <div class="ve-toolbar">
+          <h2>Video Editor</h2>
+          <div class="ve-actions">
+            <span class="ve-ffmpeg-badge" id="ve-ffmpeg-badge"></span>
+            <button class="btn-secondary" id="btn-ve-browse-files">Files</button>
+            <button class="btn-secondary" id="btn-ve-save-project" disabled>Save Project</button>
+            <button class="btn-secondary" id="btn-ve-export" disabled>Export</button>
+          </div>
+        </div>
+
+        <div class="ve-player-container" id="ve-player-container">
+          <div class="ve-no-video" id="ve-no-video">
+            <p>No video loaded</p>
+            <p class="ve-hint">Record in OBS and it will appear here, or browse your files</p>
+          </div>
+          <div class="ve-video-wrapper" id="ve-video-wrapper" hidden>
+            <video id="ve-video" controls></video>
+            <canvas id="ve-overlay-canvas"></canvas>
+          </div>
+        </div>
+
+        <div class="ve-info-bar" id="ve-info-bar" hidden>
+          <span class="ve-info-item" id="ve-filename"></span>
+          <span class="ve-info-item" id="ve-duration"></span>
+          <span class="ve-info-item" id="ve-resolution"></span>
+          <span class="ve-info-item" id="ve-codec"></span>
+        </div>
+
+        <div class="ve-timeline-container" id="ve-timeline-container" hidden>
+          <canvas id="ve-timeline" height="60"></canvas>
+          <div class="ve-timeline-controls">
+            <button class="ve-ctrl-btn" id="btn-ve-trim-in" title="Mark where the video should start (keyboard: [)">Trim Start</button>
+            <button class="ve-ctrl-btn" id="btn-ve-trim-out" title="Mark where the video should end (keyboard: ])">Trim End</button>
+            <button class="ve-ctrl-btn" id="btn-ve-split" title="Cut the video at the current position (keyboard: S)">Split</button>
+            <button class="ve-ctrl-btn" id="btn-ve-delete-seg" title="Remove the selected segment (keyboard: Del)">Delete</button>
+            <button class="ve-ctrl-btn" id="btn-ve-undo" title="Undo last edit (keyboard: Ctrl+Z)">Undo</button>
+          </div>
+        </div>
+
+        <div class="ve-overlay-toolbar" id="ve-overlay-toolbar" hidden>
+          <button class="ve-ctrl-btn" id="btn-ve-add-text">+ Text</button>
+          <button class="ve-ctrl-btn" id="btn-ve-add-image">+ Image</button>
+          <button class="ve-ctrl-btn" id="btn-ve-add-watermark">+ Watermark</button>
+          <div class="ve-overlay-list" id="ve-overlay-list"></div>
+        </div>
+
+        <div class="ve-file-browser" id="ve-file-browser" hidden>
+          <div class="ve-file-header">
+            <h3>Recordings</h3>
+            <button class="btn-secondary" id="btn-ve-refresh-files">Refresh</button>
+          </div>
+          <div class="ve-file-list" id="ve-file-list"></div>
+        </div>
+      </section>
+
       <section class="module panel" id="ai-panel" data-panel="ai">
         <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
         <div class="mod-screw bl"></div><div class="mod-screw br"></div>
         <span class="mod-title">AI Assistant</span>
         <div class="ai-header">
-          <h2>OBServer AI</h2>
+          <h2><span class="ai-title-observe">OBServer</span> <span class="ai-title-ai">AI</span></h2>
           <div class="ai-header-buttons">
             <button class="btn-secondary btn-help" id="btn-ai-help" title="What can I ask?">?</button>
           </div>
@@ -639,6 +698,112 @@
       <div class="about-modal-footer">
         <button class="hw-btn" id="btn-about-footer-close">Close</button>
       </div>
+    </div>
+  </div>
+
+  <div id="export-modal" class="about-modal-overlay" hidden>
+    <div class="about-modal">
+      <div class="about-modal-header">
+        <span>Export Video</span>
+        <button class="about-modal-close" id="btn-export-close">&times;</button>
+      </div>
+      <div class="about-modal-body">
+        <div class="export-form">
+          <div class="export-row">
+            <label>Filename</label>
+            <div style="display:flex;gap:4px;flex:1">
+              <input type="text" id="export-filename" style="flex:1" placeholder="output filename">
+              <button class="ve-ctrl-btn" id="btn-export-browse">Browse...</button>
+            </div>
+          </div>
+          <div class="export-row">
+            <label>Format</label>
+            <select id="export-format">
+              <option value="mp4">MP4</option>
+              <option value="mkv">MKV</option>
+              <option value="mov">MOV</option>
+            </select>
+          </div>
+          <div class="export-row">
+            <label>Quality</label>
+            <select id="export-quality">
+              <option value="high">High (CRF 18)</option>
+              <option value="medium" selected>Medium (CRF 23)</option>
+              <option value="low">Low (CRF 28)</option>
+            </select>
+          </div>
+          <div class="export-row">
+            <label>Codec</label>
+            <select id="export-codec">
+              <option value="libx264">H.264 (CPU)</option>
+              <option value="h264_nvenc">H.264 (NVENC)</option>
+              <option value="h264_amf">H.264 (AMF)</option>
+              <option value="h264_qsv">H.264 (QSV)</option>
+            </select>
+          </div>
+        </div>
+        <div class="export-progress-section" id="export-progress-section" hidden>
+          <div class="export-progress-bar">
+            <div class="export-progress-fill" id="export-progress-fill"></div>
+          </div>
+          <div class="export-progress-info">
+            <span id="export-progress-pct">0%</span>
+            <span id="export-eta"></span>
+          </div>
+        </div>
+      </div>
+      <div class="about-modal-footer">
+        <button class="hw-btn" id="btn-export-start">Export</button>
+        <button class="hw-btn" id="btn-export-cancel" hidden>Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ffmpeg-setup-modal" class="about-modal-overlay" hidden>
+    <div class="about-modal" style="max-width:420px">
+      <div class="about-modal-header">
+        <span>FFmpeg Setup</span>
+        <button class="about-modal-close" id="btn-ffmpeg-close">&times;</button>
+      </div>
+      <div class="about-modal-body">
+        <p style="margin:0 0 8px;font-size:0.8rem;color:var(--cream-dim)">FFmpeg is needed for video thumbnails, MKV remux, and export. MP4 playback works without it.</p>
+        <div id="ffmpeg-setup-status" style="margin-bottom:8px"></div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button class="hw-btn" id="btn-ffmpeg-winget" style="width:100%">Install via winget (recommended)</button>
+          <button class="hw-btn" id="btn-ffmpeg-browse" style="width:100%">Browse for ffmpeg.exe...</button>
+          <button class="hw-btn" id="btn-ffmpeg-retry" style="width:100%">Re-detect FFmpeg</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ve-overlay-props" class="ve-overlay-props-panel" hidden>
+    <div class="ve-props-header">
+      <span>Overlay Properties</span>
+      <button class="ve-props-close" id="btn-ve-props-close">&times;</button>
+    </div>
+    <div class="ve-props-body">
+      <div class="export-row"><label>Text</label><input type="text" id="ve-prop-text"></div>
+      <div class="export-row"><label>Font Size</label><input type="number" id="ve-prop-fontsize" value="24" min="8" max="200"></div>
+      <div class="export-row"><label>Color</label><input type="color" id="ve-prop-color" value="#ffffff"></div>
+      <div class="export-row"><label>Opacity</label><input type="range" id="ve-prop-opacity" min="0" max="1" step="0.1" value="1"></div>
+      <div class="export-row">
+        <label>Position</label>
+        <select id="ve-prop-position">
+          <option value="custom">Custom (drag)</option>
+          <option value="top-left">Top Left</option>
+          <option value="top-center">Top Center</option>
+          <option value="top-right">Top Right</option>
+          <option value="center">Center</option>
+          <option value="bottom-left">Bottom Left</option>
+          <option value="bottom-center">Bottom Center</option>
+          <option value="bottom-right">Bottom Right</option>
+        </select>
+      </div>
+      <div class="export-row"><label>Start (s)</label><input type="number" id="ve-prop-start" step="0.1" min="0"></div>
+      <div class="export-row"><label>End (s)</label><input type="number" id="ve-prop-end" step="0.1" min="0"></div>
+      <button class="hw-btn" id="btn-ve-prop-apply">Apply</button>
+      <button class="btn-secondary" id="btn-ve-prop-delete">Remove</button>
     </div>
   </div>
 
