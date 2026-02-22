@@ -177,6 +177,8 @@ pub fn run() {
             video_editor::install_ffmpeg_winget,
             video_editor::browse_for_ffmpeg,
             video_editor::browse_save_location,
+            video_editor::generate_ass_file,
+            video_editor::export_srt,
             store::get_store_catalog,
             store::get_license_state,
             store::activate_license_key,

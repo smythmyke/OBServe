@@ -6202,25 +6202,51 @@ function updateDuckingLed(status) {
 
 // --- App Capture ---
 
+let _appCaptureRefreshInterval = null;
+
 function initAppCapture() {
   $('#btn-app-capture-refresh').addEventListener('click', () => refreshAppCaptureProcesses());
   $('#btn-app-capture-add').addEventListener('click', async () => {
     const select = $('#app-capture-select');
     const processName = select.value;
     if (!processName) return;
+    const displayName = select.options[select.selectedIndex]?.dataset?.display || undefined;
     try {
-      await invoke('add_app_capture', { processName });
+      await invoke('add_app_capture', { processName, displayName });
       select.value = '';
     } catch (e) {
       showFrameDropAlert('Add capture failed: ' + e);
     }
   });
+
+  const panel = $('#app-capture-panel');
+  if (panel && typeof IntersectionObserver !== 'undefined') {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          refreshAppCaptureProcesses();
+          _appCaptureRefreshInterval = setInterval(refreshAppCaptureProcesses, 5000);
+        } else {
+          if (_appCaptureRefreshInterval) {
+            clearInterval(_appCaptureRefreshInterval);
+            _appCaptureRefreshInterval = null;
+          }
+        }
+      }
+    }, { threshold: 0.1 });
+    observer.observe(panel);
+  }
 }
+
+const debouncedSetAppCaptureVolume = debounce((inputName, volumeDb) => {
+  invoke('set_input_volume', { inputName, volumeDb }).catch(() => {});
+}, 60);
 
 async function refreshAppCaptureProcesses() {
   try {
     const processes = await invoke('get_audio_processes');
     const select = $('#app-capture-select');
+    const emptyMsg = $('#app-capture-empty');
     const existing = new Set();
     if (obsState) {
       for (const input of Object.values(obsState.inputs)) {
@@ -6229,11 +6255,17 @@ async function refreshAppCaptureProcesses() {
         }
       }
     }
-    select.innerHTML = '<option value="">Select process...</option>' +
-      processes
-        .filter(p => !existing.has('App: ' + p.name.replace('.exe', '')))
-        .map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
+    const filtered = processes.filter(p => {
+      const label = p.displayName || p.name.replace('.exe', '');
+      return !existing.has('App: ' + label);
+    });
+    select.innerHTML = '<option value="">Select audio source...</option>' +
+      filtered
+        .map(p => `<option value="${esc(p.name)}" data-display="${esc(p.displayName)}">${esc(p.displayName)}</option>`)
         .join('');
+    if (emptyMsg) {
+      emptyMsg.hidden = filtered.length > 0;
+    }
   } catch (e) {
     scWarn('Failed to refresh processes:', e);
   }
@@ -6252,12 +6284,23 @@ function renderActiveCaptures() {
     return;
   }
 
-  container.innerHTML = captures.map(c => `
-    <div class="app-capture-item">
-      <span class="app-capture-item-name">${esc(c.name)}</span>
-      <button class="app-capture-remove-btn" data-input="${esc(c.name)}">Remove</button>
-    </div>
-  `).join('');
+  container.innerHTML = captures.map(c => {
+    const volDb = c.volumeDb != null ? c.volumeDb : 0;
+    const muted = !!c.muted;
+    const dbText = volDb <= -96 ? '-inf' : volDb.toFixed(1);
+    return `
+    <div class="app-capture-item${muted ? ' muted' : ''}" data-input="${esc(c.name)}">
+      <div class="app-capture-item-header">
+        <span class="app-capture-item-name">${esc(c.name)}</span>
+        <button class="app-capture-remove-btn" data-input="${esc(c.name)}">Remove</button>
+      </div>
+      <div class="app-capture-item-controls">
+        <button class="app-capture-mute-btn${muted ? ' muted' : ''}" data-input="${esc(c.name)}">${muted ? 'Unmute' : 'Mute'}</button>
+        <input type="range" class="app-capture-slider" min="-100" max="26" step="0.1" value="${volDb}" data-input="${esc(c.name)}">
+        <span class="app-capture-db">${dbText} dB</span>
+      </div>
+    </div>`;
+  }).join('');
 
   container.querySelectorAll('.app-capture-remove-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -6267,6 +6310,32 @@ function renderActiveCaptures() {
       } catch (e) {
         showFrameDropAlert('Remove failed: ' + e);
       }
+    });
+  });
+
+  container.querySelectorAll('.app-capture-mute-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const inputName = btn.dataset.input;
+      try {
+        await invoke('toggle_input_mute', { inputName });
+        const item = btn.closest('.app-capture-item');
+        const wasMuted = btn.classList.contains('muted');
+        btn.classList.toggle('muted');
+        btn.textContent = wasMuted ? 'Mute' : 'Unmute';
+        if (item) item.classList.toggle('muted');
+      } catch (e) {
+        showFrameDropAlert('Mute failed: ' + e);
+      }
+    });
+  });
+
+  container.querySelectorAll('.app-capture-slider').forEach(slider => {
+    slider.addEventListener('input', () => {
+      const inputName = slider.dataset.input;
+      const volumeDb = parseFloat(slider.value);
+      const dbSpan = slider.parentElement.querySelector('.app-capture-db');
+      if (dbSpan) dbSpan.textContent = (volumeDb <= -96 ? '-inf' : volumeDb.toFixed(1)) + ' dB';
+      debouncedSetAppCaptureVolume(inputName, volumeDb);
     });
   });
 }
@@ -6920,6 +6989,39 @@ async function handleSpecKnobChange(sourceName, knob, value) {
 // ── Video Editor Module ──
 // ══════════════════════════════════════════════════════
 
+const CAPTION_THEMES = {
+  clean: {
+    name: 'Clean', fontName: 'Arial', fontSize: 48, primaryColor: '#ffffff',
+    outlineColor: '#000000', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
+    bold: false, italic: false, alignment: 2, marginV: 40,
+  },
+  bold_impact: {
+    name: 'Bold Impact', fontName: 'Impact', fontSize: 56, primaryColor: '#ffffff',
+    outlineColor: '#000000', shadowColor: '#000000', outlineWidth: 3, shadowDepth: 2,
+    bold: true, italic: false, alignment: 2, marginV: 40,
+  },
+  neon: {
+    name: 'Neon', fontName: 'Segoe UI', fontSize: 48, primaryColor: '#00ffff',
+    outlineColor: '#00ffff', shadowColor: '#00ffff', outlineWidth: 3, shadowDepth: 0,
+    bold: false, italic: false, alignment: 2, marginV: 40, glow: true,
+  },
+  party: {
+    name: 'Party', fontName: 'Comic Sans MS', fontSize: 52, primaryColor: '#ffff00',
+    outlineColor: '#ff00ff', shadowColor: '#000000', outlineWidth: 2, shadowDepth: 2,
+    bold: false, italic: false, alignment: 2, marginV: 40,
+  },
+  retro: {
+    name: 'Retro', fontName: 'Courier New', fontSize: 44, primaryColor: '#00ff00',
+    outlineColor: '#003300', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
+    bold: false, italic: false, alignment: 2, marginV: 40,
+  },
+  handwritten: {
+    name: 'Handwritten', fontName: 'Segoe Script', fontSize: 46, primaryColor: '#ffffff',
+    outlineColor: '#222222', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
+    bold: false, italic: true, alignment: 2, marginV: 40,
+  },
+};
+
 const ve = {
   ffmpegReady: false,
   videoLoaded: false,
@@ -6937,6 +7039,17 @@ const ve = {
   dragOverlay: null,
   dirty: false,
   projectPath: null,
+  captions: [],
+  captionStyle: CAPTION_THEMES.clean,
+  narrating: false,
+  nextCaptionId: 1,
+  narrationInterim: '',
+  narrationSegStart: 0,
+  narrationRecognition: null,
+  narrationStream: null,
+  narrationAnalyser: null,
+  narrationAudioCtx: null,
+  captionEditorOpen: false,
 };
 
 function convertFileSrc(path) {
@@ -7045,6 +7158,20 @@ async function initVideoEditor() {
   $('#btn-ve-add-text')?.addEventListener('click', veAddTextOverlay);
   $('#btn-ve-add-image')?.addEventListener('click', veAddImageOverlay);
   $('#btn-ve-add-watermark')?.addEventListener('click', veAddWatermark);
+
+  $('#btn-ve-narrate')?.addEventListener('click', veToggleNarrationStrip);
+  $('#btn-ve-narrate-record')?.addEventListener('click', veStartNarration);
+  $('#btn-ve-narrate-stop')?.addEventListener('click', veStopNarration);
+  $('#ve-caption-theme')?.addEventListener('change', veOnThemeChange);
+  $('#btn-ve-captions-toggle')?.addEventListener('click', veToggleCaptionEditor);
+  $('#btn-ve-caption-merge')?.addEventListener('click', veMergeCaptions);
+  $('#btn-ve-caption-split')?.addEventListener('click', veSplitCaption);
+  $('#btn-ve-caption-clear')?.addEventListener('click', veClearAllCaptions);
+  $('#btn-ve-caption-close')?.addEventListener('click', () => {
+    ve.captionEditorOpen = false;
+    const editor = $('#ve-caption-editor');
+    if (editor) editor.hidden = true;
+  });
 
   $('#btn-export-start')?.addEventListener('click', veStartExport);
   $('#btn-export-cancel')?.addEventListener('click', veCancelExport);
@@ -7237,6 +7364,11 @@ async function veLoadVideo(sourcePath) {
     ve.undoStack = [];
     ve.overlays = [];
     ve.selectedOverlay = null;
+    ve.captions = [];
+    ve.nextCaptionId = 1;
+    ve.captionStyle = CAPTION_THEMES.clean;
+    ve.narrationInterim = '';
+    if (ve.narrating) veStopNarration();
     ve.videoLoaded = true;
 
     const infoBar = $('#ve-info-bar');
@@ -7255,6 +7387,7 @@ async function veLoadVideo(sourcePath) {
 
     veStartTimelineRender();
     veRenderOverlayList();
+    veUpdateCaptionCount();
   } catch (e) {
     console.error('Failed to load video:', e);
   }
@@ -7322,6 +7455,13 @@ function veDrawTimeline() {
     const x2 = (ov.end_time / duration) * w;
     ctx.fillStyle = ov.id === ve.selectedOverlay ? 'rgba(212,160,64,0.4)' : 'rgba(212,160,64,0.15)';
     ctx.fillRect(x1, h - 10, x2 - x1, 6);
+  }
+
+  for (const cap of ve.captions) {
+    const x1 = (cap.videoStart / duration) * w;
+    const x2 = (cap.videoEnd / duration) * w;
+    ctx.fillStyle = 'rgba(80,140,220,0.3)';
+    ctx.fillRect(x1, h - 18, x2 - x1, 6);
   }
 
   const video = $('#ve-video');
@@ -7573,6 +7713,355 @@ function veDeleteSelectedOverlay() {
   veRenderOverlayList();
 }
 
+// ── Narration Engine ──
+
+function veToggleNarrationStrip() {
+  const strip = $('#ve-narration-strip');
+  if (!strip) return;
+  strip.hidden = !strip.hidden;
+  $('#btn-ve-narrate').classList.toggle('active', !strip.hidden);
+  if (strip.hidden && ve.narrating) veStopNarration();
+}
+
+async function veStartNarration() {
+  if (ve.narrating) return;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    showToast('Speech recognition not supported in this browser');
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    ve.narrationStream = stream;
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    ve.narrationAudioCtx = audioCtx;
+    ve.narrationAnalyser = analyser;
+    veAnimateMicMeter();
+  } catch (e) {
+    showToast('Microphone access denied');
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  let restartCount = 0;
+  const maxRestarts = 50;
+
+  recognition.onresult = (event) => {
+    const video = $('#ve-video');
+    if (!video) return;
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        const text = result[0].transcript.trim();
+        if (text) {
+          ve.captions.push({
+            id: 'cap_' + ve.nextCaptionId++,
+            text,
+            videoStart: ve.narrationSegStart,
+            videoEnd: video.currentTime,
+          });
+          ve.dirty = true;
+          veUpdateCaptionCount();
+          if (ve.captionEditorOpen) veRenderCaptionList();
+        }
+        ve.narrationSegStart = video.currentTime;
+        ve.narrationInterim = '';
+      } else {
+        interim += result[0].transcript;
+      }
+    }
+    if (interim) ve.narrationInterim = interim;
+  };
+
+  recognition.onend = () => {
+    if (ve.narrating && restartCount < maxRestarts) {
+      restartCount++;
+      try { recognition.start(); } catch (_) {}
+    }
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech') return;
+    console.warn('Speech recognition error:', e.error);
+    if (e.error === 'not-allowed') {
+      veStopNarration();
+      showToast('Microphone permission denied');
+    }
+  };
+
+  ve.narrationRecognition = recognition;
+  ve.narrating = true;
+  ve.narrationInterim = '';
+  const video = $('#ve-video');
+  ve.narrationSegStart = video ? video.currentTime : 0;
+
+  recognition.start();
+  if (video && video.paused) video.play();
+
+  $('#btn-ve-narrate-record').hidden = true;
+  $('#btn-ve-narrate-stop').hidden = false;
+  $('#btn-ve-narrate-record').classList.add('recording');
+  $('#ve-narration-status').textContent = 'Listening...';
+}
+
+function veStopNarration() {
+  if (!ve.narrating) return;
+  ve.narrating = false;
+
+  if (ve.narrationRecognition) {
+    try { ve.narrationRecognition.stop(); } catch (_) {}
+    ve.narrationRecognition = null;
+  }
+
+  if (ve.narrationInterim) {
+    const video = $('#ve-video');
+    if (video) {
+      ve.captions.push({
+        id: 'cap_' + ve.nextCaptionId++,
+        text: ve.narrationInterim.trim(),
+        videoStart: ve.narrationSegStart,
+        videoEnd: video.currentTime,
+      });
+      ve.dirty = true;
+    }
+    ve.narrationInterim = '';
+  }
+
+  if (ve.narrationStream) {
+    ve.narrationStream.getTracks().forEach(t => t.stop());
+    ve.narrationStream = null;
+  }
+  if (ve.narrationAudioCtx) {
+    ve.narrationAudioCtx.close();
+    ve.narrationAudioCtx = null;
+    ve.narrationAnalyser = null;
+  }
+
+  const video = $('#ve-video');
+  if (video && !video.paused) video.pause();
+
+  $('#btn-ve-narrate-record').hidden = false;
+  $('#btn-ve-narrate-stop').hidden = true;
+  $('#btn-ve-narrate-record').classList.remove('recording');
+  $('#ve-narration-status').textContent = 'Stopped';
+  const fill = $('#ve-mic-meter-fill');
+  if (fill) fill.style.width = '0%';
+
+  veUpdateCaptionCount();
+  if (ve.captionEditorOpen) veRenderCaptionList();
+}
+
+function veAnimateMicMeter() {
+  if (!ve.narrating || !ve.narrationAnalyser) return;
+  const data = new Uint8Array(ve.narrationAnalyser.frequencyBinCount);
+  ve.narrationAnalyser.getByteFrequencyData(data);
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i];
+  const avg = sum / data.length;
+  const pct = Math.min(100, (avg / 128) * 100);
+  const fill = $('#ve-mic-meter-fill');
+  if (fill) fill.style.width = pct + '%';
+  requestAnimationFrame(veAnimateMicMeter);
+}
+
+function veOnThemeChange() {
+  const sel = $('#ve-caption-theme');
+  if (!sel) return;
+  ve.captionStyle = CAPTION_THEMES[sel.value] || CAPTION_THEMES.clean;
+}
+
+function veUpdateCaptionCount() {
+  const btn = $('#btn-ve-captions-toggle');
+  if (btn) btn.textContent = `Captions (${ve.captions.length})`;
+}
+
+// ── Caption Editor ──
+
+function veToggleCaptionEditor() {
+  ve.captionEditorOpen = !ve.captionEditorOpen;
+  const editor = $('#ve-caption-editor');
+  if (editor) editor.hidden = !ve.captionEditorOpen;
+  if (ve.captionEditorOpen) veRenderCaptionList();
+}
+
+function veRenderCaptionList() {
+  const list = $('#ve-caption-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (let i = 0; i < ve.captions.length; i++) {
+    const cap = ve.captions[i];
+    const row = document.createElement('div');
+    row.className = 've-caption-row';
+    row.dataset.index = i;
+
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.value = cap.text;
+    textInput.addEventListener('input', () => {
+      cap.text = textInput.value;
+      ve.dirty = true;
+    });
+
+    const startInput = document.createElement('input');
+    startInput.type = 'number';
+    startInput.step = '0.1';
+    startInput.min = '0';
+    startInput.value = cap.videoStart.toFixed(1);
+    startInput.title = 'Start (s)';
+    startInput.addEventListener('change', () => {
+      cap.videoStart = parseFloat(startInput.value) || 0;
+      ve.dirty = true;
+    });
+
+    const endInput = document.createElement('input');
+    endInput.type = 'number';
+    endInput.step = '0.1';
+    endInput.min = '0';
+    endInput.value = cap.videoEnd.toFixed(1);
+    endInput.title = 'End (s)';
+    endInput.addEventListener('change', () => {
+      cap.videoEnd = parseFloat(endInput.value) || 0;
+      ve.dirty = true;
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 've-caption-delete';
+    delBtn.textContent = '\u00d7';
+    delBtn.title = 'Delete caption';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ve.captions.splice(i, 1);
+      ve.dirty = true;
+      veRenderCaptionList();
+      veUpdateCaptionCount();
+    });
+
+    row.addEventListener('click', () => {
+      const video = $('#ve-video');
+      if (video) video.currentTime = cap.videoStart;
+    });
+
+    row.appendChild(textInput);
+    row.appendChild(startInput);
+    row.appendChild(endInput);
+    row.appendChild(delBtn);
+    list.appendChild(row);
+  }
+}
+
+function veMergeCaptions() {
+  if (ve.captions.length < 2) return;
+  const last = ve.captions[ve.captions.length - 1];
+  const prev = ve.captions[ve.captions.length - 2];
+  prev.text = prev.text + ' ' + last.text;
+  prev.videoEnd = last.videoEnd;
+  ve.captions.pop();
+  ve.dirty = true;
+  veRenderCaptionList();
+  veUpdateCaptionCount();
+}
+
+function veSplitCaption() {
+  if (ve.captions.length === 0) return;
+  const video = $('#ve-video');
+  const t = video ? video.currentTime : 0;
+  const idx = ve.captions.findIndex(c => t >= c.videoStart && t <= c.videoEnd);
+  if (idx < 0) return;
+  const cap = ve.captions[idx];
+  const words = cap.text.split(' ');
+  if (words.length < 2) return;
+  const mid = Math.ceil(words.length / 2);
+  const newCap = {
+    id: 'cap_' + ve.nextCaptionId++,
+    text: words.slice(mid).join(' '),
+    videoStart: t,
+    videoEnd: cap.videoEnd,
+  };
+  cap.text = words.slice(0, mid).join(' ');
+  cap.videoEnd = t;
+  ve.captions.splice(idx + 1, 0, newCap);
+  ve.dirty = true;
+  veRenderCaptionList();
+  veUpdateCaptionCount();
+}
+
+function veClearAllCaptions() {
+  if (ve.captions.length === 0) return;
+  if (!confirm('Remove all captions?')) return;
+  ve.captions = [];
+  ve.nextCaptionId = 1;
+  ve.dirty = true;
+  veRenderCaptionList();
+  veUpdateCaptionCount();
+}
+
+// ── Caption Canvas Rendering ──
+
+function veDrawCaptionOnCanvas(ctx, text, theme, canvasW, canvasH) {
+  if (!text) return;
+  const scale = canvasW / 1920;
+  const fontSize = Math.round(theme.fontSize * scale);
+  const weight = theme.bold ? 'bold ' : '';
+  const style = theme.italic ? 'italic ' : '';
+  ctx.font = `${style}${weight}${fontSize}px "${theme.fontName}", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+
+  const maxWidth = canvasW * 0.85;
+  const words = text.split(' ');
+  const lines = [];
+  let currentLine = '';
+  for (const word of words) {
+    const test = currentLine ? currentLine + ' ' + word : word;
+    if (ctx.measureText(test).width > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = test;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+
+  const lineHeight = fontSize * 1.2;
+  const marginV = Math.round(theme.marginV * scale);
+  const x = canvasW / 2;
+  let y = canvasH - marginV;
+
+  ctx.save();
+  const outlineW = Math.max(1, Math.round(theme.outlineWidth * scale));
+
+  if (theme.glow) {
+    ctx.shadowColor = theme.shadowColor;
+    ctx.shadowBlur = 20 * scale;
+  } else if (theme.shadowDepth > 0) {
+    ctx.shadowColor = theme.shadowColor;
+    ctx.shadowBlur = 2;
+    ctx.shadowOffsetX = theme.shadowDepth * scale;
+    ctx.shadowOffsetY = theme.shadowDepth * scale;
+  }
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    ctx.strokeStyle = theme.outlineColor;
+    ctx.lineWidth = outlineW * 2;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(lines[i], x, y);
+    ctx.fillStyle = theme.primaryColor;
+    ctx.fillText(lines[i], x, y);
+    y -= lineHeight;
+  }
+  ctx.restore();
+}
+
 function veRenderOverlaysOnCanvas() {
   const canvas = $('#ve-overlay-canvas');
   const video = $('#ve-video');
@@ -7606,6 +8095,15 @@ function veRenderOverlaysOnCanvas() {
       }
     }
     ctx.globalAlpha = 1.0;
+  }
+
+  for (const cap of ve.captions) {
+    if (t >= cap.videoStart && t <= cap.videoEnd) {
+      veDrawCaptionOnCanvas(ctx, cap.text, ve.captionStyle, canvas.width, canvas.height);
+    }
+  }
+  if (ve.narrating && ve.narrationInterim) {
+    veDrawCaptionOnCanvas(ctx, ve.narrationInterim, ve.captionStyle, canvas.width, canvas.height);
   }
 }
 
@@ -7705,11 +8203,12 @@ function veShowExportModal() {
     $('#export-progress-section').hidden = true;
     $('#btn-export-start').hidden = false;
     $('#btn-export-cancel').hidden = true;
-    // Set default filename
     const srcName = ve.sourcePath.split(/[/\\]/).pop().replace(/\.[^.]+$/, '');
     const srcDir = veDefaultProjectDir();
     const format = $('#export-format').value || 'mp4';
     $('#export-filename').value = `${srcDir}\\${srcName} - Edited.${format}`;
+    const capRow = $('#export-captions-row');
+    if (capRow) capRow.hidden = ve.captions.length === 0;
   }
 }
 
@@ -7739,6 +8238,17 @@ async function veStartExport() {
     return;
   }
 
+  const captionsMode = ve.captions.length > 0 ? ($('#export-captions-mode')?.value || 'burn') : 'none';
+  let captionExportReq = null;
+  if (captionsMode === 'burn' || captionsMode === 'both') {
+    captionExportReq = {
+      captions: ve.captions,
+      style: ve.captionStyle,
+      videoWidth: ve.videoInfo.width,
+      videoHeight: ve.videoInfo.height,
+    };
+  }
+
   const request = {
     sourcePath: ve.sourcePath,
     segments: ve.segments,
@@ -7748,6 +8258,7 @@ async function veStartExport() {
     videoCodec,
     quality,
     resolution: null,
+    captions: captionExportReq,
   };
 
   $('#export-progress-section').hidden = false;
@@ -7756,6 +8267,20 @@ async function veStartExport() {
   $('#export-progress-fill').style.width = '0%';
   $('#export-progress-pct').textContent = '0%';
   $('#export-eta').textContent = '';
+
+  if (captionsMode === 'srt' || captionsMode === 'both') {
+    const srtPath = outputPath.replace(/\.[^.]+$/, '.srt');
+    try {
+      await invoke('export_srt', { captions: ve.captions, outputPath: srtPath });
+      showToast('SRT saved: ' + srtPath.split(/[/\\]/).pop());
+    } catch (e) {
+      console.warn('SRT export failed:', e);
+    }
+  }
+
+  if (captionsMode === 'srt') {
+    request.captions = null;
+  }
 
   try {
     await invoke('export_video', { request });
@@ -7838,6 +8363,8 @@ async function veSaveProjectToPath(path) {
     segments: ve.segments,
     overlays: ve.overlays,
     duration: ve.videoInfo.duration,
+    captions: ve.captions,
+    captionStyle: ve.captionStyle,
   };
   try {
     await invoke('save_edit_project', { project, path });
@@ -7911,6 +8438,17 @@ function veHandleKeyboard(e) {
         veShowExportModal();
       }
       break;
+    case 'n':
+    case 'N':
+      e.preventDefault();
+      if (ve.narrating) {
+        veStopNarration();
+      } else {
+        const strip = $('#ve-narration-strip');
+        if (strip && strip.hidden) veToggleNarrationStrip();
+        veStartNarration();
+      }
+      break;
   }
 }
 
@@ -7951,7 +8489,10 @@ function handleVideoEditorActions(actions) {
           ve.overlays = [];
           ve.selectedOverlay = null;
           ve.nextOverlayId = 1;
+          ve.captions = [];
+          ve.nextCaptionId = 1;
           veRenderOverlayList();
+          veUpdateCaptionCount();
           if (video) video.currentTime = 0;
         }
         break;

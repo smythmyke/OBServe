@@ -544,12 +544,13 @@
         <h2>App Capture</h2>
         <div class="app-capture-controls">
           <div class="app-capture-add-row">
-            <select class="app-capture-select" id="app-capture-select"><option value="">Select process...</option></select>
+            <select class="app-capture-select" id="app-capture-select"><option value="">Select audio source...</option></select>
             <button class="btn-secondary" id="btn-app-capture-refresh" title="Refresh process list">&#x21bb;</button>
             <button class="hw-btn" id="btn-app-capture-add">Add Capture</button>
           </div>
+          <div id="app-capture-empty" class="app-capture-empty" hidden>No audio detected. Play audio in an app, then click refresh.</div>
           <div class="app-capture-list" id="app-capture-list"></div>
-          <p class="app-capture-hint">Capture audio from individual applications into OBS.</p>
+          <p class="app-capture-hint">Only apps currently producing audio are shown.</p>
         </div>
       </section>
 
@@ -641,7 +642,37 @@
           <button class="ve-ctrl-btn" id="btn-ve-add-text">+ Text</button>
           <button class="ve-ctrl-btn" id="btn-ve-add-image">+ Image</button>
           <button class="ve-ctrl-btn" id="btn-ve-add-watermark">+ Watermark</button>
+          <button class="ve-ctrl-btn ve-narrate-btn" id="btn-ve-narrate">Narrate</button>
+          <button class="ve-ctrl-btn" id="btn-ve-captions-toggle">Captions (0)</button>
           <div class="ve-overlay-list" id="ve-overlay-list"></div>
+        </div>
+
+        <div class="ve-narration-strip" id="ve-narration-strip" hidden>
+          <button class="ve-ctrl-btn ve-rec-btn" id="btn-ve-narrate-record">Record</button>
+          <button class="ve-ctrl-btn" id="btn-ve-narrate-stop" hidden>Stop</button>
+          <select id="ve-caption-theme" class="ve-theme-select">
+            <option value="clean">Clean</option>
+            <option value="bold_impact">Bold Impact</option>
+            <option value="neon">Neon</option>
+            <option value="party">Party</option>
+            <option value="retro">Retro</option>
+            <option value="handwritten">Handwritten</option>
+          </select>
+          <div class="ve-mic-meter" id="ve-mic-meter"><div class="ve-mic-meter-fill" id="ve-mic-meter-fill"></div></div>
+          <span class="ve-narration-status" id="ve-narration-status">Ready</span>
+        </div>
+
+        <div class="ve-caption-editor" id="ve-caption-editor" hidden>
+          <div class="ve-caption-editor-header">
+            <span>Captions</span>
+            <div class="ve-caption-editor-actions">
+              <button class="ve-ctrl-btn" id="btn-ve-caption-merge">Merge</button>
+              <button class="ve-ctrl-btn" id="btn-ve-caption-split">Split</button>
+              <button class="ve-ctrl-btn" id="btn-ve-caption-clear">Clear All</button>
+            </div>
+            <button class="ve-props-close" id="btn-ve-caption-close">&times;</button>
+          </div>
+          <div class="ve-caption-list" id="ve-caption-list"></div>
         </div>
 
         <div class="ve-file-browser" id="ve-file-browser" hidden>
@@ -801,6 +832,15 @@
               <option value="h264_nvenc">H.264 (NVENC)</option>
               <option value="h264_amf">H.264 (AMF)</option>
               <option value="h264_qsv">H.264 (QSV)</option>
+            </select>
+          </div>
+          <div class="export-row" id="export-captions-row" hidden>
+            <label>Captions</label>
+            <select id="export-captions-mode">
+              <option value="burn">Burn into video</option>
+              <option value="srt">Export as SRT</option>
+              <option value="both">Both</option>
+              <option value="none">None</option>
             </select>
           </div>
         </div>

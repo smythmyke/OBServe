@@ -1,7 +1,7 @@
 # OBServe — Master TODO
 
 > Single source of truth for what's done and what's next.
-> Updated: 2026-02-15
+> Updated: 2026-02-22
 
 ## Completed Work
 
@@ -75,6 +75,22 @@
 - Fire-on-response screenshot loop for non-live panes (~5-10 FPS vs old 1 FPS)
 - Video device enumeration (DirectShow/MediaFoundation) and camera panel UI
 
+### Live Scene Preview via OBS Virtual Camera — DONE
+- Real-time ~55 FPS scene preview using OBS Virtual Camera + getUserMedia
+- Video device enumeration (DirectShow/MediaFoundation) and camera panel UI
+
+### Video Review & Editor — DONE
+- FFmpeg detection (from OBS install), MKV→MP4 remux, player, timeline, trim/split, overlays, export
+
+### Module Store — DONE
+- Module registry, Ed25519 license verification, feature gating, Store UI, Cloudflare Worker for Stripe
+
+### App Capture Upgrade — DONE
+- WASAPI audio session enumeration (only apps producing audio, not all processes)
+- Friendly display names via GetFileVersionInfoW (FileDescription) with title-case fallback
+- Auto-refresh dropdown via IntersectionObserver when panel visible (5s interval)
+- Inline volume slider + mute button + dB readout per captured app
+
 ### Bug Fixes & Improvements
 - [x] SourceFilterSettingsChanged event — real-time UI sync when filters edited in OBS
 - [x] getWidgetMatchedNames / post-AI-refresh fix — knob widgets now survive AI-triggered filter updates
@@ -96,6 +112,53 @@
 ---
 
 ## Active / Next Up
+
+### Streamer Tab — NEW
+> A dedicated top-level tab for live streaming workflows, alongside Audio and Video tabs.
+- [ ] **Tab scaffolding** — add "Streamer" tab to toolbar, route to new panel container
+- [ ] **Sound Touch Pad** — grid of configurable trigger buttons for SFX/stingers/jingles during live streams
+  - [ ] Assign audio files (mp3/wav/ogg) to pad slots
+  - [ ] One-tap playback (play-through or toggle)
+  - [ ] Volume per pad + master pad volume
+  - [ ] Visual feedback (glow/pulse on trigger)
+  - [ ] Pad banks / pages (e.g., 8 pads per page, multiple pages)
+- [ ] **App Capture panel** — move/mirror existing app capture controls into Streamer tab
+- [ ] **Live Scene Switcher** — compact scene buttons with thumbnails for quick switching mid-stream
+- [ ] **Stream Health widget** — compact bitrate/drop/CPU readout always visible during stream
+- [ ] **Chat overlay controls** (future) — manage chat source visibility, font, position
+- [ ] **Go Live / End Stream controls** — one-click start/stop streaming with confirmation
+
+### Live Narration-to-Text (Captioning) — NEW
+> Speak while watching video playback; speech becomes styled text overlays baked into the export.
+- [ ] **STT integration** — real-time speech-to-text during video playback
+  - [ ] Whisper.cpp (local, primary) for transcription
+  - [ ] Web Speech API (free fallback)
+  - [ ] Sync transcribed text segments to video timeline positions
+- [ ] **Narration recording mode** — UI to start/stop narration pass over a video
+  - [ ] Play video, capture speech, generate timed text segments
+  - [ ] Show live preview of text appearing on video as user speaks
+  - [ ] Pause/resume support (pausing video pauses capture)
+- [ ] **Themed font styles** — user picks a visual theme for the captions
+  - [ ] Party (bubble letters / balloon style)
+  - [ ] Neon (glowing neon sign effect)
+  - [ ] Handwritten (script/cursive style)
+  - [ ] Retro (pixel / 8-bit style)
+  - [ ] Clean (modern sans-serif, standard subtitles)
+  - [ ] Bold Impact (meme-style bold white with black outline)
+  - [ ] Custom (user picks font, color, size, outline, shadow)
+- [ ] **Caption editor** — review/edit generated text segments on timeline
+  - [ ] Edit text content, adjust start/end timing
+  - [ ] Drag segments on timeline to reposition
+  - [ ] Delete / add segments manually
+  - [ ] Split / merge segments
+- [ ] **Position & animation** — control where and how text appears
+  - [ ] Position presets (bottom center, top, custom)
+  - [ ] Word-by-word reveal (karaoke-style) vs full sentence appear
+  - [ ] Fade in/out transitions
+- [ ] **Export with burned-in captions** — FFmpeg renders text overlays into final video
+  - [ ] ASS/SRT subtitle generation from segments
+  - [ ] FFmpeg `-vf subtitles=` or drawtext filter for burn-in
+  - [ ] Option to export as separate SRT file (for YouTube/platform upload)
 
 ### Filter Expansion — Remaining Items
 - [x] **Option E: OBS Peak Metering** — subscribe to InputVolumeMeters for post-filter levels

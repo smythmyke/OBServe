@@ -112,6 +112,8 @@ pub struct ExportRequest {
     pub video_codec: String,
     pub quality: String,
     pub resolution: Option<String>,
+    #[serde(default)]
+    pub captions: Option<CaptionExportRequest>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -130,6 +132,44 @@ pub struct EditProjectSave {
     pub segments: Vec<Segment>,
     pub overlays: Vec<Overlay>,
     pub duration: f64,
+    #[serde(default)]
+    pub captions: Vec<CaptionSegment>,
+    #[serde(default)]
+    pub caption_style: Option<CaptionStyle>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionSegment {
+    pub id: String,
+    pub text: String,
+    pub video_start: f64,
+    pub video_end: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionStyle {
+    pub font_name: String,
+    pub font_size: u32,
+    pub primary_color: String,
+    pub outline_color: String,
+    pub shadow_color: String,
+    pub outline_width: u32,
+    pub shadow_depth: u32,
+    pub bold: bool,
+    pub italic: bool,
+    pub alignment: u32,
+    pub margin_v: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionExportRequest {
+    pub captions: Vec<CaptionSegment>,
+    pub style: CaptionStyle,
+    pub video_width: u32,
+    pub video_height: u32,
 }
 
 // ---- FFmpeg Detection ----
@@ -832,6 +872,12 @@ pub async fn export_video(
     Ok(())
 }
 
+fn escape_ass_path_for_ffmpeg(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:")
+}
+
 async fn run_export(
     ffmpeg: &Path,
     temp_dir: &Path,
@@ -850,7 +896,22 @@ async fn run_export(
 
     let total_duration: f64 = segments.iter().map(|s| s.end - s.start).sum();
 
-    if !has_overlays && segments.len() == 1 {
+    let ass_path = if let Some(ref cap_req) = request.captions {
+        if !cap_req.captions.is_empty() {
+            let content = generate_ass_content(cap_req);
+            let p = temp_dir.join("export_captions.ass");
+            std::fs::write(&p, &content)
+                .map_err(|e| format!("Write ASS failed: {}", e))?;
+            Some(p)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let has_captions = ass_path.is_some();
+
+    if !has_overlays && !has_captions && segments.len() == 1 {
         let seg = &segments[0];
         let mut cmd = tokio::process::Command::new(ffmpeg);
         cmd.args([
@@ -875,7 +936,40 @@ async fn run_export(
         return run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
     }
 
-    if !has_overlays {
+    if !has_overlays && has_captions && segments.len() == 1 {
+        let seg = &segments[0];
+        let escaped = escape_ass_path_for_ffmpeg(ass_path.as_ref().unwrap());
+        let vf = format!("ass='{}'", escaped);
+        let mut cmd = tokio::process::Command::new(ffmpeg);
+        cmd.args([
+            "-y",
+            "-progress",
+            "pipe:1",
+            "-ss",
+            &format!("{:.3}", seg.start),
+            "-to",
+            &format!("{:.3}", seg.end),
+            "-i",
+            &request.source_path,
+            "-vf",
+            &vf,
+            "-c:v",
+            &request.video_codec,
+            "-crf",
+            crf,
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            &request.output_path,
+        ]);
+
+        let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
+        if let Some(ref p) = ass_path { let _ = std::fs::remove_file(p); }
+        return result;
+    }
+
+    if !has_overlays && !has_captions {
         let seg_files = split_segments(ffmpeg, temp_dir, &request.source_path, segments, cancel).await?;
         let concat_file = temp_dir.join("export_concat.txt");
         let concat_content: String = seg_files
@@ -913,7 +1007,8 @@ async fn run_export(
         return result;
     }
 
-    let filter = build_filter_complex(segments, &request.overlays, &request.source_path);
+    let ass_ref = ass_path.as_deref();
+    let filter = build_filter_complex(segments, &request.overlays, &request.source_path, ass_ref);
     let mut cmd = tokio::process::Command::new(ffmpeg);
     cmd.args(["-y", "-progress", "pipe:1", "-i", &request.source_path]);
 
@@ -941,7 +1036,9 @@ async fn run_export(
         &request.output_path,
     ]);
 
-    run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await
+    let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
+    if let Some(ref p) = ass_path { let _ = std::fs::remove_file(p); }
+    result
 }
 
 async fn split_segments(
@@ -993,7 +1090,7 @@ async fn split_segments(
     Ok(files)
 }
 
-fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &str) -> String {
+fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &str, captions_ass_path: Option<&Path>) -> String {
     let mut filter = String::new();
     let n = segments.len();
 
@@ -1070,6 +1167,15 @@ fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &st
             }
         }
         current_v = out_label;
+    }
+
+    if let Some(ass_p) = captions_ass_path {
+        let escaped = escape_ass_path_for_ffmpeg(ass_p);
+        let out = "vcap";
+        filter.push_str(&format!(
+            "[{current_v}]ass='{escaped}'[{out}]; ",
+        ));
+        current_v = out.to_string();
     }
 
     filter.push_str(&format!("[{current_v}]copy[vfinal]; [aconcat]copy[afinal]"));
@@ -1172,6 +1278,125 @@ pub async fn load_edit_project(path: String) -> Result<EditProjectSave, String> 
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("Read failed: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Parse failed: {}", e))
+}
+
+// ---- Caption / Subtitle Generation ----
+
+fn hex_to_ass_color(hex: &str) -> String {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() >= 6 {
+        let r = &hex[0..2];
+        let g = &hex[2..4];
+        let b = &hex[4..6];
+        let a = if hex.len() >= 8 { &hex[6..8] } else { "00" };
+        format!("&H{}{}{}{}", a.to_uppercase(), b.to_uppercase(), g.to_uppercase(), r.to_uppercase())
+    } else {
+        "&H00FFFFFF".to_string()
+    }
+}
+
+fn format_ass_time(seconds: f64) -> String {
+    let total_cs = (seconds * 100.0).round() as u64;
+    let cs = total_cs % 100;
+    let total_s = total_cs / 100;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    format!("{}:{:02}:{:02}.{:02}", h, m, s, cs)
+}
+
+fn generate_ass_content(req: &CaptionExportRequest) -> String {
+    let style = &req.style;
+    let mut ass = String::new();
+
+    ass.push_str("[Script Info]\r\n");
+    ass.push_str("ScriptType: v4.00+\r\n");
+    ass.push_str(&format!("PlayResX: {}\r\n", req.video_width));
+    ass.push_str(&format!("PlayResY: {}\r\n", req.video_height));
+    ass.push_str("WrapStyle: 0\r\n");
+    ass.push_str("ScaledBorderAndShadow: yes\r\n");
+    ass.push_str("\r\n");
+
+    ass.push_str("[V4+ Styles]\r\n");
+    ass.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n");
+    let bold_flag = if style.bold { -1 } else { 0 };
+    let italic_flag = if style.italic { -1 } else { 0 };
+    ass.push_str(&format!(
+        "Style: Default,{},{},{},{},{},{},{},{},0,0,100,100,0,0,1,{},{},{},20,20,{},1\r\n",
+        style.font_name,
+        style.font_size,
+        hex_to_ass_color(&style.primary_color),
+        "&H00FFFFFF",
+        hex_to_ass_color(&style.outline_color),
+        hex_to_ass_color(&style.shadow_color),
+        bold_flag,
+        italic_flag,
+        style.outline_width,
+        style.shadow_depth,
+        style.alignment,
+        style.margin_v,
+    ));
+    ass.push_str("\r\n");
+
+    ass.push_str("[Events]\r\n");
+    ass.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n");
+    for cap in &req.captions {
+        let start = format_ass_time(cap.video_start);
+        let end = format_ass_time(cap.video_end);
+        let text = cap.text.replace('\n', "\\N");
+        ass.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{}\r\n",
+            start, end, text
+        ));
+    }
+
+    ass
+}
+
+fn format_srt_time(seconds: f64) -> String {
+    let total_ms = (seconds * 1000.0).round() as u64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
+}
+
+#[tauri::command]
+pub async fn generate_ass_file(
+    state: tauri::State<'_, SharedVideoEditorState>,
+    request: CaptionExportRequest,
+) -> Result<String, String> {
+    let content = generate_ass_content(&request);
+    let s = state.lock().await;
+    let ass_path = s.temp_dir.join("captions.ass");
+    drop(s);
+    std::fs::write(&ass_path, &content)
+        .map_err(|e| format!("Write ASS failed: {}", e))?;
+    Ok(ass_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn export_srt(
+    captions: Vec<CaptionSegment>,
+    output_path: String,
+) -> Result<(), String> {
+    let mut srt = String::new();
+    for (i, cap) in captions.iter().enumerate() {
+        srt.push_str(&format!("{}\r\n", i + 1));
+        srt.push_str(&format!(
+            "{} --> {}\r\n",
+            format_srt_time(cap.video_start),
+            format_srt_time(cap.video_end)
+        ));
+        srt.push_str(&cap.text);
+        srt.push_str("\r\n\r\n");
+    }
+    std::fs::write(&output_path, srt)
+        .map_err(|e| format!("Write SRT failed: {}", e))
 }
 
 // ---- Phase 6: FFmpeg Setup ----

@@ -1137,7 +1137,7 @@ pub async fn set_ducking_config(
 
 #[tauri::command]
 pub async fn get_audio_processes() -> Result<Vec<AudioProcess>, String> {
-    tokio::task::spawn_blocking(app_capture::enumerate_audio_processes)
+    tokio::task::spawn_blocking(app_capture::enumerate_audio_sessions)
         .await
         .map_err(|e| format!("Task failed: {}", e))?
 }
@@ -1147,9 +1147,11 @@ pub async fn add_app_capture(
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
     process_name: String,
+    display_name: Option<String>,
     scene_name: Option<String>,
 ) -> Result<String, String> {
-    let input_name = format!("App: {}", process_name.replace(".exe", ""));
+    let label = display_name.unwrap_or_else(|| process_name.replace(".exe", ""));
+    let input_name = format!("App: {}", label);
 
     {
         let state = obs_state.read().await;
