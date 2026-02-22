@@ -403,7 +403,7 @@ fn run_capture(
 }
 
 #[cfg(windows)]
-fn extract_samples(
+pub(crate) fn extract_samples(
     buffer_ptr: *const u8,
     frame_count: usize,
     channels: usize,

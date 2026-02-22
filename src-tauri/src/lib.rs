@@ -5,6 +5,7 @@ mod audio_monitor;
 mod commands;
 mod ducking;
 mod gemini;
+mod narration_capture;
 mod obs_config;
 mod obs_launcher;
 mod obs_state;
@@ -25,6 +26,7 @@ use audio_monitor::SharedAudioMetrics;
 use commands::SharedObsConnection;
 use ducking::SharedDuckingConfig;
 use gemini::SharedGeminiClient;
+use narration_capture::SharedNarrationCaptureState;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
 use spectrum::SharedSpectrumState;
@@ -61,6 +63,7 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(spectrum::SpectrumState::new())) as SharedSpectrumState)
         .manage(Arc::new(Mutex::new(video_editor::VideoEditorState::new())) as SharedVideoEditorState)
         .manage(Arc::new(RwLock::new(license_state)) as SharedLicenseState)
+        .manage(Arc::new(Mutex::new(narration_capture::NarrationCaptureState::new())) as SharedNarrationCaptureState)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -179,6 +182,12 @@ pub fn run() {
             video_editor::browse_save_location,
             video_editor::generate_ass_file,
             video_editor::export_srt,
+            video_editor::save_narration_audio,
+            narration_capture::check_vb_cable,
+            narration_capture::install_vb_cable,
+            narration_capture::configure_obs_monitoring_for_vbcable,
+            narration_capture::start_narration_capture,
+            narration_capture::stop_narration_capture,
             store::get_store_catalog,
             store::get_license_state,
             store::activate_license_key,

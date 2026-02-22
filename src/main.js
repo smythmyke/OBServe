@@ -344,6 +344,10 @@ function setupEventListeners() {
       if (!e.payload.outputActive) obsState.recordStatus.paused = false;
     }
     updateStreamRecordUI();
+    if (!e.payload.outputActive) {
+      if (e.payload.outputPath) liveCaptions._lastRecordPath = e.payload.outputPath;
+      if (liveCaptions.history.length > 0) liveCaptionPopulateCaptions();
+    }
   });
 
   listen('obs://disconnected', () => {
@@ -845,6 +849,10 @@ function renderPreviewPanes() {
     panesEl.innerHTML = makePreviewPane(current, current || 'No scene', 'scene-preview-program');
   }
   attachLivePreviewToProgram();
+  if (liveCaptions.active) {
+    console.log('[LiveCaptions] renderPreviewPanes triggered re-attach');
+    liveCaptionCreateOverlay();
+  }
 }
 
 function initPreviewResize() {
@@ -3352,6 +3360,8 @@ function showFrameDropAlert(msg) {
   alertTimeout = setTimeout(() => { toast.classList.remove('visible'); }, 10000);
 }
 
+const showToast = showFrameDropAlert;
+
 function showToastWithAction(msg, actionLabel, actionFn) {
   const toast = $('#alert-toast');
   const msgEl = $('#alert-toast-msg');
@@ -3480,6 +3490,358 @@ $('#btn-toggle-stream').addEventListener('click', () => {
 $('#btn-toggle-record').addEventListener('click', () => {
   invoke('toggle_record').catch(err => showFrameDropAlert('Record toggle failed: ' + err));
 });
+
+// --- Live Captions ---
+
+const liveCaptions = {
+  active: false,
+  recognition: null,
+  obsSourceName: 'OBServe Live Captions',
+  theme: 'clean',
+  fadeMs: 5000,
+  faderId: null,
+  history: [],
+  textBoxWidth: 800,
+  textBoxHeight: 100,
+  streamStartTime: null,
+  _lastUpdateMs: 0,
+  _overlayCanvas: null,
+  _overlayRafId: null,
+  _currentText: '',
+  _pendingCaptions: null,
+  _lastRecordPath: null,
+};
+
+const LIVE_CAPTION_FONTS = {
+  clean: { face: 'Inter', size: 28, color: '#ffffff', bgColor: '#000000', bold: false },
+  bold_impact: { face: 'Poppins', size: 36, color: '#ffffff', bgColor: '#000000', bold: true },
+  neon: { face: 'Inter', size: 30, color: '#00ff88', bgColor: '#000000', bold: true },
+  party: { face: 'Poppins', size: 32, color: '#ff69b4', bgColor: '#1a001a', bold: true },
+  retro: { face: 'JetBrains Mono', size: 26, color: '#00ff00', bgColor: '#000000', bold: false },
+  handwritten: { face: 'Poppins', size: 28, color: '#eeeeee', bgColor: '#1a1a1a', bold: false },
+};
+
+function liveCaptionGetCanvasTheme() {
+  const lf = LIVE_CAPTION_FONTS[liveCaptions.theme] || LIVE_CAPTION_FONTS.clean;
+  return {
+    fontName: lf.face, fontSize: lf.size * 1.5, primaryColor: lf.color,
+    outlineColor: '#000000', shadowColor: '#00000080', outlineWidth: 2, shadowDepth: 1,
+    bold: lf.bold, italic: false, alignment: 2, marginV: 30,
+    glow: liveCaptions.theme === 'neon',
+  };
+}
+
+function liveCaptionCreateOverlay() {
+  const hadCanvas = !!liveCaptions._overlayCanvas;
+  if (liveCaptions._overlayCanvas) liveCaptions._overlayCanvas.remove();
+  const paneId = getProgramPaneId();
+  if (!paneId) { console.warn('[LiveCaptions] createOverlay: no paneId'); return; }
+  const pane = document.getElementById(paneId);
+  if (!pane) { console.warn('[LiveCaptions] createOverlay: pane not found for', paneId); return; }
+  const canvas = document.createElement('canvas');
+  canvas.className = 'live-caption-overlay';
+  pane.appendChild(canvas);
+  liveCaptions._overlayCanvas = canvas;
+  console.log('[LiveCaptions] createOverlay:', hadCanvas ? 're-attached' : 'created', 'pane:', paneId);
+}
+
+let _lcRenderLogCount = 0;
+function liveCaptionRenderFrame() {
+  if (!liveCaptions.active) {
+    console.warn('[LiveCaptions] renderFrame: active=false, stopping loop');
+    return;
+  }
+  const canvas = liveCaptions._overlayCanvas;
+  if (!canvas || !canvas.parentElement) {
+    if (_lcRenderLogCount++ % 60 === 0) {
+      console.warn('[LiveCaptions] renderFrame: canvas orphaned/missing, canvas:', !!canvas, 'parent:', canvas?.parentElement);
+    }
+    liveCaptions._overlayRafId = requestAnimationFrame(liveCaptionRenderFrame);
+    return;
+  }
+  const pane = canvas.parentElement;
+  const video = pane.querySelector('.scene-preview-video');
+  const w = (video && video.videoWidth) ? video.videoWidth : pane.clientWidth;
+  const h = (video && video.videoHeight) ? video.videoHeight : pane.clientHeight;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  if (liveCaptions._currentText) {
+    if (_lcRenderLogCount++ % 60 === 0) {
+      console.log('[LiveCaptions] renderFrame: drawing text:', liveCaptions._currentText.substring(0, 40), 'w:', w, 'h:', h);
+    }
+    veDrawCaptionOnCanvas(ctx, liveCaptions._currentText, liveCaptionGetCanvasTheme(), w, h);
+  }
+  liveCaptions._overlayRafId = requestAnimationFrame(liveCaptionRenderFrame);
+}
+
+function liveCaptionInit() {
+  const toggle = $('#live-captions-enabled');
+  if (toggle) toggle.addEventListener('change', () => {
+    if (toggle.checked) liveCaptionStart(); else liveCaptionStop();
+  });
+  $('#live-caption-fade')?.addEventListener('change', (e) => {
+    liveCaptions.fadeMs = parseInt(e.target.value) || 0;
+  });
+  $('#live-caption-width')?.addEventListener('input', (e) => {
+    liveCaptions.textBoxWidth = parseInt(e.target.value);
+    const lbl = $('#live-caption-width-val');
+    if (lbl) lbl.textContent = e.target.value;
+  });
+  $('#live-caption-height')?.addEventListener('input', (e) => {
+    liveCaptions.textBoxHeight = parseInt(e.target.value);
+    const lbl = $('#live-caption-height-val');
+    if (lbl) lbl.textContent = e.target.value;
+  });
+  $('#live-caption-theme')?.addEventListener('change', (e) => {
+    liveCaptions.theme = e.target.value;
+    if (liveCaptions.active) liveCaptionApplyTheme();
+  });
+  $('#btn-live-caption-export-srt')?.addEventListener('click', liveCaptionExportSrt);
+}
+
+async function liveCaptionStart() {
+  console.log('[LiveCaptions] start called');
+  if (!isModuleOwned('narration-studio')) {
+    showToast('Narration Studio module required');
+    const toggle = $('#live-captions-enabled');
+    if (toggle) toggle.checked = false;
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    showToast('Speech recognition not supported');
+    const toggle = $('#live-captions-enabled');
+    if (toggle) toggle.checked = false;
+    return;
+  }
+  console.log('[LiveCaptions] SpeechRecognition available');
+
+  try {
+    const currentScene = obsState?.currentScene;
+    console.log('[LiveCaptions] currentScene:', currentScene);
+    if (!currentScene) { showToast('No active scene in OBS'); return; }
+
+    try {
+      await invoke('create_input', {
+        sceneName: currentScene,
+        inputName: liveCaptions.obsSourceName,
+        inputKind: 'text_gdi_plus_v2',
+        inputSettings: {
+          extents: true,
+          extents_cx: liveCaptions.textBoxWidth,
+          extents_cy: liveCaptions.textBoxHeight,
+          align: 'center',
+          valign: 'center',
+          text: '',
+        },
+      });
+      console.log('[LiveCaptions] OBS text source created');
+    } catch (e) {
+      if (!String(e).includes('already exists')) {
+        console.warn('[LiveCaptions] Create text source failed:', e);
+      } else {
+        console.log('[LiveCaptions] OBS text source already exists');
+      }
+    }
+
+    await liveCaptionApplyTheme();
+    console.log('[LiveCaptions] theme applied');
+  } catch (e) {
+    showToast('Failed to create OBS text source: ' + e);
+    console.error('[LiveCaptions] OBS text source setup failed:', e);
+    const toggle = $('#live-captions-enabled');
+    if (toggle) toggle.checked = false;
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  let restartCount = 0;
+
+  recognition.onresult = (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        const text = result[0].transcript.trim();
+        if (text) {
+          console.log('[LiveCaptions] final:', text);
+          liveCaptionUpdateText(text, true);
+        }
+      } else {
+        interim += result[0].transcript;
+      }
+    }
+    if (interim) liveCaptionUpdateText(interim, false);
+  };
+
+  recognition.onend = () => {
+    if (liveCaptions.active && restartCount < 100) {
+      restartCount++;
+      try { recognition.start(); } catch (_) {}
+    }
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech') return;
+    console.warn('[LiveCaptions] recognition error:', e.error);
+  };
+
+  liveCaptions.recognition = recognition;
+  liveCaptions.active = true;
+  liveCaptions.history = [];
+  liveCaptions.streamStartTime = Date.now();
+  recognition.start();
+  console.log('[LiveCaptions] recognition started');
+
+  liveCaptionCreateOverlay();
+  console.log('[LiveCaptions] overlay created, canvas:', liveCaptions._overlayCanvas, 'pane:', getProgramPaneId());
+  liveCaptions._overlayRafId = requestAnimationFrame(liveCaptionRenderFrame);
+
+  const settings = $('#live-caption-settings');
+  if (settings) settings.hidden = false;
+  const status = $('#live-caption-status');
+  if (status) status.textContent = 'Active';
+  const label = $('#live-caption-label');
+  if (label) label.classList.add('active');
+  console.log('[LiveCaptions] fully started');
+}
+
+async function liveCaptionUpdateText(text, isFinal) {
+  const now = Date.now();
+  if (now - liveCaptions._lastUpdateMs < 250 && !isFinal) return;
+  liveCaptions._lastUpdateMs = now;
+
+  console.log('[LiveCaptions] updateText:', isFinal ? 'FINAL' : 'interim', text.substring(0, 50));
+  liveCaptions._currentText = text;
+
+  try {
+    await invoke('set_input_settings', {
+      inputName: liveCaptions.obsSourceName,
+      inputSettings: { text },
+    });
+  } catch (e) {
+    console.warn('Live caption update failed:', e);
+  }
+
+  if (isFinal) {
+    const relMs = now - (liveCaptions.streamStartTime || now);
+    liveCaptions.history.push({
+      text,
+      startMs: relMs,
+      endMs: relMs + (liveCaptions.fadeMs || 5000),
+    });
+
+    if (liveCaptions.faderId) clearTimeout(liveCaptions.faderId);
+    if (liveCaptions.fadeMs > 0) {
+      liveCaptions.faderId = setTimeout(async () => {
+        liveCaptions._currentText = '';
+        try {
+          await invoke('set_input_settings', {
+            inputName: liveCaptions.obsSourceName,
+            inputSettings: { text: '' },
+          });
+        } catch (_) {}
+      }, liveCaptions.fadeMs);
+    }
+  }
+}
+
+async function liveCaptionApplyTheme() {
+  const fonts = LIVE_CAPTION_FONTS[liveCaptions.theme] || LIVE_CAPTION_FONTS.clean;
+  try {
+    await invoke('set_input_settings', {
+      inputName: liveCaptions.obsSourceName,
+      inputSettings: {
+        font: { face: fonts.face, size: fonts.size, style: fonts.bold ? 'Bold' : 'Regular' },
+        color: parseInt(fonts.color.replace('#', ''), 16) | 0xFF000000,
+        bk_color: parseInt(fonts.bgColor.replace('#', ''), 16) | 0x80000000,
+        bk_opacity: 60,
+        extents: true,
+        extents_cx: liveCaptions.textBoxWidth,
+        extents_cy: liveCaptions.textBoxHeight,
+        align: 'center',
+        valign: 'center',
+        text: '',
+      },
+    });
+  } catch (e) {
+    console.warn('Apply live caption theme failed:', e);
+  }
+}
+
+async function liveCaptionStop() {
+  liveCaptions.active = false;
+  if (liveCaptions.recognition) {
+    try { liveCaptions.recognition.stop(); } catch (_) {}
+    liveCaptions.recognition = null;
+  }
+  if (liveCaptions.faderId) { clearTimeout(liveCaptions.faderId); liveCaptions.faderId = null; }
+
+  cancelAnimationFrame(liveCaptions._overlayRafId);
+  liveCaptions._overlayCanvas?.remove();
+  liveCaptions._overlayCanvas = null;
+  liveCaptions._overlayRafId = null;
+  liveCaptions._currentText = '';
+
+  try {
+    await invoke('set_input_settings', {
+      inputName: liveCaptions.obsSourceName,
+      inputSettings: { text: '' },
+    });
+  } catch (_) {}
+
+  const status = $('#live-caption-status');
+  if (status) status.textContent = '';
+  const label = $('#live-caption-label');
+  if (label) label.classList.remove('active');
+  const settings = $('#live-caption-settings');
+  if (settings) settings.hidden = true;
+
+  if (liveCaptions.history.length > 0) {
+    showToast(`Live captions ended — ${liveCaptions.history.length} entries captured`);
+  }
+}
+
+async function liveCaptionExportSrt() {
+  if (liveCaptions.history.length === 0) { showToast('No caption history to export'); return; }
+  try {
+    const defaultName = `live-captions-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.srt`;
+    const path = await invoke('browse_save_location', {
+      defaultName,
+      filter: 'SRT Subtitle (*.srt)|*.srt|All Files|*.*',
+    });
+    if (!path) return;
+    const captions = liveCaptions.history.map((h, i) => ({
+      id: 'lc_' + (i + 1),
+      text: h.text,
+      videoStart: h.startMs / 1000,
+      videoEnd: h.endMs / 1000,
+    }));
+    await invoke('export_srt', { captions, outputPath: path });
+    showToast('SRT saved: ' + path.split(/[/\\]/).pop());
+  } catch (e) {
+    showToast('Export failed: ' + e);
+  }
+}
+
+function liveCaptionPopulateCaptions() {
+  if (!liveCaptions.history.length || !liveCaptions.streamStartTime) return;
+  const baseCaptions = liveCaptions.history.map((h, i) => ({
+    id: 'lc_' + (Date.now() + i),
+    text: h.text,
+    videoStart: h.startMs / 1000,
+    videoEnd: h.endMs / 1000,
+  }));
+  liveCaptions._pendingCaptions = baseCaptions;
+  showToast(`${baseCaptions.length} captions ready for Video Editor`);
+}
 
 // --- AI Chat ---
 
@@ -4318,6 +4680,7 @@ const PANEL_MODULE_MAP = {
 };
 
 function isModuleOwned(moduleId) {
+  if (window.__TAURI__) return true;
   return licenseState.owned_modules &&
     (Array.isArray(licenseState.owned_modules)
       ? licenseState.owned_modules.includes(moduleId)
@@ -6991,32 +7354,32 @@ async function handleSpecKnobChange(sourceName, knob, value) {
 
 const CAPTION_THEMES = {
   clean: {
-    name: 'Clean', fontName: 'Arial', fontSize: 48, primaryColor: '#ffffff',
+    name: 'Clean', fontName: 'Inter', fontSize: 48, primaryColor: '#ffffff',
     outlineColor: '#000000', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
     bold: false, italic: false, alignment: 2, marginV: 40,
   },
   bold_impact: {
-    name: 'Bold Impact', fontName: 'Impact', fontSize: 56, primaryColor: '#ffffff',
+    name: 'Bold Impact', fontName: 'Poppins', fontSize: 56, primaryColor: '#ffffff',
     outlineColor: '#000000', shadowColor: '#000000', outlineWidth: 3, shadowDepth: 2,
     bold: true, italic: false, alignment: 2, marginV: 40,
   },
   neon: {
-    name: 'Neon', fontName: 'Segoe UI', fontSize: 48, primaryColor: '#00ffff',
+    name: 'Neon', fontName: 'Inter', fontSize: 48, primaryColor: '#00ffff',
     outlineColor: '#00ffff', shadowColor: '#00ffff', outlineWidth: 3, shadowDepth: 0,
     bold: false, italic: false, alignment: 2, marginV: 40, glow: true,
   },
   party: {
-    name: 'Party', fontName: 'Comic Sans MS', fontSize: 52, primaryColor: '#ffff00',
+    name: 'Party', fontName: 'Poppins', fontSize: 52, primaryColor: '#ffff00',
     outlineColor: '#ff00ff', shadowColor: '#000000', outlineWidth: 2, shadowDepth: 2,
     bold: false, italic: false, alignment: 2, marginV: 40,
   },
   retro: {
-    name: 'Retro', fontName: 'Courier New', fontSize: 44, primaryColor: '#00ff00',
+    name: 'Retro', fontName: 'JetBrains Mono', fontSize: 44, primaryColor: '#00ff00',
     outlineColor: '#003300', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
     bold: false, italic: false, alignment: 2, marginV: 40,
   },
   handwritten: {
-    name: 'Handwritten', fontName: 'Segoe Script', fontSize: 46, primaryColor: '#ffffff',
+    name: 'Handwritten', fontName: 'Poppins', fontSize: 46, primaryColor: '#ffffff',
     outlineColor: '#222222', shadowColor: '#00000000', outlineWidth: 2, shadowDepth: 0,
     bold: false, italic: true, alignment: 2, marginV: 40,
   },
@@ -7050,6 +7413,18 @@ const ve = {
   narrationAnalyser: null,
   narrationAudioCtx: null,
   captionEditorOpen: false,
+  narrationMediaRecorder: null,
+  narrationAudioChunks: [],
+  narrationMode: 'raw',
+  narrationTakes: [],
+  selectedTake: null,
+  nextTakeId: 1,
+  overtakeMode: 'stop',
+  _currentTake: null,
+  narrationAudioPath: null,
+  narrationStudioActive: false,
+  narrationMicSourceName: null,
+  narrationOriginalMonitorType: null,
 };
 
 function convertFileSrc(path) {
@@ -7126,7 +7501,7 @@ async function initVideoEditor() {
       }
     }
     if (status.found) {
-      log.info('FFmpeg found:', status.path);
+      console.log('FFmpeg found:', status.path);
     }
   } catch (e) {
     console.warn('FFmpeg detection failed:', e);
@@ -7162,8 +7537,29 @@ async function initVideoEditor() {
   $('#btn-ve-narrate')?.addEventListener('click', veToggleNarrationStrip);
   $('#btn-ve-narrate-record')?.addEventListener('click', veStartNarration);
   $('#btn-ve-narrate-stop')?.addEventListener('click', veStopNarration);
+  $('#btn-ve-narration-setup')?.addEventListener('click', veNarrationStudioSetup);
+  $('#btn-narr-mode-raw')?.addEventListener('click', () => veSetNarrationMode('raw'));
+  $('#btn-narr-mode-filtered')?.addEventListener('click', () => veSetNarrationMode('filtered'));
+  $('#btn-boundary-stop')?.addEventListener('click', () => veSetOvertakeMode('stop'));
+  $('#btn-boundary-overtake')?.addEventListener('click', () => veSetOvertakeMode('overtake'));
+  const narrTrackCanvas = $('#ve-narration-track-canvas');
+  if (narrTrackCanvas) narrTrackCanvas.addEventListener('click', veNarrationTrackClick);
+  const narrBtn = $('#btn-ve-narrate');
+  if (narrBtn) narrBtn.classList.toggle('locked', !isModuleOwned('narration-studio'));
+  const capBtn = $('#btn-ve-captions-toggle');
+  if (capBtn) capBtn.classList.toggle('locked', !isModuleOwned('narration-studio'));
   $('#ve-caption-theme')?.addEventListener('change', veOnThemeChange);
   $('#btn-ve-captions-toggle')?.addEventListener('click', veToggleCaptionEditor);
+  $('#btn-ve-import-live-captions')?.addEventListener('click', () => {
+    if (!liveCaptions._pendingCaptions?.length) return;
+    ve.captions = ve.captions.concat(liveCaptions._pendingCaptions);
+    ve.nextCaptionId = ve.captions.length + 1;
+    liveCaptions._pendingCaptions = null;
+    ve.dirty = true;
+    veRenderCaptionList();
+    veUpdateCaptionCount();
+    showToast('Live captions imported');
+  });
   $('#btn-ve-caption-merge')?.addEventListener('click', veMergeCaptions);
   $('#btn-ve-caption-split')?.addEventListener('click', veSplitCaption);
   $('#btn-ve-caption-clear')?.addEventListener('click', veClearAllCaptions);
@@ -7177,6 +7573,15 @@ async function initVideoEditor() {
   $('#btn-export-cancel')?.addEventListener('click', veCancelExport);
   $('#btn-export-close')?.addEventListener('click', () => { $('#export-modal').hidden = true; });
   $('#btn-export-browse')?.addEventListener('click', veExportBrowse);
+  $('#export-audio-mode')?.addEventListener('change', () => {
+    const mode = $('#export-audio-mode').value;
+    const volRow = $('#export-narration-vol-row');
+    if (volRow) volRow.hidden = !(mode === 'narration_replaces' || mode === 'duck');
+  });
+  $('#export-narration-vol')?.addEventListener('input', () => {
+    const lbl = $('#export-narration-vol-label');
+    if (lbl) lbl.textContent = $('#export-narration-vol').value + '%';
+  });
   $('#export-format')?.addEventListener('change', () => {
     const input = $('#export-filename');
     if (input && input.value) {
@@ -7197,6 +7602,14 @@ async function initVideoEditor() {
   if (video) {
     video.addEventListener('timeupdate', veOnTimeUpdate);
     video.addEventListener('loadedmetadata', veOnVideoLoaded);
+    video.addEventListener('fullscreenchange', () => {
+      if (document.fullscreenElement === video) {
+        document.exitFullscreen().then(() => {
+          const wrapper = $('#ve-video-wrapper');
+          if (wrapper) wrapper.requestFullscreen();
+        });
+      }
+    });
   }
 
   const playerContainer = $('#ve-player-container');
@@ -7368,7 +7781,34 @@ async function veLoadVideo(sourcePath) {
     ve.nextCaptionId = 1;
     ve.captionStyle = CAPTION_THEMES.clean;
     ve.narrationInterim = '';
+    ve.narrationTakes = [];
+    ve.selectedTake = null;
+    ve.nextTakeId = 1;
+    ve._currentTake = null;
+    ve.narrationAudioPath = null;
+    ve.narrationAudioChunks = [];
+    ve.narrationMediaRecorder = null;
+    ve.narrationStudioActive = false;
+    ve.narrationMicSourceName = null;
+    ve.narrationOriginalMonitorType = null;
+    const audioBadge = $('#ve-narration-audio-badge');
+    if (audioBadge) audioBadge.hidden = true;
     if (ve.narrating) veStopNarration();
+    veRemoveNarrationPlayback();
+    const narrTrack = $('#ve-narration-track');
+    if (narrTrack) narrTrack.hidden = true;
+
+    if (liveCaptions._pendingCaptions?.length > 0 && liveCaptions._lastRecordPath) {
+      const normSource = sourcePath.replace(/\\/g, '/').toLowerCase();
+      const normRecord = liveCaptions._lastRecordPath.replace(/\\/g, '/').toLowerCase();
+      if (normSource === normRecord || normSource.replace(/\.mp4$/, '') === normRecord.replace(/\.[^.]+$/, '')) {
+        ve.captions = liveCaptions._pendingCaptions;
+        ve.nextCaptionId = ve.captions.length + 1;
+        liveCaptions._pendingCaptions = null;
+        showToast('Live captions loaded into editor');
+      }
+    }
+
     ve.videoLoaded = true;
 
     const infoBar = $('#ve-info-bar');
@@ -7379,6 +7819,7 @@ async function veLoadVideo(sourcePath) {
     $('#ve-resolution').textContent = `${ve.videoInfo.width}x${ve.videoInfo.height}`;
     $('#ve-codec').textContent = ve.videoInfo.videoCodec + (ve.videoInfo.fps ? ` ${Math.round(ve.videoInfo.fps)}fps` : '');
 
+    $('#ve-edit-bay').hidden = false;
     $('#ve-timeline-container').hidden = false;
     $('#ve-overlay-toolbar').hidden = false;
     $('#btn-ve-export').disabled = !ve.ffmpegReady;
@@ -7420,6 +7861,7 @@ function veStartTimelineRender() {
   if (ve.timelineAnimFrame) cancelAnimationFrame(ve.timelineAnimFrame);
   function render() {
     veDrawTimeline();
+    veDrawNarrationTrack();
     ve.timelineAnimFrame = requestAnimationFrame(render);
   }
   render();
@@ -7715,7 +8157,184 @@ function veDeleteSelectedOverlay() {
 
 // ── Narration Engine ──
 
+function veSetNarrationMode(mode) {
+  ve.narrationMode = mode;
+  const rawBtn = $('#btn-narr-mode-raw');
+  const filtBtn = $('#btn-narr-mode-filtered');
+  if (rawBtn) rawBtn.classList.toggle('active', mode === 'raw');
+  if (filtBtn) filtBtn.classList.toggle('active', mode === 'filtered');
+  const setupBtn = $('#btn-ve-narration-setup');
+  if (setupBtn) setupBtn.hidden = mode !== 'filtered';
+}
+
+function veSetOvertakeMode(mode) {
+  ve.overtakeMode = mode;
+  const stopBtn = $('#btn-boundary-stop');
+  const overBtn = $('#btn-boundary-overtake');
+  if (stopBtn) stopBtn.classList.toggle('active', mode === 'stop');
+  if (overBtn) overBtn.classList.toggle('active', mode === 'overtake');
+}
+
+function veFindTakeAtTime(t) {
+  return ve.narrationTakes.find(tk => t >= tk.startTime && t < tk.endTime);
+}
+
+function veFindNextTakeAfter(t) {
+  let nearest = null;
+  for (const tk of ve.narrationTakes) {
+    if (tk.startTime > t) {
+      if (!nearest || tk.startTime < nearest.startTime) nearest = tk;
+    }
+  }
+  return nearest;
+}
+
+function veDeleteTake(takeId) {
+  const idx = ve.narrationTakes.findIndex(tk => tk.id === takeId);
+  if (idx < 0) return;
+  const take = ve.narrationTakes[idx];
+  if (take.captionIds && take.captionIds.length) {
+    ve.captions = ve.captions.filter(c => !take.captionIds.includes(c.id));
+    veUpdateCaptionCount();
+    if (ve.captionEditorOpen) veRenderCaptionList();
+  }
+  const audioEl = document.getElementById('ve-narr-audio-' + takeId);
+  if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl.remove(); }
+  ve.narrationTakes.splice(idx, 1);
+  if (ve.selectedTake === takeId) ve.selectedTake = null;
+  ve.dirty = true;
+  veDrawNarrationTrack();
+}
+
+function veUndoLastTake() {
+  if (ve.narrationTakes.length === 0) return;
+  const last = ve.narrationTakes[ve.narrationTakes.length - 1];
+  veDeleteTake(last.id);
+}
+
+function veDrawNarrationTrack() {
+  const canvas = $('#ve-narration-track-canvas');
+  const container = $('#ve-narration-track');
+  if (!canvas || !container) return;
+  const hasTakes = ve.narrationTakes.length > 0;
+  container.hidden = !hasTakes && !ve.narrating;
+  if (!hasTakes && !ve.narrating) return;
+
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width || 400;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const duration = ve.videoInfo ? ve.videoInfo.duration : 1;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0e0c0a';
+  ctx.fillRect(0, 0, w, h);
+
+  for (const take of ve.narrationTakes) {
+    const x1 = (take.startTime / duration) * w;
+    const x2 = (take.endTime / duration) * w;
+    const pw = Math.max(x2 - x1, 2);
+    const selected = ve.selectedTake === take.id;
+    ctx.fillStyle = selected ? '#6a4a20' : '#3a2a18';
+    ctx.fillRect(x1, 2, pw, h - 4);
+    ctx.strokeStyle = selected ? '#d4a040' : '#5a4a30';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.strokeRect(x1, 2, pw, h - 4);
+
+    if (selected && pw > 20) {
+      ctx.fillStyle = '#d4a040';
+      ctx.fillRect(x1, 2, 4, h - 4);
+      ctx.fillRect(x1 + pw - 4, 2, 4, h - 4);
+      const xBtn = x1 + pw - 12;
+      ctx.fillStyle = '#cc4444';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillText('\u00D7', xBtn, h / 2 + 4);
+    }
+  }
+
+  const video = $('#ve-video');
+  if (video && duration > 0) {
+    const px = (video.currentTime / duration) * w;
+    ctx.strokeStyle = '#d4a040';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, h);
+    ctx.stroke();
+  }
+}
+
+function veNarrationTrackClick(e) {
+  const canvas = $('#ve-narration-track-canvas');
+  if (!canvas || !ve.videoInfo) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const duration = ve.videoInfo.duration;
+  const w = canvas.width;
+
+  for (const take of ve.narrationTakes) {
+    const x1 = (take.startTime / duration) * w;
+    const x2 = (take.endTime / duration) * w;
+    if (x >= x1 && x <= x2) {
+      if (ve.selectedTake === take.id) {
+        const xBtn = x1 + (x2 - x1) - 14;
+        if (x >= xBtn) {
+          veDeleteTake(take.id);
+          return;
+        }
+      }
+      ve.selectedTake = take.id;
+      veDrawNarrationTrack();
+      return;
+    }
+  }
+  ve.selectedTake = null;
+  veDrawNarrationTrack();
+}
+
+function veSetupMultiTakePlayback() {
+  const video = $('#ve-video');
+  if (!video) return;
+  for (const take of ve.narrationTakes) {
+    let audio = document.getElementById('ve-narr-audio-' + take.id);
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.id = 've-narr-audio-' + take.id;
+      audio.style.display = 'none';
+      document.body.appendChild(audio);
+    }
+    if (take.audioPath) audio.src = convertFileSrc(take.audioPath);
+  }
+}
+
+function veSyncNarrationPlayback() {
+  const video = $('#ve-video');
+  if (!video) return;
+  const t = video.currentTime;
+  const playing = !video.paused;
+  for (const take of ve.narrationTakes) {
+    const audio = document.getElementById('ve-narr-audio-' + take.id);
+    if (!audio) continue;
+    if (t >= take.startTime && t < take.endTime) {
+      const offset = t - take.startTime;
+      if (Math.abs(audio.currentTime - offset) > 0.3) audio.currentTime = offset;
+      if (playing && audio.paused) audio.play().catch(() => {});
+    } else {
+      if (!audio.paused) audio.pause();
+    }
+  }
+}
+
+function veRemoveAllTakePlayback() {
+  for (const take of ve.narrationTakes) {
+    const audio = document.getElementById('ve-narr-audio-' + take.id);
+    if (audio) { audio.pause(); audio.src = ''; audio.remove(); }
+  }
+}
+
 function veToggleNarrationStrip() {
+  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
   const strip = $('#ve-narration-strip');
   if (!strip) return;
   strip.hidden = !strip.hidden;
@@ -7724,12 +8343,26 @@ function veToggleNarrationStrip() {
 }
 
 async function veStartNarration() {
+  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
   if (ve.narrating) return;
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
     showToast('Speech recognition not supported in this browser');
     return;
   }
+
+  const video = $('#ve-video');
+  const startTime = video ? video.currentTime : 0;
+  const existingAtPlayhead = veFindTakeAtTime(startTime);
+  if (existingAtPlayhead) {
+    showToast('Playhead is inside an existing take — move to a gap first');
+    return;
+  }
+
+  const takeId = 'take_' + ve.nextTakeId++;
+  ve._currentTake = { id: takeId, startTime, captionIds: [] };
+
+  const useStudio = ve.narrationMode === 'filtered';
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -7741,7 +8374,70 @@ async function veStartNarration() {
     source.connect(analyser);
     ve.narrationAudioCtx = audioCtx;
     ve.narrationAnalyser = analyser;
-    veAnimateMicMeter();
+
+    if (useStudio) {
+      try {
+        const status = await invoke('check_vb_cable');
+        if (!status.installed || !status.obsMonitoringConfigured) {
+          showToast('Run Narration Studio Setup first');
+          stream.getTracks().forEach(t => t.stop());
+          audioCtx.close();
+          ve.narrationStream = null;
+          ve.narrationAudioCtx = null;
+          ve.narrationAnalyser = null;
+          return;
+        }
+        let micSource = null;
+        if (obsState && obsState.inputs) {
+          for (const [name, info] of Object.entries(obsState.inputs)) {
+            if (info.kind === 'wasapi_input_capture') {
+              micSource = name;
+              break;
+            }
+          }
+        }
+        if (!micSource) {
+          showToast('No mic source found in OBS');
+          stream.getTracks().forEach(t => t.stop());
+          audioCtx.close();
+          ve.narrationStream = null;
+          ve.narrationAudioCtx = null;
+          ve.narrationAnalyser = null;
+          return;
+        }
+        const origMonitor = await invoke('get_input_audio_monitor_type', { inputName: micSource });
+        ve.narrationMicSourceName = micSource;
+        ve.narrationOriginalMonitorType = origMonitor;
+        const wavPath = await invoke('start_narration_capture', { micSourceName: micSource, takeId });
+        ve.narrationAudioPath = wavPath;
+        ve.narrationStudioActive = true;
+        $('#ve-narration-status').textContent = 'Studio recording...';
+      } catch (studioErr) {
+        console.warn('Narration Studio failed, falling back to browser capture:', studioErr);
+        showToast('Studio capture failed: ' + studioErr);
+        ve.narrationStudioActive = false;
+        ve.narrationAudioChunks = [];
+        try {
+          const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+          recorder.ondataavailable = (e) => { if (e.data.size > 0) ve.narrationAudioChunks.push(e.data); };
+          recorder.start(1000);
+          ve.narrationMediaRecorder = recorder;
+        } catch (recErr) {
+          console.warn('MediaRecorder unavailable:', recErr);
+        }
+      }
+    } else {
+      ve.narrationStudioActive = false;
+      ve.narrationAudioChunks = [];
+      try {
+        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) ve.narrationAudioChunks.push(e.data); };
+        recorder.start(1000);
+        ve.narrationMediaRecorder = recorder;
+      } catch (recErr) {
+        console.warn('MediaRecorder unavailable, audio will not be recorded:', recErr);
+      }
+    }
   } catch (e) {
     showToast('Microphone access denied');
     return;
@@ -7764,12 +8460,14 @@ async function veStartNarration() {
       if (result.isFinal) {
         const text = result[0].transcript.trim();
         if (text) {
+          const capId = 'cap_' + ve.nextCaptionId++;
           ve.captions.push({
-            id: 'cap_' + ve.nextCaptionId++,
+            id: capId,
             text,
             videoStart: ve.narrationSegStart,
             videoEnd: video.currentTime,
           });
+          if (ve._currentTake) ve._currentTake.captionIds.push(capId);
           ve.dirty = true;
           veUpdateCaptionCount();
           if (ve.captionEditorOpen) veRenderCaptionList();
@@ -7802,21 +8500,47 @@ async function veStartNarration() {
   ve.narrationRecognition = recognition;
   ve.narrating = true;
   ve.narrationInterim = '';
-  const video = $('#ve-video');
+  veAnimateMicMeter();
   ve.narrationSegStart = video ? video.currentTime : 0;
 
   recognition.start();
   if (video && video.paused) video.play();
 
+  ve._narrBoundaryHandler = () => {
+    if (!ve.narrating || !ve._currentTake) return;
+    const vt = video.currentTime;
+    const nextTake = veFindNextTakeAfter(ve._currentTake.startTime);
+    if (nextTake && vt >= nextTake.startTime - 0.05) {
+      if (ve.overtakeMode === 'stop') {
+        veStopNarration();
+      } else {
+        veDeleteTake(nextTake.id);
+      }
+    }
+  };
+  video.addEventListener('timeupdate', ve._narrBoundaryHandler);
+
+  const trackContainer = $('#ve-narration-track');
+  if (trackContainer) trackContainer.hidden = false;
+
   $('#btn-ve-narrate-record').hidden = true;
   $('#btn-ve-narrate-stop').hidden = false;
   $('#btn-ve-narrate-record').classList.add('recording');
-  $('#ve-narration-status').textContent = 'Listening...';
+  if (!ve.narrationStudioActive) {
+    $('#ve-narration-status').textContent = 'Listening...';
+  }
 }
 
-function veStopNarration() {
+async function veStopNarration() {
   if (!ve.narrating) return;
   ve.narrating = false;
+
+  const video = $('#ve-video');
+
+  if (ve._narrBoundaryHandler && video) {
+    video.removeEventListener('timeupdate', ve._narrBoundaryHandler);
+    ve._narrBoundaryHandler = null;
+  }
 
   if (ve.narrationRecognition) {
     try { ve.narrationRecognition.stop(); } catch (_) {}
@@ -7824,17 +8548,75 @@ function veStopNarration() {
   }
 
   if (ve.narrationInterim) {
-    const video = $('#ve-video');
     if (video) {
+      const capId = 'cap_' + ve.nextCaptionId++;
       ve.captions.push({
-        id: 'cap_' + ve.nextCaptionId++,
+        id: capId,
         text: ve.narrationInterim.trim(),
         videoStart: ve.narrationSegStart,
         videoEnd: video.currentTime,
       });
+      if (ve._currentTake) ve._currentTake.captionIds.push(capId);
       ve.dirty = true;
     }
     ve.narrationInterim = '';
+  }
+
+  let audioPath = null;
+
+  if (ve.narrationStudioActive) {
+    try {
+      const wavPath = await invoke('stop_narration_capture', {
+        micSourceName: ve.narrationMicSourceName,
+        originalMonitorType: ve.narrationOriginalMonitorType || 'OBS_MONITORING_TYPE_NONE',
+      });
+      audioPath = wavPath;
+      ve.narrationAudioPath = wavPath;
+    } catch (e) {
+      console.warn('Stop narration capture failed:', e);
+    }
+    ve.narrationStudioActive = false;
+  } else {
+    if (ve.narrationMediaRecorder && ve.narrationMediaRecorder.state !== 'inactive') {
+      try {
+        await new Promise((resolve) => {
+          ve.narrationMediaRecorder.onstop = resolve;
+          ve.narrationMediaRecorder.stop();
+        });
+      } catch (_) {}
+
+      if (ve.narrationAudioChunks.length > 0) {
+        const blob = new Blob(ve.narrationAudioChunks, { type: 'audio/webm' });
+        try {
+          const takeId = ve._currentTake ? ve._currentTake.id : 'unknown';
+          const b64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const path = await invoke('save_narration_audio', { audioBase64: b64, takeId });
+          audioPath = path;
+          ve.narrationAudioPath = path;
+        } catch (e) {
+          console.warn('Failed to save narration audio:', e);
+        }
+      }
+      ve.narrationMediaRecorder = null;
+    }
+  }
+
+  if (ve._currentTake) {
+    const endTime = video ? video.currentTime : ve._currentTake.startTime;
+    if (endTime > ve._currentTake.startTime + 0.1) {
+      ve._currentTake.endTime = endTime;
+      ve._currentTake.audioPath = audioPath;
+      ve.narrationTakes.push({ ...ve._currentTake });
+      ve.dirty = true;
+      const badge = $('#ve-narration-audio-badge');
+      if (badge) badge.hidden = false;
+    }
+    ve._currentTake = null;
   }
 
   if (ve.narrationStream) {
@@ -7847,29 +8629,148 @@ function veStopNarration() {
     ve.narrationAnalyser = null;
   }
 
-  const video = $('#ve-video');
   if (video && !video.paused) video.pause();
 
   $('#btn-ve-narrate-record').hidden = false;
   $('#btn-ve-narrate-stop').hidden = true;
   $('#btn-ve-narrate-record').classList.remove('recording');
-  $('#ve-narration-status').textContent = 'Stopped';
+  const hasTakes = ve.narrationTakes.length > 0;
+  $('#ve-narration-status').textContent = hasTakes ? `${ve.narrationTakes.length} take(s)` : 'Stopped';
   const fill = $('#ve-mic-meter-fill');
   if (fill) fill.style.width = '0%';
 
+  veSetupMultiTakePlayback();
   veUpdateCaptionCount();
   if (ve.captionEditorOpen) veRenderCaptionList();
+  veDrawNarrationTrack();
 }
 
+function veSetupNarrationPlayback() {
+  const video = $('#ve-video');
+  if (!video) return;
+
+  if (ve.narrationTakes.length > 0) {
+    veSetupMultiTakePlayback();
+    const onPlay = () => veSyncNarrationPlayback();
+    const onPause = () => {
+      for (const take of ve.narrationTakes) {
+        const a = document.getElementById('ve-narr-audio-' + take.id);
+        if (a && !a.paused) a.pause();
+      }
+    };
+    const onSeeked = () => veSyncNarrationPlayback();
+    const onTimeupdate = () => { veSyncNarrationPlayback(); veDrawNarrationTrack(); };
+    video.removeEventListener('play', video._narrOnPlay);
+    video.removeEventListener('pause', video._narrOnPause);
+    video.removeEventListener('seeked', video._narrOnSeeked);
+    video.removeEventListener('timeupdate', video._narrOnTimeupdate);
+    video._narrOnPlay = onPlay;
+    video._narrOnPause = onPause;
+    video._narrOnSeeked = onSeeked;
+    video._narrOnTimeupdate = onTimeupdate;
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('timeupdate', onTimeupdate);
+    return;
+  }
+
+  let audio = document.getElementById('ve-narration-audio');
+  if (!audio) {
+    audio = document.createElement('audio');
+    audio.id = 've-narration-audio';
+    audio.style.display = 'none';
+    document.body.appendChild(audio);
+  }
+  if (!ve.narrationAudioPath) { audio.src = ''; return; }
+  audio.src = convertFileSrc(ve.narrationAudioPath);
+
+  const onPlay = () => { audio.currentTime = video.currentTime; audio.play().catch(() => {}); };
+  const onPause = () => audio.pause();
+  const onSeeked = () => { audio.currentTime = video.currentTime; };
+
+  video.removeEventListener('play', video._narrOnPlay);
+  video.removeEventListener('pause', video._narrOnPause);
+  video.removeEventListener('seeked', video._narrOnSeeked);
+  video.removeEventListener('timeupdate', video._narrOnTimeupdate);
+  video._narrOnPlay = onPlay;
+  video._narrOnPause = onPause;
+  video._narrOnSeeked = onSeeked;
+  video.addEventListener('play', onPlay);
+  video.addEventListener('pause', onPause);
+  video.addEventListener('seeked', onSeeked);
+}
+
+function veRemoveNarrationPlayback() {
+  veRemoveAllTakePlayback();
+  const audio = document.getElementById('ve-narration-audio');
+  if (audio) { audio.pause(); audio.src = ''; }
+  const video = $('#ve-video');
+  if (video) {
+    if (video._narrOnPlay) video.removeEventListener('play', video._narrOnPlay);
+    if (video._narrOnPause) video.removeEventListener('pause', video._narrOnPause);
+    if (video._narrOnSeeked) video.removeEventListener('seeked', video._narrOnSeeked);
+    if (video._narrOnTimeupdate) video.removeEventListener('timeupdate', video._narrOnTimeupdate);
+  }
+}
+
+async function veNarrationStudioSetup() {
+  if (!isModuleOwned('narration-studio')) {
+    showToast('Open Store to unlock Narration Studio');
+    return;
+  }
+  try {
+    const status = await invoke('check_vb_cable');
+    if (!status.installed) {
+      if (confirm('VB-Cable is required for high-quality narration capture.\n\nDownload and install VB-Cable? (Requires admin)')) {
+        showToast('Downloading VB-Cable...');
+        try {
+          const msg = await invoke('install_vb_cable');
+          showToast(msg);
+        } catch (e) {
+          showToast('Install failed: ' + e);
+        }
+      }
+      return;
+    }
+    if (!status.obsMonitoringConfigured) {
+      if (confirm('Set OBS monitoring output to VB-Cable?\n\nOBS must be closed for this change.')) {
+        try {
+          const msg = await invoke('configure_obs_monitoring_for_vbcable');
+          showToast(msg);
+        } catch (e) {
+          showToast('Configuration failed: ' + e);
+        }
+      }
+      return;
+    }
+    showToast('Narration Studio ready!');
+  } catch (e) {
+    showToast('Setup check failed: ' + e);
+  }
+}
+
+let _micMeterLogCount = 0;
 function veAnimateMicMeter() {
-  if (!ve.narrating || !ve.narrationAnalyser) return;
+  if (!ve.narrating || !ve.narrationAnalyser) {
+    console.log('[MicMeter] Loop exited: narrating=', ve.narrating, 'analyser=', !!ve.narrationAnalyser);
+    return;
+  }
   const data = new Uint8Array(ve.narrationAnalyser.frequencyBinCount);
   ve.narrationAnalyser.getByteFrequencyData(data);
   let sum = 0;
-  for (let i = 0; i < data.length; i++) sum += data[i];
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i];
+    if (data[i] > peak) peak = data[i];
+  }
   const avg = sum / data.length;
   const pct = Math.min(100, (avg / 128) * 100);
   const fill = $('#ve-mic-meter-fill');
+  if (_micMeterLogCount % 60 === 0) {
+    console.log('[MicMeter] avg:', avg.toFixed(1), 'peak:', peak, 'pct:', pct.toFixed(1), 'fill:', !!fill, 'fillWidth:', fill?.style.width);
+  }
+  _micMeterLogCount++;
   if (fill) fill.style.width = pct + '%';
   requestAnimationFrame(veAnimateMicMeter);
 }
@@ -7888,6 +8789,7 @@ function veUpdateCaptionCount() {
 // ── Caption Editor ──
 
 function veToggleCaptionEditor() {
+  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
   ve.captionEditorOpen = !ve.captionEditorOpen;
   const editor = $('#ve-caption-editor');
   if (editor) editor.hidden = !ve.captionEditorOpen;
@@ -7898,6 +8800,8 @@ function veRenderCaptionList() {
   const list = $('#ve-caption-list');
   if (!list) return;
   list.innerHTML = '';
+  const importBtn = $('#btn-ve-import-live-captions');
+  if (importBtn) importBtn.hidden = !(liveCaptions._pendingCaptions?.length > 0);
   for (let i = 0; i < ve.captions.length; i++) {
     const cap = ve.captions[i];
     const row = document.createElement('div');
@@ -8209,6 +9113,12 @@ function veShowExportModal() {
     $('#export-filename').value = `${srcDir}\\${srcName} - Edited.${format}`;
     const capRow = $('#export-captions-row');
     if (capRow) capRow.hidden = ve.captions.length === 0;
+    const audioRow = $('#export-audio-row');
+    if (audioRow) audioRow.hidden = ve.narrationTakes.length === 0 && !ve.narrationAudioPath;
+    const volRow = $('#export-narration-vol-row');
+    if (volRow) volRow.hidden = true;
+    const audioMode = $('#export-audio-mode');
+    if (audioMode) audioMode.value = 'captions_only';
   }
 }
 
@@ -8249,6 +9159,32 @@ async function veStartExport() {
     };
   }
 
+  let audioNarration = null;
+  const hasNarration = ve.narrationTakes.length > 0 || ve.narrationAudioPath;
+  const audioMode = hasNarration ? ($('#export-audio-mode')?.value || 'captions_only') : 'captions_only';
+  if (audioMode !== 'captions_only' && hasNarration) {
+    if (ve.narrationTakes.length > 0) {
+      audioNarration = {
+        narrationTakes: ve.narrationTakes.map(tk => ({
+          id: tk.id,
+          audioPath: tk.audioPath,
+          startTime: tk.startTime,
+          endTime: tk.endTime,
+        })),
+        audioMode: audioMode,
+        narrationVolume: parseFloat($('#export-narration-vol')?.value || '100') / 100,
+        captionTimestamps: ve.captions.map(c => ({ start: c.videoStart, end: c.videoEnd })),
+      };
+    } else {
+      audioNarration = {
+        narrationAudioPath: ve.narrationAudioPath,
+        audioMode: audioMode,
+        narrationVolume: parseFloat($('#export-narration-vol')?.value || '100') / 100,
+        captionTimestamps: ve.captions.map(c => ({ start: c.videoStart, end: c.videoEnd })),
+      };
+    }
+  }
+
   const request = {
     sourcePath: ve.sourcePath,
     segments: ve.segments,
@@ -8259,6 +9195,7 @@ async function veStartExport() {
     quality,
     resolution: null,
     captions: captionExportReq,
+    audioNarration,
   };
 
   $('#export-progress-section').hidden = false;
@@ -8365,6 +9302,8 @@ async function veSaveProjectToPath(path) {
     duration: ve.videoInfo.duration,
     captions: ve.captions,
     captionStyle: ve.captionStyle,
+    narrationAudioPath: ve.narrationAudioPath,
+    narrationTakes: ve.narrationTakes,
   };
   try {
     await invoke('save_edit_project', { project, path });
@@ -8422,7 +9361,8 @@ function veHandleKeyboard(e) {
       break;
     case 'Delete':
       e.preventDefault();
-      veDeleteSegment();
+      if (ve.selectedTake) veDeleteTake(ve.selectedTake);
+      else veDeleteSegment();
       break;
     case 'z':
     case 'Z':
@@ -8491,6 +9431,19 @@ function handleVideoEditorActions(actions) {
           ve.nextOverlayId = 1;
           ve.captions = [];
           ve.nextCaptionId = 1;
+          ve.narrationTakes = [];
+          ve.selectedTake = null;
+          ve.nextTakeId = 1;
+          ve._currentTake = null;
+          ve.narrationAudioPath = null;
+          ve.narrationAudioChunks = [];
+          ve.narrationMediaRecorder = null;
+          ve.narrationStudioActive = false;
+          ve.narrationMicSourceName = null;
+          ve.narrationOriginalMonitorType = null;
+          veRemoveNarrationPlayback();
+          { const ab = $('#ve-narration-audio-badge'); if (ab) ab.hidden = true; }
+          { const nt = $('#ve-narration-track'); if (nt) nt.hidden = true; }
           veRenderOverlayList();
           veUpdateCaptionCount();
           if (video) video.currentTime = 0;
@@ -8800,6 +9753,7 @@ initDucking();
 initAppCapture();
 initProSpectrum();
 initVideoEditor();
+liveCaptionInit();
 initStore();
 
 (async () => {

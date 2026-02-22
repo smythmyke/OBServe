@@ -113,6 +113,14 @@ pub fn get_module_catalog() -> Vec<ModuleInfo> {
             panels: vec![],
         },
         ModuleInfo {
+            id: "narration-studio".into(),
+            name: "Narration Studio".into(),
+            description: "High-quality post-filter narration capture via VB-Cable".into(),
+            price_cents: 199,
+            stripe_link: "https://buy.stripe.com/PLACEHOLDER".into(),
+            panels: vec![],
+        },
+        ModuleInfo {
             id: "monitoring".into(),
             name: "Advanced Monitoring".into(),
             description: "Enhanced system monitoring with GPU stats and alerts".into(),

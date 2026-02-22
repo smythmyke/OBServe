@@ -114,6 +114,8 @@ pub struct ExportRequest {
     pub resolution: Option<String>,
     #[serde(default)]
     pub captions: Option<CaptionExportRequest>,
+    #[serde(default)]
+    pub audio_narration: Option<AudioNarrationRequest>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -136,6 +138,38 @@ pub struct EditProjectSave {
     pub captions: Vec<CaptionSegment>,
     #[serde(default)]
     pub caption_style: Option<CaptionStyle>,
+    #[serde(default)]
+    pub narration_audio_path: Option<String>,
+    #[serde(default)]
+    pub narration_takes: Option<Vec<NarrationTake>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrationTake {
+    pub id: String,
+    pub audio_path: String,
+    pub start_time: f64,
+    pub end_time: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioNarrationRequest {
+    #[serde(default)]
+    pub narration_audio_path: Option<String>,
+    #[serde(default)]
+    pub narration_takes: Vec<NarrationTake>,
+    pub audio_mode: String,
+    pub narration_volume: f64,
+    pub caption_timestamps: Vec<CaptionTimestamp>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionTimestamp {
+    pub start: f64,
+    pub end: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -911,6 +945,61 @@ async fn run_export(
     };
     let has_captions = ass_path.is_some();
 
+    let audio_mode = request.audio_narration.as_ref().map(|a| a.audio_mode.as_str());
+    let needs_narration_mix = matches!(audio_mode, Some("narration_replaces") | Some("duck"));
+
+    if needs_narration_mix {
+        let ass_ref = ass_path.as_deref();
+        let narr = request.audio_narration.as_ref().unwrap();
+        let mut narr_input_idx: usize = 1;
+        for overlay in &request.overlays {
+            if overlay.overlay_type == "image" && !overlay.content.is_empty() {
+                narr_input_idx += 1;
+            }
+        }
+        let filter = build_filter_complex(segments, &request.overlays, &request.source_path, ass_ref, Some(narr), Some(narr_input_idx));
+        let mut cmd = tokio::process::Command::new(ffmpeg);
+        cmd.args(["-y", "-progress", "pipe:1", "-i", &request.source_path]);
+
+        for overlay in &request.overlays {
+            if overlay.overlay_type == "image" && !overlay.content.is_empty() {
+                cmd.args(["-i", &overlay.content]);
+            }
+        }
+
+        if !narr.narration_takes.is_empty() {
+            for take in &narr.narration_takes {
+                cmd.args(["-i", &take.audio_path]);
+            }
+        } else if let Some(ref path) = narr.narration_audio_path {
+            cmd.args(["-i", path]);
+        }
+
+        cmd.args([
+            "-filter_complex",
+            &filter,
+            "-map",
+            "[vfinal]",
+            "-map",
+            "[afinal]",
+            "-c:v",
+            &request.video_codec,
+            "-crf",
+            crf,
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            &request.output_path,
+        ]);
+
+        let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
+        if let Some(ref p) = ass_path { let _ = std::fs::remove_file(p); }
+        return result;
+    }
+
+    let is_mute_all = matches!(audio_mode, Some("mute_all"));
+
     if !has_overlays && !has_captions && segments.len() == 1 {
         let seg = &segments[0];
         let mut cmd = tokio::process::Command::new(ffmpeg);
@@ -931,7 +1020,11 @@ async fn run_export(
         } else {
             cmd.args(["-c", "copy"]);
         }
-        cmd.args(["-c:a", "aac", "-movflags", "+faststart", &request.output_path]);
+        if is_mute_all {
+            cmd.args(["-an", "-movflags", "+faststart", &request.output_path]);
+        } else {
+            cmd.args(["-c:a", "aac", "-movflags", "+faststart", &request.output_path]);
+        }
 
         return run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
     }
@@ -957,12 +1050,12 @@ async fn run_export(
             &request.video_codec,
             "-crf",
             crf,
-            "-c:a",
-            "aac",
-            "-movflags",
-            "+faststart",
-            &request.output_path,
         ]);
+        if is_mute_all {
+            cmd.args(["-an", "-movflags", "+faststart", &request.output_path]);
+        } else {
+            cmd.args(["-c:a", "aac", "-movflags", "+faststart", &request.output_path]);
+        }
 
         let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
         if let Some(ref p) = ass_path { let _ = std::fs::remove_file(p); }
@@ -991,12 +1084,12 @@ async fn run_export(
             "0",
             "-i",
             &concat_file.to_string_lossy(),
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            &request.output_path,
         ]);
+        if is_mute_all {
+            cmd.args(["-c:v", "copy", "-an", "-movflags", "+faststart", &request.output_path]);
+        } else {
+            cmd.args(["-c", "copy", "-movflags", "+faststart", &request.output_path]);
+        }
 
         let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
 
@@ -1008,7 +1101,7 @@ async fn run_export(
     }
 
     let ass_ref = ass_path.as_deref();
-    let filter = build_filter_complex(segments, &request.overlays, &request.source_path, ass_ref);
+    let filter = build_filter_complex(segments, &request.overlays, &request.source_path, ass_ref, None, None);
     let mut cmd = tokio::process::Command::new(ffmpeg);
     cmd.args(["-y", "-progress", "pipe:1", "-i", &request.source_path]);
 
@@ -1018,23 +1111,40 @@ async fn run_export(
         }
     }
 
-    cmd.args([
-        "-filter_complex",
-        &filter,
-        "-map",
-        "[vfinal]",
-        "-map",
-        "[afinal]",
-        "-c:v",
-        &request.video_codec,
-        "-crf",
-        crf,
-        "-c:a",
-        "aac",
-        "-movflags",
-        "+faststart",
-        &request.output_path,
-    ]);
+    if is_mute_all {
+        cmd.args([
+            "-filter_complex",
+            &filter,
+            "-map",
+            "[vfinal]",
+            "-an",
+            "-c:v",
+            &request.video_codec,
+            "-crf",
+            crf,
+            "-movflags",
+            "+faststart",
+            &request.output_path,
+        ]);
+    } else {
+        cmd.args([
+            "-filter_complex",
+            &filter,
+            "-map",
+            "[vfinal]",
+            "-map",
+            "[afinal]",
+            "-c:v",
+            &request.video_codec,
+            "-crf",
+            crf,
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            &request.output_path,
+        ]);
+    }
 
     let result = run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
     if let Some(ref p) = ass_path { let _ = std::fs::remove_file(p); }
@@ -1090,7 +1200,7 @@ async fn split_segments(
     Ok(files)
 }
 
-fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &str, captions_ass_path: Option<&Path>) -> String {
+fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &str, captions_ass_path: Option<&Path>, narration: Option<&AudioNarrationRequest>, narration_input_idx: Option<usize>) -> String {
     let mut filter = String::new();
     let n = segments.len();
 
@@ -1178,7 +1288,69 @@ fn build_filter_complex(segments: &[Segment], overlays: &[Overlay], _source: &st
         current_v = out.to_string();
     }
 
-    filter.push_str(&format!("[{current_v}]copy[vfinal]; [aconcat]copy[afinal]"));
+    filter.push_str(&format!("[{current_v}]copy[vfinal]; "));
+
+    if let (Some(narr), Some(narr_idx)) = (narration, narration_input_idx) {
+        let vol = narr.narration_volume.max(0.0).min(2.0);
+        let has_multi_takes = !narr.narration_takes.is_empty();
+
+        let narr_mix_label = if has_multi_takes {
+            let num_takes = narr.narration_takes.len();
+            for (ti, take) in narr.narration_takes.iter().enumerate() {
+                let input_i = narr_idx + ti;
+                let delay_ms = (take.start_time * 1000.0).round() as i64;
+                if delay_ms > 0 {
+                    filter.push_str(&format!(
+                        "[{input_i}:a]aresample=48000,volume={vol:.2},adelay={delay_ms}|{delay_ms},apad[atk{ti}]; "
+                    ));
+                } else {
+                    filter.push_str(&format!(
+                        "[{input_i}:a]aresample=48000,volume={vol:.2},apad[atk{ti}]; "
+                    ));
+                }
+            }
+            if num_takes > 1 {
+                let labels: String = (0..num_takes).map(|i| format!("[atk{i}]")).collect::<Vec<_>>().join("");
+                filter.push_str(&format!("{labels}amix=inputs={num_takes}:duration=longest[anarrmix]; "));
+            } else {
+                filter.push_str("[atk0]copy[anarrmix]; ");
+            }
+            "anarrmix"
+        } else {
+            filter.push_str(&format!(
+                "[{narr_idx}:a]aresample=48000,volume={vol:.2},apad[anarrmix]; "
+            ));
+            "anarrmix"
+        };
+
+        match narr.audio_mode.as_str() {
+            "narration_replaces" => {
+                filter.push_str(&format!("[{narr_mix_label}]copy[afinal]"));
+            }
+            "duck" => {
+                if narr.caption_timestamps.is_empty() {
+                    filter.push_str(&format!(
+                        "[aconcat][{narr_mix_label}]amix=inputs=2:duration=first[afinal]"
+                    ));
+                } else {
+                    let between_parts: Vec<String> = narr.caption_timestamps.iter()
+                        .map(|ts| format!("between(t,{:.3},{:.3})", ts.start, ts.end))
+                        .collect();
+                    let vol_expr = format!("1.0-0.8*({})", between_parts.join("+"));
+                    filter.push_str(&format!(
+                        "[aconcat]volume='{vol_expr}':eval=frame[aducked]; \
+                         [aducked][{narr_mix_label}]amix=inputs=2:duration=first[afinal]"
+                    ));
+                }
+            }
+            _ => {
+                filter.push_str("[aconcat]copy[afinal]");
+            }
+        }
+    } else {
+        filter.push_str("[aconcat]copy[afinal]");
+    }
+
     filter
 }
 
@@ -1397,6 +1569,33 @@ pub async fn export_srt(
     }
     std::fs::write(&output_path, srt)
         .map_err(|e| format!("Write SRT failed: {}", e))
+}
+
+#[tauri::command]
+pub async fn save_narration_audio(
+    state: tauri::State<'_, SharedVideoEditorState>,
+    audio_base64: String,
+    take_id: Option<String>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let data = if let Some(pos) = audio_base64.find(";base64,") {
+        &audio_base64[pos + 8..]
+    } else {
+        &audio_base64
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+    let s = state.lock().await;
+    let filename = match &take_id {
+        Some(id) => format!("narration_{}.webm", id),
+        None => "narration.webm".to_string(),
+    };
+    let path = s.temp_dir.join(filename);
+    drop(s);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("Write narration audio failed: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // ---- Phase 6: FFmpeg Setup ----

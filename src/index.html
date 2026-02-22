@@ -4,9 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OBServe for OBS</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -176,6 +173,49 @@
         <div class="stream-record-status">
           <span id="sr-stream-status" class="sr-status">Stream: Off</span>
           <span id="sr-record-status" class="sr-status">Record: Off</span>
+        </div>
+        <div class="live-caption-controls" id="live-caption-controls">
+          <div class="live-caption-toggle-row">
+            <label class="duck-switch">
+              <input type="checkbox" id="live-captions-enabled">
+              <span class="duck-slider-track"></span>
+            </label>
+            <span id="live-caption-label" class="live-caption-label">Live Captions</span>
+            <span id="live-caption-status" class="live-caption-status"></span>
+          </div>
+          <div class="live-caption-settings" id="live-caption-settings" hidden>
+            <div class="live-caption-row">
+              <label>Theme</label>
+              <select id="live-caption-theme">
+                <option value="clean" style="font-family:'Inter',sans-serif">Clean</option>
+                <option value="bold_impact" style="font-family:'Poppins',sans-serif;font-weight:900">Bold Impact</option>
+                <option value="neon" style="font-family:'Inter',sans-serif;font-weight:700">Neon</option>
+                <option value="party" style="font-family:'Poppins',sans-serif;font-weight:700">Party</option>
+                <option value="retro" style="font-family:'JetBrains Mono',monospace">Retro</option>
+                <option value="handwritten" style="font-family:'Poppins',sans-serif;font-style:italic">Handwritten</option>
+              </select>
+            </div>
+            <div class="live-caption-row">
+              <label>Fade after</label>
+              <select id="live-caption-fade">
+                <option value="0">Never</option>
+                <option value="3000">3s</option>
+                <option value="5000" selected>5s</option>
+                <option value="10000">10s</option>
+              </select>
+            </div>
+            <div class="live-caption-row">
+              <label>Box Width</label>
+              <input type="range" id="live-caption-width" min="200" max="1920" value="800">
+              <span id="live-caption-width-val">800</span>
+            </div>
+            <div class="live-caption-row">
+              <label>Box Height</label>
+              <input type="range" id="live-caption-height" min="40" max="400" value="100">
+              <span id="live-caption-height-val">100</span>
+            </div>
+            <button class="btn-secondary" id="btn-live-caption-export-srt">Export SRT</button>
+          </div>
         </div>
       </section>
 
@@ -627,52 +667,70 @@
           <span class="ve-info-item" id="ve-codec"></span>
         </div>
 
-        <div class="ve-timeline-container" id="ve-timeline-container" hidden>
-          <canvas id="ve-timeline" height="60"></canvas>
-          <div class="ve-timeline-controls">
-            <button class="ve-ctrl-btn" id="btn-ve-trim-in" title="Mark where the video should start (keyboard: [)">Trim Start</button>
-            <button class="ve-ctrl-btn" id="btn-ve-trim-out" title="Mark where the video should end (keyboard: ])">Trim End</button>
-            <button class="ve-ctrl-btn" id="btn-ve-split" title="Cut the video at the current position (keyboard: S)">Split</button>
-            <button class="ve-ctrl-btn" id="btn-ve-delete-seg" title="Remove the selected segment (keyboard: Del)">Delete</button>
-            <button class="ve-ctrl-btn" id="btn-ve-undo" title="Undo last edit (keyboard: Ctrl+Z)">Undo</button>
-          </div>
-        </div>
-
-        <div class="ve-overlay-toolbar" id="ve-overlay-toolbar" hidden>
-          <button class="ve-ctrl-btn" id="btn-ve-add-text">+ Text</button>
-          <button class="ve-ctrl-btn" id="btn-ve-add-image">+ Image</button>
-          <button class="ve-ctrl-btn" id="btn-ve-add-watermark">+ Watermark</button>
-          <button class="ve-ctrl-btn ve-narrate-btn" id="btn-ve-narrate">Narrate</button>
-          <button class="ve-ctrl-btn" id="btn-ve-captions-toggle">Captions (0)</button>
-          <div class="ve-overlay-list" id="ve-overlay-list"></div>
-        </div>
-
-        <div class="ve-narration-strip" id="ve-narration-strip" hidden>
-          <button class="ve-ctrl-btn ve-rec-btn" id="btn-ve-narrate-record">Record</button>
-          <button class="ve-ctrl-btn" id="btn-ve-narrate-stop" hidden>Stop</button>
-          <select id="ve-caption-theme" class="ve-theme-select">
-            <option value="clean">Clean</option>
-            <option value="bold_impact">Bold Impact</option>
-            <option value="neon">Neon</option>
-            <option value="party">Party</option>
-            <option value="retro">Retro</option>
-            <option value="handwritten">Handwritten</option>
-          </select>
-          <div class="ve-mic-meter" id="ve-mic-meter"><div class="ve-mic-meter-fill" id="ve-mic-meter-fill"></div></div>
-          <span class="ve-narration-status" id="ve-narration-status">Ready</span>
-        </div>
-
-        <div class="ve-caption-editor" id="ve-caption-editor" hidden>
-          <div class="ve-caption-editor-header">
-            <span>Captions</span>
-            <div class="ve-caption-editor-actions">
-              <button class="ve-ctrl-btn" id="btn-ve-caption-merge">Merge</button>
-              <button class="ve-ctrl-btn" id="btn-ve-caption-split">Split</button>
-              <button class="ve-ctrl-btn" id="btn-ve-caption-clear">Clear All</button>
+        <div class="ve-edit-bay" id="ve-edit-bay" hidden>
+          <div class="ve-timeline-container" id="ve-timeline-container" hidden>
+            <canvas id="ve-timeline" height="60"></canvas>
+            <div class="ve-timeline-controls">
+              <button class="ve-ctrl-btn" id="btn-ve-trim-in" title="Mark where the video should start (keyboard: [)">Trim Start</button>
+              <button class="ve-ctrl-btn" id="btn-ve-trim-out" title="Mark where the video should end (keyboard: ])">Trim End</button>
+              <button class="ve-ctrl-btn" id="btn-ve-split" title="Cut the video at the current position (keyboard: S)">Split</button>
+              <button class="ve-ctrl-btn" id="btn-ve-delete-seg" title="Remove the selected segment (keyboard: Del)">Delete</button>
+              <button class="ve-ctrl-btn" id="btn-ve-undo" title="Undo last edit (keyboard: Ctrl+Z)">Undo</button>
             </div>
-            <button class="ve-props-close" id="btn-ve-caption-close">&times;</button>
           </div>
-          <div class="ve-caption-list" id="ve-caption-list"></div>
+
+          <div class="ve-overlay-toolbar" id="ve-overlay-toolbar" hidden>
+            <button class="ve-ctrl-btn" id="btn-ve-add-text">+ Text</button>
+            <button class="ve-ctrl-btn" id="btn-ve-add-image">+ Image</button>
+            <button class="ve-ctrl-btn" id="btn-ve-add-watermark">+ Watermark</button>
+            <button class="ve-ctrl-btn ve-narrate-btn" id="btn-ve-narrate">Narrate</button>
+            <button class="ve-ctrl-btn" id="btn-ve-captions-toggle">Captions (0)</button>
+            <div class="ve-overlay-list" id="ve-overlay-list"></div>
+          </div>
+
+          <div class="ve-narration-strip" id="ve-narration-strip" hidden>
+            <div class="ve-narr-mode-toggle">
+              <button class="ve-mode-btn active" id="btn-narr-mode-raw">Raw Mic</button>
+              <button class="ve-mode-btn" id="btn-narr-mode-filtered">OBS Filtered</button>
+            </div>
+            <button class="ve-ctrl-btn ve-rec-btn" id="btn-ve-narrate-record">Record</button>
+            <button class="ve-ctrl-btn" id="btn-ve-narrate-stop" hidden>Stop</button>
+            <button class="ve-ctrl-btn" id="btn-ve-narration-setup" hidden title="Setup VB-Cable for high-quality narration capture">Setup</button>
+            <select id="ve-caption-theme" class="ve-theme-select">
+              <option value="clean" style="font-family:'Inter',sans-serif">Clean</option>
+              <option value="bold_impact" style="font-family:'Poppins',sans-serif;font-weight:900">Bold Impact</option>
+              <option value="neon" style="font-family:'Inter',sans-serif;font-weight:700">Neon</option>
+              <option value="party" style="font-family:'Poppins',sans-serif;font-weight:700">Party</option>
+              <option value="retro" style="font-family:'JetBrains Mono',monospace">Retro</option>
+              <option value="handwritten" style="font-family:'Poppins',sans-serif;font-style:italic">Handwritten</option>
+            </select>
+            <div class="ve-narr-boundary-toggle">
+              <span class="ve-narr-label">At clip:</span>
+              <button class="ve-mode-btn active" id="btn-boundary-stop">Stop</button>
+              <button class="ve-mode-btn" id="btn-boundary-overtake">Overtake</button>
+            </div>
+            <div class="ve-mic-meter" id="ve-mic-meter"><div class="ve-mic-meter-fill" id="ve-mic-meter-fill"></div></div>
+            <span class="ve-narration-status" id="ve-narration-status">Ready</span>
+            <span class="ve-narration-audio-badge" id="ve-narration-audio-badge" hidden>Audio saved</span>
+          </div>
+
+          <div class="ve-narration-track-container" id="ve-narration-track" hidden>
+            <canvas id="ve-narration-track-canvas" height="28"></canvas>
+          </div>
+
+          <div class="ve-caption-editor" id="ve-caption-editor" hidden>
+            <div class="ve-caption-editor-header">
+              <span>Captions</span>
+              <div class="ve-caption-editor-actions">
+                <button class="ve-ctrl-btn" id="btn-ve-import-live-captions" hidden>Import Live</button>
+                <button class="ve-ctrl-btn" id="btn-ve-caption-merge">Merge</button>
+                <button class="ve-ctrl-btn" id="btn-ve-caption-split">Split</button>
+                <button class="ve-ctrl-btn" id="btn-ve-caption-clear">Clear All</button>
+              </div>
+              <button class="ve-props-close" id="btn-ve-caption-close">&times;</button>
+            </div>
+            <div class="ve-caption-list" id="ve-caption-list"></div>
+          </div>
         </div>
 
         <div class="ve-file-browser" id="ve-file-browser" hidden>
@@ -842,6 +900,20 @@
               <option value="both">Both</option>
               <option value="none">None</option>
             </select>
+          </div>
+          <div class="export-row" id="export-audio-row" hidden>
+            <label>Audio</label>
+            <select id="export-audio-mode">
+              <option value="captions_only">Original audio (captions only)</option>
+              <option value="mute_all">Mute all audio</option>
+              <option value="narration_replaces">Narration replaces original</option>
+              <option value="duck">Duck original during speech</option>
+            </select>
+          </div>
+          <div class="export-row" id="export-narration-vol-row" hidden>
+            <label>Narration Vol</label>
+            <input type="range" id="export-narration-vol" min="0" max="200" value="100">
+            <span id="export-narration-vol-label" style="font-size:0.75rem;color:var(--cream);min-width:32px">100%</span>
           </div>
         </div>
         <div class="export-progress-section" id="export-progress-section" hidden>

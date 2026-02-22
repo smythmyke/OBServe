@@ -134,7 +134,7 @@ async function handlePinActivation(request, env) {
 
     const allModules = [
       'spectrum', 'video-editor', 'calibration', 'ducking',
-      'audio-fx', 'camera', 'presets', 'monitoring',
+      'audio-fx', 'camera', 'presets', 'monitoring', 'narration-studio',
     ];
     const licenseKey = await generateLicenseKey(allModules, 'admin@observe.app', env);
 

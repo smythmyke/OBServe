@@ -85,6 +85,9 @@
 ### Module Store — DONE
 - Module registry, Ed25519 license verification, feature gating, Store UI, Cloudflare Worker for Stripe
 
+### Live Narration-to-Text Captions (Base) — DONE
+- Web Speech API narration, 6 themes, canvas preview, caption editor, ASS/SRT export, FFmpeg burn-in
+
 ### App Capture Upgrade — DONE
 - WASAPI audio session enumeration (only apps producing audio, not all processes)
 - Friendly display names via GetFileVersionInfoW (FileDescription) with title-case fallback
@@ -113,52 +116,61 @@
 
 ## Active / Next Up
 
-### Streamer Tab — NEW
-> A dedicated top-level tab for live streaming workflows, alongside Audio and Video tabs.
-- [ ] **Tab scaffolding** — add "Streamer" tab to toolbar, route to new panel container
-- [ ] **Sound Touch Pad** — grid of configurable trigger buttons for SFX/stingers/jingles during live streams
-  - [ ] Assign audio files (mp3/wav/ogg) to pad slots
-  - [ ] One-tap playback (play-through or toggle)
-  - [ ] Volume per pad + master pad volume
-  - [ ] Visual feedback (glow/pulse on trigger)
-  - [ ] Pad banks / pages (e.g., 8 pads per page, multiple pages)
-- [ ] **App Capture panel** — move/mirror existing app capture controls into Streamer tab
-- [ ] **Live Scene Switcher** — compact scene buttons with thumbnails for quick switching mid-stream
-- [ ] **Stream Health widget** — compact bitrate/drop/CPU readout always visible during stream
-- [ ] **Chat overlay controls** (future) — manage chat source visibility, font, position
-- [ ] **Go Live / End Stream controls** — one-click start/stop streaming with confirmation
+### OBServe Pads — NEW (9 Phases)
+> MPC-inspired sample pad module in Audio tab. Record, edit, and perform sound samples live.
+> Paid module ($1.99). Full spec: `observe-pads-spec.md` in memory.
+- [ ] **Phase 1: Pad Grid & Basic Playback** — 4x4 pad grid, load files, drag-drop, Web Audio playback, retrigger, master volume, module gating
+- [ ] **Phase 2: Banks, Colors & Pad Config** — 4 banks (A-D, 64 pads), per-pad color/volume, play modes (one-shot/retrigger/toggle/hold/loop), mute groups, keyboard mapping, context menu
+- [ ] **Phase 3: Transport & Recording (Mic)** — transport bar (rec/play/stop), mic recording via getUserMedia, threshold-triggered recording, live waveform, auto-assign to pad
+- [ ] **Phase 4: Recording from Apps & System** — WASAPI app audio capture, desktop loopback, VB-Cable source, app selector dropdown, input monitor
+- [ ] **Phase 5: Sample Editor** — waveform display, trim (start/end handles), zoom, normalize, reverse, fade in/out, gain, pitch, pan, zero-crossing snap
+- [ ] **Phase 6: Per-Pad Effects** — 3 insert slots per pad (LPF, HPF, reverb, delay, bitcrusher), master send bus, non-destructive, bounce option
+- [ ] **Phase 7: Advanced Pad Modes** — 16 Levels (velocity/pitch/filter/decay spread), Note Repeat (musical rate retrigger), Full Level mode
+- [ ] **Phase 8: Persistence & Presets** — auto-save, .obpad preset files, export/import bank as zip, sample browser panel
+- [ ] **Phase 9: Sound Store & OBS Routing** — bundled CC0 starter pack (~35 sounds), sound pack marketplace (R2 + Stripe), OBS audio routing toggle
 
-### Live Narration-to-Text (Captioning) — NEW
-> Speak while watching video playback; speech becomes styled text overlays baked into the export.
-- [ ] **STT integration** — real-time speech-to-text during video playback
-  - [ ] Whisper.cpp (local, primary) for transcription
-  - [ ] Web Speech API (free fallback)
-  - [ ] Sync transcribed text segments to video timeline positions
-- [ ] **Narration recording mode** — UI to start/stop narration pass over a video
-  - [ ] Play video, capture speech, generate timed text segments
-  - [ ] Show live preview of text appearing on video as user speaks
-  - [ ] Pause/resume support (pausing video pauses capture)
-- [ ] **Themed font styles** — user picks a visual theme for the captions
-  - [ ] Party (bubble letters / balloon style)
-  - [ ] Neon (glowing neon sign effect)
-  - [ ] Handwritten (script/cursive style)
-  - [ ] Retro (pixel / 8-bit style)
-  - [ ] Clean (modern sans-serif, standard subtitles)
-  - [ ] Bold Impact (meme-style bold white with black outline)
-  - [ ] Custom (user picks font, color, size, outline, shadow)
-- [ ] **Caption editor** — review/edit generated text segments on timeline
-  - [ ] Edit text content, adjust start/end timing
-  - [ ] Drag segments on timeline to reposition
-  - [ ] Delete / add segments manually
-  - [ ] Split / merge segments
-- [ ] **Position & animation** — control where and how text appears
-  - [ ] Position presets (bottom center, top, custom)
-  - [ ] Word-by-word reveal (karaoke-style) vs full sentence appear
-  - [ ] Fade in/out transitions
-- [ ] **Export with burned-in captions** — FFmpeg renders text overlays into final video
-  - [ ] ASS/SRT subtitle generation from segments
-  - [ ] FFmpeg `-vf subtitles=` or drawtext filter for burn-in
-  - [ ] Option to export as separate SRT file (for YouTube/platform upload)
+### Live Narration-to-Text Captions (Base) — DONE
+> Speak while watching video playback; speech becomes styled text captions baked into the export.
+- [x] Web Speech API narration engine (continuous, interimResults, auto-restart)
+- [x] Mic level meter (getUserMedia → AudioContext → AnalyserNode)
+- [x] 6 caption themes (Clean, Bold Impact, Neon, Party, Retro, Handwritten)
+- [x] Live canvas preview with word-wrap, outline, shadow, glow rendering
+- [x] Caption editor panel (edit text/timing, merge, split, clear all)
+- [x] Blue caption bars on timeline
+- [x] ASS subtitle generation in Rust (Script Info, V4+ Styles, Events)
+- [x] SRT export command
+- [x] FFmpeg export with ASS burn-in (single-seg -vf, multi-seg/overlay filter_complex)
+- [x] Export modal: Burn into video / Export as SRT / Both / None
+- [x] Project save/load with captions + caption style
+- [x] N keyboard shortcut to toggle narration
+
+### Narration Audio — Phase 1: Record & Audio Modes — NOT STARTED
+> Record narration audio during speech-to-text, let users choose how audio is mixed in export.
+- [ ] **MediaRecorder capture** — record mic audio to WebM/Opus during narration
+  - [ ] Tap existing getUserMedia stream into MediaRecorder alongside AnalyserNode
+  - [ ] Combine blobs on stop, write to temp file via Tauri command
+  - [ ] Store narration audio path in ve state + project save
+- [ ] **Audio mode selector** — UI dropdown in narration strip + export modal
+  - [ ] Text only (keep original video audio, captions only — current behavior)
+  - [ ] Mute all (no audio in export)
+  - [ ] Narration replaces (mute video audio, use narration track)
+  - [ ] Duck during speech (lower video audio during caption timestamps, mix narration)
+- [ ] **Export pipeline updates** — Rust FFmpeg integration for each mode
+  - [ ] Mute all: `-an` flag
+  - [ ] Narration replaces: `-i narration.webm -map 0:v -map 1:a`
+  - [ ] Duck: volume filter with between() expressions from caption timestamps + amix for narration
+
+### Narration Audio — Phase 2: Timeline Tracks & Volume — NOT STARTED
+> Visual narration waveform on timeline, volume controls for both audio tracks.
+- [ ] **Narration waveform** — render audio waveform below video timeline
+  - [ ] Decode narration audio via Web Audio API decodeAudioData
+  - [ ] Compute per-pixel peaks, render on canvas (~40px tall)
+  - [ ] Expand timeline canvas from 60px to ~110px
+- [ ] **Volume controls** — sliders for both tracks
+  - [ ] Video audio volume slider (maps to FFmpeg volume= filter)
+  - [ ] Narration audio volume slider
+  - [ ] Mute toggle per track
+- [ ] **Export with volume** — pass gain values to FFmpeg audio filters
 
 ### Filter Expansion — Remaining Items
 - [x] **Option E: OBS Peak Metering** — subscribe to InputVolumeMeters for post-filter levels
@@ -236,6 +248,7 @@
 - `direct-to-media-research.md` — Platform publishing API research (YouTube, TikTok, Instagram)
 - `video-scenes-research.md` — Video feature competitive research
 - `video-feature-plan.md` — V1-V19 ordered implementation plan
+- `observe-pads-spec.md` — OBServe Pads full design spec (9 phases, layout, architecture)
 - `competitive-analysis.md` — Full competitor analysis + pricing strategy
 - Project root `PLAN.md` — Product vision, architecture decisions
 - Project root `CLAUDE.md` — Coding instructions, phase roadmap
