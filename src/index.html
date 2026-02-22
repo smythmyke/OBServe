@@ -88,6 +88,9 @@
               <button class="toggle-btn active" data-complexity="simple">Simple</button>
               <button class="toggle-btn" data-complexity="advanced">Advanced</button>
             </div>
+            <div class="toolbar-group">
+              <button class="toggle-btn store-btn" id="btn-store">Store</button>
+            </div>
           </div>
           <div class="toolbar-right">
             <p id="connection-error" class="header-error" hidden></p>
@@ -98,6 +101,33 @@
           </div>
         </div>
       </div>
+
+      <section class="module panel" id="store-panel" data-panel="store" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">Module Store</span>
+        <div class="store-header">
+          <h2>Module Store</h2>
+          <span class="store-tagline">Unlock powerful modules &mdash; $1.99 each, one-time purchase</span>
+          <button class="btn-secondary store-close-btn" id="btn-store-close">&times; Close</button>
+        </div>
+        <div class="store-grid" id="store-grid"></div>
+        <div class="store-activation">
+          <div class="store-activation-header">
+            <span class="store-activation-label">Activate License</span>
+          </div>
+          <div class="store-activation-row">
+            <input type="text" id="store-license-key" class="store-license-input" placeholder="Enter 4-digit code or license key...">
+            <button class="hw-btn" id="btn-activate-license">Activate</button>
+          </div>
+          <p class="store-activation-status" id="store-activation-status"></p>
+          <div class="store-license-info" id="store-license-info" hidden>
+            <span id="store-license-email"></span>
+            <span id="store-license-count"></span>
+            <button class="btn-secondary store-deactivate-btn" id="btn-deactivate-license">Deactivate</button>
+          </div>
+        </div>
+      </section>
 
       <section class="module panel" id="routing-panel" data-panel="routing" hidden>
         <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
@@ -356,7 +386,11 @@
                 </div>
                 <div class="knob-info">
                   <span class="obs-vol-db" id="output-obs-db">-- dB</span>
-                  <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
+                  <div class="knob-btn-row">
+                    <button class="obs-mute-btn" id="output-obs-mute">Mute</button>
+                    <button class="monitor-btn" id="output-monitor-btn" title="Monitor Off">MON</button>
+                    <span class="led led-off" id="output-monitor-led"></span>
+                  </div>
                 </div>
               </div>
 
@@ -432,7 +466,20 @@
         <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
         <div class="mod-screw bl"></div><div class="mod-screw br"></div>
         <span class="mod-title">Mixer</span>
-        <h2>OBS Audio Mixer</h2>
+        <h2>OBServe Audio Mixer</h2>
+        <div class="mixer-toolbar" id="mixer-toolbar">
+          <span class="toolbar-label">Monitor</span>
+          <div class="monitor-preset-group">
+            <button class="monitor-preset-btn" data-monitor-preset="recording"
+              title="All monitoring off — clean recording, no feedback risk">Recording</button>
+            <button class="monitor-preset-btn" data-monitor-preset="headphone"
+              title="Mic off, desktop monitor-only — hear your mix without mic feedback">Headphone Mix</button>
+            <button class="monitor-preset-btn" data-monitor-preset="preview"
+              title="All sources monitor-only — hear everything with filters in headphones">Full Preview</button>
+            <button class="monitor-preset-btn" data-monitor-preset="live"
+              title="All sources monitor+output — live performance, use headphones!">Live Perf</button>
+          </div>
+        </div>
         <div id="mixer-list"></div>
       </section>
 
@@ -518,6 +565,7 @@
               <div class="sc-preset-dropdown" id="sc-preset-dropdown" hidden></div>
             </div>
             <button class="btn-secondary" id="btn-sc-new-group">+ New Group</button>
+            <button class="btn-secondary" id="btn-sc-browse-vsts">Browse VSTs</button>
           </div>
         </div>
         <div id="sc-replace-dialog" class="sc-dialog" hidden>
@@ -536,6 +584,14 @@
           </div>
         </div>
         <div id="filters-chain-list"></div>
+        <div id="vst-browser" class="vst-browser" hidden>
+          <div class="vst-browser-header">
+            <input type="text" id="vst-browser-search" class="vst-browser-search" placeholder="Search plugins...">
+            <button class="btn-secondary" id="btn-vst-browser-close">Back to Chain</button>
+          </div>
+          <div class="vst-browser-categories" id="vst-browser-categories"></div>
+          <div class="vst-browser-grid" id="vst-browser-grid"></div>
+        </div>
       </section>
 
       <section class="module panel" id="video-editor-panel" data-panel="video-editor" hidden>
@@ -661,6 +717,12 @@
           </div>
         </div>
       </section>
+
+      <div class="rack-bottom-cap">
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="rack-bottom-text">OBServe v0.1.0</span>
+      </div>
 
     </div>
 

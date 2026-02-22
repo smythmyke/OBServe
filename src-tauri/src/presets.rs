@@ -697,6 +697,448 @@ pub fn get_presets() -> Vec<Preset> {
                 },
             ],
         },
+        Preset {
+            id: "interview".into(),
+            name: "Interview".into(),
+            description: "Two-person interview. Gate + compressor + limiter on both mic and aux for consistent levels.".into(),
+            icon: "\u{1f399}".into(),
+            filter_prefix: "Interview".into(),
+            pro: false,
+            actions: vec![
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set mic volume to 0dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{mic}", "inputVolumeDb": 0.0}),
+                },
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set desktop audio to -20dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{desktop}", "inputVolumeDb": -20.0}),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add noise gate to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Interview Noise Gate",
+                        "filterKind": "noise_gate_filter",
+                        "filterSettings": {
+                            "open_threshold": -26.0,
+                            "close_threshold": -32.0,
+                            "attack_time": 25,
+                            "hold_time": 200,
+                            "release_time": 150
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add compressor to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Interview Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 3.5,
+                            "threshold": -18.0,
+                            "attack_time": 6,
+                            "release_time": 60,
+                            "output_gain": 2.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add limiter to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Interview Limiter",
+                        "filterKind": "limiter_filter",
+                        "filterSettings": {
+                            "threshold": -1.0,
+                            "release_time": 60
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add noise gate to aux/guest".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{desktop}",
+                        "filterName": "Interview Guest Gate",
+                        "filterKind": "noise_gate_filter",
+                        "filterSettings": {
+                            "open_threshold": -26.0,
+                            "close_threshold": -32.0,
+                            "attack_time": 25,
+                            "hold_time": 200,
+                            "release_time": 150
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add compressor to aux/guest".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{desktop}",
+                        "filterName": "Interview Guest Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 3.5,
+                            "threshold": -18.0,
+                            "attack_time": 6,
+                            "release_time": 60,
+                            "output_gain": 2.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add limiter to aux/guest".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{desktop}",
+                        "filterName": "Interview Guest Limiter",
+                        "filterKind": "limiter_filter",
+                        "filterSettings": {
+                            "threshold": -1.0,
+                            "release_time": 60
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "voiceover".into(),
+            name: "Voiceover / Narration".into(),
+            description: "Clean narration voice. Tight gate, 4:1 compressor, gain boost, limiter for broadcast-ready VO.".into(),
+            icon: "\u{1f3ac}".into(),
+            filter_prefix: "Voiceover".into(),
+            pro: false,
+            actions: vec![
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set mic volume to 0dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{mic}", "inputVolumeDb": 0.0}),
+                },
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Mute desktop audio".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputMute".into(),
+                    params: json!({"inputName": "{desktop}", "inputMuted": true}),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add tight noise gate to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Voiceover Noise Gate",
+                        "filterKind": "noise_gate_filter",
+                        "filterSettings": {
+                            "open_threshold": -24.0,
+                            "close_threshold": -30.0,
+                            "attack_time": 15,
+                            "hold_time": 150,
+                            "release_time": 100
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add compressor to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Voiceover Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 4.0,
+                            "threshold": -18.0,
+                            "attack_time": 6,
+                            "release_time": 60,
+                            "output_gain": 2.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gain boost to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Voiceover Gain",
+                        "filterKind": "gain_filter",
+                        "filterSettings": {
+                            "db": 4.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add limiter to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Voiceover Limiter",
+                        "filterKind": "limiter_filter",
+                        "filterSettings": {
+                            "threshold": -1.0,
+                            "release_time": 60
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "lofi".into(),
+            name: "Lo-Fi / Retro".into(),
+            description: "Vintage lo-fi character. Gain reduction, heavy 8:1 compression for saturated warmth, gain boost.".into(),
+            icon: "\u{1f4fc}".into(),
+            filter_prefix: "Lo-Fi".into(),
+            pro: false,
+            actions: vec![
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set mic volume to 0dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{mic}", "inputVolumeDb": 0.0}),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gain reduction to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Lo-Fi Gain Down",
+                        "filterKind": "gain_filter",
+                        "filterSettings": {
+                            "db": -3.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add heavy compressor to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Lo-Fi Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 8.0,
+                            "threshold": -20.0,
+                            "attack_time": 3,
+                            "release_time": 40,
+                            "output_gain": 0.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gain boost to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Lo-Fi Gain Up",
+                        "filterKind": "gain_filter",
+                        "filterSettings": {
+                            "db": 6.0
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "outdoor".into(),
+            name: "Outdoor / IRL Stream".into(),
+            description: "Wind and noise fighting for outdoor streams. Aggressive suppression, tight gate, compressor, limiter.".into(),
+            icon: "\u{1f333}".into(),
+            filter_prefix: "Outdoor".into(),
+            pro: false,
+            actions: vec![
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set mic volume to 0dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{mic}", "inputVolumeDb": 0.0}),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add aggressive noise suppression to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Outdoor Noise Suppression",
+                        "filterKind": "noise_suppress_filter_v2",
+                        "filterSettings": {
+                            "suppress_level": -60
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add tight noise gate to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Outdoor Noise Gate",
+                        "filterKind": "noise_gate_filter",
+                        "filterSettings": {
+                            "open_threshold": -20.0,
+                            "close_threshold": -26.0,
+                            "attack_time": 15,
+                            "hold_time": 150,
+                            "release_time": 100
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add compressor to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Outdoor Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 4.0,
+                            "threshold": -18.0,
+                            "attack_time": 6,
+                            "release_time": 60,
+                            "output_gain": 3.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add limiter to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Outdoor Limiter",
+                        "filterKind": "limiter_filter",
+                        "filterSettings": {
+                            "threshold": -1.0,
+                            "release_time": 60
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "conference".into(),
+            name: "Conference / Zoom".into(),
+            description: "Clean meeting audio. Moderate suppression, gate, 3:1 compressor, limiter for consistent call volume.".into(),
+            icon: "\u{1f4bc}".into(),
+            filter_prefix: "Conference".into(),
+            pro: false,
+            actions: vec![
+                AiAction {
+                    safety: "safe".into(),
+                    description: "Set mic volume to -3dB".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "SetInputVolume".into(),
+                    params: json!({"inputName": "{mic}", "inputVolumeDb": -3.0}),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add noise suppression to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Conference Noise Suppression",
+                        "filterKind": "noise_suppress_filter_v2",
+                        "filterSettings": {
+                            "suppress_level": -40
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add noise gate to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Conference Noise Gate",
+                        "filterKind": "noise_gate_filter",
+                        "filterSettings": {
+                            "open_threshold": -26.0,
+                            "close_threshold": -32.0,
+                            "attack_time": 25,
+                            "hold_time": 200,
+                            "release_time": 150
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add compressor to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Conference Compressor",
+                        "filterKind": "compressor_filter",
+                        "filterSettings": {
+                            "ratio": 3.0,
+                            "threshold": -18.0,
+                            "attack_time": 6,
+                            "release_time": 60,
+                            "output_gain": 2.0
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add limiter to mic".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Conference Limiter",
+                        "filterKind": "limiter_filter",
+                        "filterSettings": {
+                            "threshold": -1.0,
+                            "release_time": 60
+                        }
+                    }),
+                },
+            ],
+        },
         // --- Pro Presets (Airwindows VST) ---
         Preset {
             id: "pro-broadcast".into(),
@@ -957,6 +1399,346 @@ pub fn get_presets() -> Vec<Preset> {
                         "filterKind": "vst_filter",
                         "filterSettings": {
                             "plugin_path": "{vst:BlockParty}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-radio".into(),
+            name: "Pro Radio Voice".into(),
+            description: "Punchy radio-style voice. Gate/envelope shaping, console warmth, smooth compression, brick-wall limiting.".into(),
+            icon: "\u{1f4fb}".into(),
+            filter_prefix: "Pro Radio".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gate/envelope to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Radio Gate",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Gatelope}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add console channel strip to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Radio Console",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestConsoleChannel}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add smooth compressor to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Radio Pressure",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Pressure4}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add brick-wall limiter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Radio Limiter",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:BlockParty}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-asmr".into(),
+            name: "Pro ASMR Detail".into(),
+            description: "Ultra-detailed ASMR. Gentle gate/envelope, airy high-frequency lift, density for micro-detail.".into(),
+            icon: "\u{2728}".into(),
+            filter_prefix: "Pro ASMR".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add gate/envelope to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro ASMR Gate",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Gatelope}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add air EQ to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro ASMR Air",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Air}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add density compression to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro ASMR Density",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Density}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-lofi-warmth".into(),
+            name: "Pro Lo-Fi Warmth".into(),
+            description: "Analog warmth and vinyl character. Tube-style saturation, vinyl tone shaping, natural reverb.".into(),
+            icon: "\u{1f3b8}".into(),
+            filter_prefix: "Pro Lo-Fi".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add warm saturation to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Lo-Fi Drive",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestDrive}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add vinyl tone shaping to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Lo-Fi Vinyl",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:ToVinyl4}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add natural reverb to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Lo-Fi Reverb",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Verbity}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-channel-strip".into(),
+            name: "Pro Channel Strip".into(),
+            description: "Full channel strip processing. Console saturation, channel strip EQ/compression/gate, tape warmth.".into(),
+            icon: "\u{1f39b}".into(),
+            filter_prefix: "Pro Strip".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add console channel saturation to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Strip Console",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Console7Channel}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add channel strip to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Strip CStrip",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:CStrip}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add tape warmth to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Strip Tape",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Tape}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-loudness".into(),
+            name: "Pro Loudness Max".into(),
+            description: "Competitive streaming loudness. Acceleration edge taming, NC-17 loudness maximizer, brick-wall limiter.".into(),
+            icon: "\u{1f4e2}".into(),
+            filter_prefix: "Pro Loud".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add edge taming to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Loud Acceleration",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Acceleration}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add loudness maximizer to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Loud NC17",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:NC17}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add brick-wall limiter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Loud Limiter",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:BlockParty}"
+                        }
+                    }),
+                },
+            ],
+        },
+        Preset {
+            id: "pro-clarity".into(),
+            name: "Pro Vocal Clarity".into(),
+            description: "Crystal-clear vocal presence. Capacitor filter for articulation, de-essing, console warmth, acceleration smoothing.".into(),
+            icon: "\u{1f4a0}".into(),
+            filter_prefix: "Pro Clarity".into(),
+            pro: true,
+            actions: vec![
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add capacitor filter to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Clarity Capacitor",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Capacitor}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add de-esser to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Clarity DeEss",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:DeEss}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add console warmth to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Clarity Console",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:PurestConsoleChannel}"
+                        }
+                    }),
+                },
+                AiAction {
+                    safety: "caution".into(),
+                    description: "Add edge smoothing to mic (VST)".into(),
+                    action_type: "obs_request".into(),
+                    request_type: "CreateSourceFilter".into(),
+                    params: json!({
+                        "sourceName": "{mic}",
+                        "filterName": "Pro Clarity Acceleration",
+                        "filterKind": "vst_filter",
+                        "filterSettings": {
+                            "plugin_path": "{vst:Acceleration}"
                         }
                     }),
                 },

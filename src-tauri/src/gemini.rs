@@ -1,6 +1,7 @@
 use crate::audio::AudioDevice;
 use crate::audio_monitor::AudioMetrics;
 use crate::obs_state::ObsState;
+use crate::store::LicenseState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -68,13 +69,14 @@ impl GeminiClient {
         devices: &[AudioDevice],
         audio_metrics: &AudioMetrics,
         calibration_json: Option<&str>,
+        license: &LicenseState,
     ) -> Result<ChatResponse, String> {
         self.history.push(ChatMessage {
             role: "user".into(),
             text: user_text.into(),
         });
 
-        let system_prompt = build_system_prompt(obs_state, devices, audio_metrics, calibration_json);
+        let system_prompt = build_system_prompt(obs_state, devices, audio_metrics, calibration_json, license);
         log::info!("AI system prompt length: {} chars", system_prompt.len());
 
         let contents: Vec<Value> = self
@@ -208,6 +210,7 @@ fn build_system_prompt(
     devices: &[AudioDevice],
     audio_metrics: &AudioMetrics,
     calibration_json: Option<&str>,
+    license: &LicenseState,
 ) -> String {
     let mut prompt = String::from(
         r#"You are OBServer AI, an expert sound engineer and OBS Studio assistant. You help creators control their audio, video, scenes, and streaming setup through natural conversation.
@@ -249,9 +252,9 @@ Smart Presets can be applied via the Signal Chain panel OR via AI action (action
 Presets can be removed from the Signal Chain panel.
 
 ### Airwindows VST Plugins
-OBServe bundles 10 professional-grade Airwindows VST2 plugins (MIT licensed):
-Air, BlockParty, DeEss, Density, Gatelope, Pressure4, PurestConsoleChannel,
-PurestDrive, ToVinyl4, Verbity.
+OBServe bundles 16 professional-grade Airwindows VST2 plugins (MIT licensed):
+Acceleration, Air, BlockParty, Capacitor, Console7Channel, CStrip, DeEss, Density,
+Gatelope, NC17, Pressure4, PurestConsoleChannel, PurestDrive, Tape, ToVinyl4, Verbity.
 
 Pro presets use these VST plugins for broadcast-quality audio:
 - Pro Broadcast: Console → De-ess → Compress → Limit
@@ -573,6 +576,23 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         ));
     }
 
+    // Module Ownership
+    let catalog = crate::store::get_module_catalog();
+    prompt.push_str("\n### Module Ownership\n");
+    for m in &catalog {
+        let status = if license.owned_modules.contains(&m.id) {
+            "OWNED"
+        } else {
+            "not purchased"
+        };
+        prompt.push_str(&format!("- {} ({}): {}\n", m.name, m.id, status));
+    }
+    prompt.push_str("\n**IMPORTANT:** If the user requests a feature that requires an unowned module, do NOT attempt the action. Instead, explain that the feature requires the module and suggest purchasing it from the Store panel. Specifically:\n");
+    prompt.push_str("- Smart Presets require the \"presets\" module\n");
+    prompt.push_str("- Pro presets (VST-based) additionally require the \"audio-fx\" module for VST plugins\n");
+    prompt.push_str("- Video editor actions require the \"video-editor\" module\n");
+    prompt.push_str("- Sidechain ducking requires the \"ducking\" module\n\n");
+
     // Smart Presets & VST status
     let all_presets = crate::presets::get_presets();
     let vst_status = crate::vst_manager::get_vst_status();
@@ -593,9 +613,14 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         prompt.push_str("\n**Airwindows VSTs:** Not installed — Pro presets unavailable\n");
     }
 
+    let presets_owned = license.owned_modules.contains("presets");
+    let vsts_owned = license.owned_modules.contains("audio-fx");
     prompt.push_str("\n### Smart Presets\n");
-    prompt.push_str("| ID | Name | Description | Pro? |\n");
-    prompt.push_str("|-----|------|-------------|------|\n");
+    if !presets_owned {
+        prompt.push_str("**Note:** User does NOT own the \"presets\" module. Do not apply presets — suggest purchasing from Store.\n");
+    }
+    prompt.push_str("| ID | Name | Description | Pro? | Available? |\n");
+    prompt.push_str("|-----|------|-------------|------|------------|\n");
     for p in &all_presets {
         let pro_label = if p.pro {
             if vst_status.installed {
@@ -606,9 +631,18 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
         } else {
             "No"
         };
+        let available = if !presets_owned {
+            "No (needs presets module)"
+        } else if p.pro && !vsts_owned {
+            "No (needs audio-fx module)"
+        } else if p.pro && !vst_status.installed {
+            "No (VSTs not installed)"
+        } else {
+            "Yes"
+        };
         prompt.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            p.id, p.name, p.description, pro_label
+            "| {} | {} | {} | {} | {} |\n",
+            p.id, p.name, p.description, pro_label, available
         ));
     }
 

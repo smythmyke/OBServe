@@ -12,6 +12,7 @@ mod obs_websocket;
 mod preflight;
 mod presets;
 mod routing;
+mod store;
 mod system_monitor;
 mod tray;
 mod spectrum;
@@ -27,6 +28,7 @@ use gemini::SharedGeminiClient;
 use obs_state::SharedObsState;
 use obs_websocket::ObsConnection;
 use spectrum::SharedSpectrumState;
+use store::SharedLicenseState;
 use video_editor::SharedVideoEditorState;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -43,6 +45,12 @@ pub fn run() {
             }
         });
 
+    let license_state = store::load_license_from_disk();
+    log::info!(
+        "License loaded: {} modules owned",
+        license_state.owned_modules.len()
+    );
+
     tauri::Builder::default()
         .manage(Arc::new(Mutex::new(ObsConnection::new())) as SharedObsConnection)
         .manage(Arc::new(RwLock::new(obs_state::ObsState::new())) as SharedObsState)
@@ -52,6 +60,7 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(ducking::DuckingConfig::default())) as SharedDuckingConfig)
         .manage(Arc::new(Mutex::new(spectrum::SpectrumState::new())) as SharedSpectrumState)
         .manage(Arc::new(Mutex::new(video_editor::VideoEditorState::new())) as SharedVideoEditorState)
+        .manage(Arc::new(RwLock::new(license_state)) as SharedLicenseState)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -128,6 +137,8 @@ pub fn run() {
             commands::rename_input,
             commands::get_vst_status,
             commands::install_vsts,
+            commands::get_vst_catalog,
+            commands::download_vst,
             commands::get_audio_metrics,
             commands::get_source_filter_kinds,
             commands::get_ducking_config,
@@ -166,6 +177,10 @@ pub fn run() {
             video_editor::install_ffmpeg_winget,
             video_editor::browse_for_ffmpeg,
             video_editor::browse_save_location,
+            store::get_store_catalog,
+            store::get_license_state,
+            store::activate_license_key,
+            store::deactivate_license,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

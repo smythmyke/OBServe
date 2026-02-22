@@ -33,6 +33,7 @@ dirs = "6"
 regex-lite = "0.1"
 rustfft = "6"
 ebur128 = "0.1"
+ed25519-dalek = { version = "2", features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

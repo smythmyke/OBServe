@@ -29,6 +29,7 @@ let selectedInputId = null;
 let viewMode = 'audio-video';
 let viewComplexity = 'simple';
 let isConnected = false;
+let licenseState = { owned_modules: [], email: null, activated_at: null };
 let cachedDisplays = [];
 let studioMode = false;
 let previewScenes = [];
@@ -130,12 +131,39 @@ function applyPanelVisibility() {
   document.querySelectorAll('[data-panel]').forEach(el => {
     const panelName = el.dataset.panel;
     if (panelName === 'calibration') return;
+    if (panelName === 'store') return;
     const st = states[panelName] || {};
     if (st.removed) { el.hidden = true; return; }
     const inMatrix = allowed.includes(panelName);
     const needsConn = CONNECTION_REQUIRED_PANELS.has(panelName);
     const connOk = !needsConn || isConnected;
     el.hidden = !(inMatrix || st.forceVisible) || !connOk;
+
+    const existing = el.querySelector('.panel-lock-overlay');
+    if (isPanelLocked(panelName)) {
+      if (!storeOpen) {
+        el.hidden = true;
+        if (existing) existing.remove();
+      } else {
+        el.hidden = false;
+        if (!existing) {
+          const label = PANEL_LABELS[panelName] || panelName;
+          const overlay = document.createElement('div');
+          overlay.className = 'panel-lock-overlay';
+          overlay.innerHTML = `
+            <span class="panel-lock-icon">&#128274;</span>
+            <span class="panel-lock-name">${label}</span>
+            <span class="panel-lock-price">$1.99</span>
+            <span class="panel-lock-cta">Click to unlock in Store</span>`;
+          overlay.addEventListener('click', () => showStorePanel());
+          overlay.addEventListener('mouseenter', () => overlay.classList.add('preview'));
+          overlay.addEventListener('mouseleave', () => overlay.classList.remove('preview'));
+          el.appendChild(overlay);
+        }
+      }
+    } else if (existing) {
+      existing.remove();
+    }
   });
   updateModuleShading();
 }
@@ -332,8 +360,16 @@ function setupEventListeners() {
     refreshFullState();
   });
 
-  listen('obs://monitor-type-changed', () => {
-    refreshFullState();
+  listen('obs://monitor-type-changed', (e) => {
+    const { inputName, monitorType } = e.payload;
+    if (obsState?.inputs?.[inputName]) {
+      obsState.inputs[inputName].monitorType = monitorType;
+    }
+    updateMonitorUI();
+    applyMixerMonitorState(inputName);
+    if (!monitorPresetApplying) {
+      highlightActiveMonitorPreset();
+    }
   });
 
   listen('obs://frame-drop-alert', (e) => {
@@ -957,6 +993,14 @@ function renderAudioMixer() {
     const panLabel = Math.abs(pan) < 0.02 ? 'C' : (pan < 0 ? `L${Math.round(Math.abs(pan)*100)}` : `R${Math.round(pan*100)}`);
     const syncOffset = input.audioSyncOffset || 0;
     const tracks = input.audioTracks || {};
+    const monType = input.monitorType || 'OBS_MONITORING_TYPE_NONE';
+    const monClass = monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY' ? 'mon-only'
+                   : monType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT' ? 'mon-output' : '';
+    const monTitle = monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY'
+      ? 'Monitor Only \u2014 hear this source in headphones (with filters). Not sent to stream. Click to cycle.'
+      : monType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT'
+      ? 'Monitor + Output \u2014 hear in headphones AND send to stream. Use headphones to avoid feedback! Click to cycle.'
+      : 'Monitor Off \u2014 source goes to stream/recording only, not your headphones. Click to cycle.';
     return `<div class="mixer-item ${mutedClass}" data-input="${esc(input.name)}">
       <span class="mixer-name" title="${esc(input.name)}">${esc(input.name)}</span>
       <div class="mixer-slider-wrap">
@@ -965,6 +1009,7 @@ function renderAudioMixer() {
         <span class="mixer-db">${dbVal} dB</span>
       </div>
       <button class="mixer-mute-btn ${mutedClass}" data-input="${esc(input.name)}">${input.muted ? 'MUTED' : 'Mute'}</button>
+      <button class="mixer-mon-btn ${monClass}" data-input="${esc(input.name)}" title="${esc(monTitle)}">MON</button>
       <div class="mixer-divider"></div>
       <div class="pan-control">
         <span class="pan-label">Pan</span>
@@ -1011,6 +1056,8 @@ function renderAudioMixer() {
   container.querySelectorAll('.pan-knob-wrap').forEach(wrap => {
     updatePanKnob(wrap, parseFloat(wrap.dataset.pan) || 0);
   });
+
+  highlightActiveMonitorPreset();
 }
 
 function updateMixerItem(inputName) {
@@ -1059,6 +1106,8 @@ function updateMixerItem(inputName) {
 
   const meterRow = document.querySelector(`.mixer-meter-row[data-input="${CSS.escape(inputName)}"]`);
   if (meterRow) meterRow.classList.toggle('muted', input.muted);
+
+  applyMixerMonitorState(inputName);
 }
 
 function updateMixerMeter(inputName, channels) {
@@ -1177,6 +1226,12 @@ function bindMixerEvents() {
   if (mixerEventsBound) return;
   mixerEventsBound = true;
 
+  document.querySelectorAll('.monitor-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      applyMonitorPreset(btn.dataset.monitorPreset);
+    });
+  });
+
   container.addEventListener('input', (e) => {
     if (!e.target.classList.contains('mixer-slider')) return;
     const inputName = e.target.dataset.input;
@@ -1209,6 +1264,12 @@ function bindMixerEvents() {
     if (e.target.classList.contains('mixer-mute-btn')) {
       const inputName = e.target.dataset.input;
       invoke('toggle_input_mute', { inputName }).catch(() => {});
+      return;
+    }
+
+    if (e.target.classList.contains('mixer-mon-btn')) {
+      const inputName = e.target.dataset.input;
+      cycleMixerMonitorType(inputName, e.target);
       return;
     }
 
@@ -2799,9 +2860,12 @@ function bindDeviceWidgetEvents() {
     if (matched.length > 0) invoke('toggle_input_mute', { inputName: matched[0].name }).catch(() => {});
   });
 
-  // Monitor button
+  // Monitor buttons
   $('#input-monitor-btn').addEventListener('click', () => {
-    cycleMonitorType();
+    cycleMonitorType('input');
+  });
+  $('#output-monitor-btn').addEventListener('click', () => {
+    cycleMonitorType('output');
   });
 }
 
@@ -2811,8 +2875,9 @@ const MONITOR_CYCLE = [
   'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT',
 ];
 
-async function cycleMonitorType() {
-  const matched = matchObsInputsToDevice('input', selectedInputId);
+async function cycleMonitorType(type) {
+  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
+  const matched = matchObsInputsToDevice(type, deviceId);
   if (matched.length === 0 || !isConnected) return;
 
   const input = matched[0];
@@ -2825,11 +2890,12 @@ async function cycleMonitorType() {
   try {
     await invoke('set_input_audio_monitor_type', { inputName: input.name, monitorType: next });
     console.log('[MON] set OK:', next);
-    // Update cached state immediately so UI reflects the change
     if (obsState?.inputs?.[input.name]) {
       obsState.inputs[input.name].monitorType = next;
     }
     updateMonitorUI();
+    applyMixerMonitorState(input.name);
+    highlightActiveMonitorPreset();
     if (next === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
       showFrameDropAlert('Monitor + Output: audio goes to stream/recording. Use headphones to avoid feedback.');
     }
@@ -2840,19 +2906,24 @@ async function cycleMonitorType() {
 }
 
 function updateMonitorUI() {
-  const btn = document.getElementById('input-monitor-btn');
-  const led = document.getElementById('input-monitor-led');
+  updateMonitorUIForWidget('input');
+  updateMonitorUIForWidget('output');
+}
+
+function updateMonitorUIForWidget(type) {
+  const btn = document.getElementById(`${type}-monitor-btn`);
+  const led = document.getElementById(`${type}-monitor-led`);
   if (!btn || !led) return;
 
-  const matched = matchObsInputsToDevice('input', selectedInputId);
+  const deviceId = type === 'input' ? selectedInputId : selectedOutputId;
+  const matched = matchObsInputsToDevice(type, deviceId);
   if (matched.length === 0 || !isConnected) {
     btn.className = 'monitor-btn';
-    btn.title = 'Monitor Off';
+    btn.title = 'Monitor Off \u2014 source goes to stream/recording only, not your headphones. Click to cycle.';
     led.className = 'led led-off';
     return;
   }
 
-  // Query OBS for fresh monitor type to prevent stale cache issues
   const inputName = matched[0].name;
   invoke('get_input_audio_monitor_type', { inputName }).then(fresh => {
     if (obsState?.inputs?.[inputName]) {
@@ -2868,16 +2939,136 @@ function applyMonitorUIState(btn, led, monType) {
   btn.classList.remove('mon-only', 'mon-output');
   if (monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY') {
     btn.classList.add('mon-only');
-    btn.title = 'Monitor Only (click to cycle)';
+    btn.title = 'Monitor Only \u2014 hear this source in headphones (with filters). Not sent to stream. Click to cycle.';
     led.className = 'led led-amber';
   } else if (monType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
     btn.classList.add('mon-output');
-    btn.title = 'Monitor + Output (click to cycle)';
+    btn.title = 'Monitor + Output \u2014 hear in headphones AND send to stream. Use headphones to avoid feedback! Click to cycle.';
     led.className = 'led led-red';
   } else {
-    btn.title = 'Monitor Off (click to cycle)';
+    btn.title = 'Monitor Off \u2014 source goes to stream/recording only, not your headphones. Click to cycle.';
     led.className = 'led led-off';
   }
+}
+
+async function cycleMixerMonitorType(inputName, btn) {
+  if (!isConnected || !obsState?.inputs?.[inputName]) return;
+
+  const input = obsState.inputs[inputName];
+  const current = input.monitorType || 'OBS_MONITORING_TYPE_NONE';
+  const idx = MONITOR_CYCLE.indexOf(current);
+  const next = MONITOR_CYCLE[(idx + 1) % MONITOR_CYCLE.length];
+
+  try {
+    await invoke('set_input_audio_monitor_type', { inputName, monitorType: next });
+    obsState.inputs[inputName].monitorType = next;
+    applyMixerMonitorState(inputName);
+    updateMonitorUI();
+    highlightActiveMonitorPreset();
+    if (next === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
+      showFrameDropAlert('Monitor + Output: audio goes to stream/recording. Use headphones to avoid feedback.');
+    }
+  } catch (e) {
+    showFrameDropAlert('Monitor change failed: ' + e);
+  }
+}
+
+function applyMixerMonitorState(inputName) {
+  const item = document.querySelector(`.mixer-item[data-input="${CSS.escape(inputName)}"]`);
+  if (!item) return;
+  const btn = item.querySelector('.mixer-mon-btn');
+  if (!btn) return;
+  const monType = obsState?.inputs?.[inputName]?.monitorType || 'OBS_MONITORING_TYPE_NONE';
+  btn.classList.remove('mon-only', 'mon-output');
+  if (monType === 'OBS_MONITORING_TYPE_MONITOR_ONLY') {
+    btn.classList.add('mon-only');
+    btn.title = 'Monitor Only \u2014 hear this source in headphones (with filters). Not sent to stream. Click to cycle.';
+  } else if (monType === 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT') {
+    btn.classList.add('mon-output');
+    btn.title = 'Monitor + Output \u2014 hear in headphones AND send to stream. Use headphones to avoid feedback! Click to cycle.';
+  } else {
+    btn.title = 'Monitor Off \u2014 source goes to stream/recording only, not your headphones. Click to cycle.';
+  }
+}
+
+// --- Monitor Presets ---
+
+const MONITOR_PRESETS = {
+  recording: { rule: () => 'OBS_MONITORING_TYPE_NONE' },
+  headphone: { rule: (input) => input.kind.includes('input_capture')
+    ? 'OBS_MONITORING_TYPE_NONE' : 'OBS_MONITORING_TYPE_MONITOR_ONLY' },
+  preview:   { rule: () => 'OBS_MONITORING_TYPE_MONITOR_ONLY' },
+  live:      { rule: () => 'OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT' },
+};
+
+let monitorPresetApplying = false;
+
+async function applyMonitorPreset(presetId) {
+  const preset = MONITOR_PRESETS[presetId];
+  if (!preset || !obsState || !isConnected) return;
+
+  const audioInputs = Object.values(obsState.inputs || {})
+    .filter(i => AUDIO_KINDS.some(k => i.kind.includes(k) || k.includes(i.kind)));
+
+  if (audioInputs.length === 0) return;
+
+  monitorPresetApplying = true;
+
+  try {
+    await Promise.all(audioInputs.map(input => {
+      const desired = preset.rule(input);
+      const current = input.monitorType || 'OBS_MONITORING_TYPE_NONE';
+      if (desired === current) return Promise.resolve();
+      return invoke('set_input_audio_monitor_type', {
+        inputName: input.name,
+        monitorType: desired,
+      }).then(() => {
+        if (obsState?.inputs?.[input.name]) {
+          obsState.inputs[input.name].monitorType = desired;
+        }
+      });
+    }));
+
+    updateMonitorUI();
+    document.querySelectorAll('.mixer-mon-btn').forEach(btn => {
+      applyMixerMonitorState(btn.dataset.input);
+    });
+  } catch (e) {
+    showFrameDropAlert('Monitor preset failed: ' + e);
+  } finally {
+    monitorPresetApplying = false;
+    highlightActiveMonitorPreset();
+  }
+}
+
+function highlightActiveMonitorPreset() {
+  const btns = document.querySelectorAll('.monitor-preset-btn');
+  if (!obsState) {
+    btns.forEach(b => b.classList.remove('active-preset'));
+    return;
+  }
+
+  const audioInputs = Object.values(obsState.inputs || {})
+    .filter(i => AUDIO_KINDS.some(k => i.kind.includes(k) || k.includes(i.kind)));
+
+  if (audioInputs.length === 0) {
+    btns.forEach(b => b.classList.remove('active-preset'));
+    return;
+  }
+
+  let matchedPreset = null;
+  for (const [id, preset] of Object.entries(MONITOR_PRESETS)) {
+    const allMatch = audioInputs.every(input => {
+      const desired = preset.rule(input);
+      const current = input.monitorType || 'OBS_MONITORING_TYPE_NONE';
+      return desired === current;
+    });
+    if (allMatch) { matchedPreset = id; break; }
+  }
+
+  btns.forEach(b => {
+    b.classList.toggle('active-preset', b.dataset.monitorPreset === matchedPreset);
+  });
 }
 
 // --- Pre-Flight ---
@@ -3633,12 +3824,16 @@ function scrollChat() {
 // --- Smart Presets (Signal Chain) ---
 
 async function ensurePresetsLoaded() {
-  if (cachedPresets) return cachedPresets;
+  if (cachedPresets !== null) return cachedPresets;
   try {
     cachedPresets = await invoke('get_smart_presets');
   } catch (e) {
-    showFrameDropAlert('Failed to load presets: ' + e);
-    cachedPresets = [];
+    if (String(e).includes('not purchased')) {
+      cachedPresets = [];
+    } else {
+      showFrameDropAlert('Failed to load presets: ' + e);
+      cachedPresets = [];
+    }
   }
   return cachedPresets;
 }
@@ -3662,7 +3857,7 @@ async function togglePresetDropdown() {
   if (!dropdown.hidden) { dropdown.hidden = true; return; }
 
   const presets = await ensurePresetsLoaded();
-  const vstsInstalled = vstStatus?.installed ?? false;
+  const vstsInstalled = vstStatus?.plugins?.some(p => p.installed) ?? false;
   let html = presets.map(p => {
     const isPro = p.pro;
     const disabled = isPro && !vstsInstalled;
@@ -3881,6 +4076,143 @@ $('#btn-sc-cancel-group').addEventListener('click', () => {
   $('#sc-newgroup-dialog').hidden = true;
 });
 
+// --- VST Browser ---
+
+let vstBrowserCatalog = null;
+let vstBrowserCategory = 'All';
+
+$('#btn-sc-browse-vsts').addEventListener('click', async () => {
+  if (!isModuleOwned('audio-fx')) {
+    showFrameDropAlert('Audio FX module required — open Store to unlock');
+    return;
+  }
+  const chainList = $('#filters-chain-list');
+  const browser = $('#vst-browser');
+  const toolbar = $('.signal-chain-toolbar');
+  if (!chainList || !browser) return;
+  chainList.hidden = true;
+  if ($('#sc-replace-dialog')) $('#sc-replace-dialog').hidden = true;
+  if ($('#sc-newgroup-dialog')) $('#sc-newgroup-dialog').hidden = true;
+  if (toolbar) toolbar.hidden = true;
+  browser.hidden = false;
+  $('#vst-browser-search').value = '';
+  vstBrowserCategory = 'All';
+  await loadVstBrowserCatalog();
+});
+
+$('#btn-vst-browser-close').addEventListener('click', async () => {
+  $('#vst-browser').hidden = true;
+  $('#filters-chain-list').hidden = false;
+  const toolbar = $('.signal-chain-toolbar');
+  if (toolbar) toolbar.hidden = false;
+  await refreshVstStatusAfterBrowser();
+});
+
+async function loadVstBrowserCatalog() {
+  const grid = $('#vst-browser-grid');
+  const catsEl = $('#vst-browser-categories');
+  grid.innerHTML = '<div class="group-empty-msg">Loading catalog...</div>';
+  try {
+    vstBrowserCatalog = await invoke('get_vst_catalog');
+    renderVstBrowserCategories(catsEl);
+    renderVstBrowserGrid(grid);
+  } catch (e) {
+    grid.innerHTML = `<div class="group-empty-msg">${esc(String(e))}</div>`;
+  }
+}
+
+function renderVstBrowserCategories(container) {
+  if (!vstBrowserCatalog) return;
+  const cats = ['All', ...new Set(vstBrowserCatalog.map(p => p.category))];
+  container.innerHTML = cats.map(c => {
+    const active = c === vstBrowserCategory ? ' active' : '';
+    return `<button class="vst-cat-pill${active}" data-cat="${esc(c)}">${esc(c)}</button>`;
+  }).join('');
+  container.querySelectorAll('.vst-cat-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      vstBrowserCategory = btn.dataset.cat;
+      container.querySelectorAll('.vst-cat-pill').forEach(b => b.classList.toggle('active', b.dataset.cat === vstBrowserCategory));
+      renderVstBrowserGrid($('#vst-browser-grid'));
+    });
+  });
+}
+
+function renderVstBrowserGrid(container) {
+  if (!vstBrowserCatalog) return;
+  const search = ($('#vst-browser-search')?.value || '').toLowerCase();
+  const filtered = vstBrowserCatalog.filter(p => {
+    if (vstBrowserCategory !== 'All' && p.category !== vstBrowserCategory) return false;
+    if (search && !p.name.toLowerCase().includes(search) && !p.description.toLowerCase().includes(search)) return false;
+    return true;
+  });
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="group-empty-msg">No plugins match your search.</div>';
+    return;
+  }
+  container.innerHTML = filtered.map(p => {
+    const btnClass = p.installed ? ' installed' : '';
+    const btnText = p.installed ? 'Installed' : 'Install';
+    const cardClass = p.bundled ? ' bundled' : '';
+    return `<div class="vst-browser-card${cardClass}" data-vst="${esc(p.name)}">
+      <div class="vst-browser-card-name">${esc(p.name)}</div>
+      <span class="vst-browser-card-cat">${esc(p.category)}</span>
+      <div class="vst-browser-card-desc">${esc(p.description)}</div>
+      <button class="vst-browser-install-btn${btnClass}" data-vst="${esc(p.name)}"${p.installed ? ' disabled' : ''}>${btnText}</button>
+    </div>`;
+  }).join('');
+  container.querySelectorAll('.vst-browser-install-btn:not(.installed)').forEach(btn => {
+    btn.addEventListener('click', () => installVstFromBrowser(btn, btn.dataset.vst));
+  });
+}
+
+async function installVstFromBrowser(btn, name) {
+  btn.classList.add('installing');
+  btn.textContent = 'Installing...';
+  try {
+    await invoke('download_vst', { name });
+    btn.classList.remove('installing');
+    btn.classList.add('installed');
+    btn.textContent = 'Installed';
+    btn.disabled = true;
+    if (vstBrowserCatalog) {
+      const entry = vstBrowserCatalog.find(p => p.name === name);
+      if (entry) entry.installed = true;
+    }
+  } catch (e) {
+    btn.classList.remove('installing');
+    btn.textContent = 'Install';
+    showFrameDropAlert('Install failed: ' + e);
+  }
+}
+
+async function refreshVstStatusAfterBrowser() {
+  try {
+    vstStatus = await invoke('get_vst_status');
+    if (vstBrowserCatalog) {
+      const bundledNames = new Set((vstStatus?.plugins || []).map(p => p.name));
+      for (const entry of vstBrowserCatalog) {
+        if (entry.installed && !bundledNames.has(entry.name)) {
+          const installDir = vstStatus?.installPath || '';
+          vstStatus.plugins.push({
+            name: entry.name,
+            dllName: entry.dllName,
+            installed: true,
+            fullPath: installDir ? (installDir + '\\' + entry.dllName) : entry.dllName,
+          });
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+$('#vst-browser-search').addEventListener('input', (() => {
+  let timer;
+  return () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => renderVstBrowserGrid($('#vst-browser-grid')), 150);
+  };
+})());
+
 $('#btn-chat-send').addEventListener('click', sendChatMessage);
 $('#chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -3973,7 +4305,30 @@ const PANEL_LABELS = {
   'pro-spectrum': 'Pro Spectrum',
   'webcam': 'Cameras',
   'ai': 'AI Assistant',
+  'store': 'Module Store',
 };
+
+const PANEL_MODULE_MAP = {
+  'pro-spectrum': 'spectrum',
+  'video-editor': 'video-editor',
+  'calibration': 'calibration',
+  'ducking': 'ducking',
+  'mixer': 'ducking',
+  'webcam': 'camera',
+};
+
+function isModuleOwned(moduleId) {
+  return licenseState.owned_modules &&
+    (Array.isArray(licenseState.owned_modules)
+      ? licenseState.owned_modules.includes(moduleId)
+      : !!licenseState.owned_modules[moduleId]);
+}
+
+function isPanelLocked(panelName) {
+  const moduleId = PANEL_MODULE_MAP[panelName];
+  if (!moduleId) return false;
+  return !isModuleOwned(moduleId);
+}
 
 function loadPanelStates() {
   try {
@@ -4027,7 +4382,7 @@ function restorePanel(panelName) {
 function initPanelControls() {
   document.querySelectorAll('[data-panel]').forEach(panel => {
     const panelName = panel.dataset.panel;
-    if (panelName === 'calibration') return;
+    if (panelName === 'calibration' || panelName === 'store') return;
 
     const controls = document.createElement('div');
     controls.className = 'mod-controls';
@@ -4077,7 +4432,7 @@ function renderPanelToggles() {
 
   const allPanels = [...document.querySelectorAll('[data-panel]')]
     .map(el => el.dataset.panel)
-    .filter(name => name !== 'calibration');
+    .filter(name => name !== 'calibration' && name !== 'store');
 
   container.innerHTML = allPanels.map(name => {
     const label = PANEL_LABELS[name] || name;
@@ -5536,7 +5891,7 @@ function buildPanelToggleItems() {
 
   const allPanels = [...document.querySelectorAll('[data-panel]')]
     .map(el => el.dataset.panel)
-    .filter(name => name !== 'calibration');
+    .filter(name => name !== 'calibration' && name !== 'store');
 
   for (const name of allPanels) {
     const panel = document.querySelector(`[data-panel="${name}"]`);
@@ -7693,6 +8048,196 @@ async function veLoadVideoByName(filename) {
   }
 }
 
+// --- Module Store ---
+
+let storeOpen = false;
+
+function showStorePanel() {
+  storeOpen = true;
+  const panel = document.getElementById('store-panel');
+  if (panel) {
+    panel.hidden = false;
+  }
+  document.getElementById('btn-store')?.classList.add('active');
+  applyPanelVisibility();
+}
+
+function hideStorePanel() {
+  storeOpen = false;
+  const panel = document.getElementById('store-panel');
+  if (panel) panel.hidden = true;
+  document.getElementById('btn-store')?.classList.remove('active');
+  applyPanelVisibility();
+}
+
+function toggleStorePanel() {
+  const panel = document.getElementById('store-panel');
+  if (panel && !panel.hidden) {
+    hideStorePanel();
+  } else {
+    showStorePanel();
+    renderStoreCatalog();
+  }
+}
+
+async function loadLicenseState() {
+  try {
+    licenseState = await invoke('get_license_state');
+    applyPanelVisibility();
+    updateStoreLicenseInfo();
+  } catch (e) {
+    console.warn('Failed to load license state:', e);
+  }
+}
+
+function updateStoreLicenseInfo() {
+  const infoEl = document.getElementById('store-license-info');
+  const emailEl = document.getElementById('store-license-email');
+  const countEl = document.getElementById('store-license-count');
+  if (!infoEl) return;
+
+  const modules = licenseState.owned_modules;
+  const count = Array.isArray(modules) ? modules.length : Object.keys(modules || {}).length;
+
+  if (count > 0) {
+    infoEl.hidden = false;
+    if (licenseState.email) emailEl.textContent = licenseState.email;
+    else emailEl.textContent = '';
+    countEl.textContent = `${count} module${count !== 1 ? 's' : ''} owned`;
+  } else {
+    infoEl.hidden = true;
+  }
+}
+
+async function renderStoreCatalog() {
+  const grid = document.getElementById('store-grid');
+  if (!grid) return;
+
+  try {
+    const catalog = await invoke('get_store_catalog');
+    grid.innerHTML = catalog.map(m => {
+      const owned = m.owned;
+      return `
+        <div class="store-card ${owned ? 'owned' : ''}" data-module-id="${m.id}">
+          <div class="store-card-name">${m.name}</div>
+          <div class="store-card-desc">${m.description}</div>
+          <div class="store-card-footer">
+            ${owned
+              ? `<span class="store-card-price">Owned</span>
+                 <span class="store-card-owned-badge">&#10003; Unlocked</span>`
+              : `<span class="store-card-price">$${(m.priceCents / 100).toFixed(2)}</span>
+                 <button class="store-card-buy" data-stripe-link="${m.stripeLink}">Buy</button>`}
+          </div>
+        </div>`;
+    }).join('');
+
+    grid.querySelectorAll('.store-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const moduleId = card.dataset.moduleId;
+        const panels = catalog.find(m => m.id === moduleId)?.panels || [];
+        const targetPanel = panels.length > 0
+          ? document.querySelector(`[data-panel="${panels[0]}"]`)
+          : null;
+        if (targetPanel) {
+          if (targetPanel.hidden) {
+            targetPanel.hidden = false;
+          }
+          targetPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+
+    grid.querySelectorAll('.store-card-buy').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const link = btn.dataset.stripeLink;
+        if (link && !link.includes('PLACEHOLDER')) {
+          window.open(link, '_blank');
+        } else {
+          showFrameDropAlert('Store not yet configured — coming soon!');
+        }
+      });
+    });
+  } catch (e) {
+    grid.innerHTML = `<p style="color:var(--red);font-size:11px">Failed to load catalog: ${e}</p>`;
+  }
+}
+
+async function activateLicense() {
+  const keyInput = document.getElementById('store-license-key');
+  const statusEl = document.getElementById('store-activation-status');
+  const input = keyInput?.value.trim();
+  if (!input) {
+    statusEl.textContent = 'Please enter an activation code';
+    statusEl.className = 'store-activation-status error';
+    return;
+  }
+
+  try {
+    statusEl.textContent = 'Activating...';
+    statusEl.className = 'store-activation-status';
+
+    let key = input;
+    if (/^\d{4}$/.test(input)) {
+      const resp = await fetch('https://observe-api.smythmyke.workers.dev/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: input }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Invalid code');
+      key = data.key;
+    }
+
+    licenseState = await invoke('activate_license_key', { key });
+    cachedPresets = null;
+    // Refresh VST status and force install now that audio-fx module may be owned
+    try {
+      vstStatus = await invoke('install_vsts');
+    } catch (_) {
+      try { vstStatus = await invoke('get_vst_status'); } catch (_2) {}
+    }
+    statusEl.textContent = 'License activated successfully!';
+    statusEl.className = 'store-activation-status success';
+    keyInput.value = '';
+    applyPanelVisibility();
+    renderStoreCatalog();
+    updateStoreLicenseInfo();
+  } catch (e) {
+    statusEl.textContent = String(e);
+    statusEl.className = 'store-activation-status error';
+  }
+}
+
+async function deactivateLicense() {
+  try {
+    await invoke('deactivate_license');
+    licenseState = { owned_modules: [], email: null, activated_at: null };
+    cachedPresets = null;
+    vstStatus = null;
+    applyPanelVisibility();
+    renderStoreCatalog();
+    updateStoreLicenseInfo();
+    const statusEl = document.getElementById('store-activation-status');
+    if (statusEl) {
+      statusEl.textContent = 'License deactivated';
+      statusEl.className = 'store-activation-status';
+    }
+  } catch (e) {
+    showFrameDropAlert('Failed to deactivate: ' + e);
+  }
+}
+
+function initStore() {
+  document.getElementById('btn-store')?.addEventListener('click', toggleStorePanel);
+  document.getElementById('btn-store-close')?.addEventListener('click', hideStorePanel);
+  document.getElementById('btn-activate-license')?.addEventListener('click', activateLicense);
+  document.getElementById('btn-deactivate-license')?.addEventListener('click', deactivateLicense);
+  document.getElementById('store-license-key')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); activateLicense(); }
+  });
+}
+
 // --- Maximize on launch ---
 
 window.__TAURI__.window.getCurrentWindow().maximize();
@@ -7714,8 +8259,10 @@ initDucking();
 initAppCapture();
 initProSpectrum();
 initVideoEditor();
+initStore();
 
 (async () => {
+  await loadLicenseState();
   if (initialSettings.geminiApiKey) {
     try {
       await invoke('set_gemini_api_key', { apiKey: initialSettings.geminiApiKey });

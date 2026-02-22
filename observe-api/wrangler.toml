@@ -1,0 +1,10 @@
+name = "observe-api"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+STRIPE_SUCCESS_URL = "https://observe-api.smythmyke.workers.dev/success"
+
+[[r2_buckets]]
+binding = "VST_BUCKET"
+bucket_name = "observe-vsts"

@@ -3,6 +3,7 @@ use crate::gemini::AiAction;
 use crate::obs_state::ObsState;
 use crate::obs_websocket::ObsConnection;
 use crate::presets;
+use crate::store::LicenseState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -30,15 +31,56 @@ pub struct ActionResult {
     pub pending_action: Option<AiAction>,
 }
 
+fn module_for_action(action: &AiAction) -> Option<&'static str> {
+    match action.action_type.as_str() {
+        "apply_preset" => Some("presets"),
+        "video_editor" => Some("video-editor"),
+        "obs_request" => {
+            if action.params.get("filterKind")
+                .and_then(|v| v.as_str())
+                .map_or(false, |k| k == "vst_filter")
+            {
+                Some("audio-fx")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 pub async fn execute_actions(
     actions: &[AiAction],
     conn: &ObsConnection,
     obs_state: &ObsState,
     undo_stack: &SharedUndoStack,
+    license: &LicenseState,
 ) -> Vec<ActionResult> {
     let mut results = Vec::new();
 
     for action in actions {
+        if let Some(required_module) = module_for_action(action) {
+            if !license.owned_modules.contains(required_module) {
+                let catalog = crate::store::get_module_catalog();
+                let module_name = catalog
+                    .iter()
+                    .find(|m| m.id == required_module)
+                    .map(|m| m.name.as_str())
+                    .unwrap_or(required_module);
+                results.push(ActionResult {
+                    description: action.description.clone(),
+                    status: "blocked".into(),
+                    error: Some(format!(
+                        "Requires '{}' module — purchase from the Store panel",
+                        module_name
+                    )),
+                    undoable: false,
+                    pending_action: None,
+                });
+                continue;
+            }
+        }
+
         let result = match action.safety.as_str() {
             "dangerous" => ActionResult {
                 description: action.description.clone(),

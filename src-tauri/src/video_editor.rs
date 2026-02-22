@@ -1,5 +1,6 @@
 use crate::obs_launcher;
 use crate::obs_state::SharedObsState;
+use crate::store::SharedLicenseState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -240,8 +241,10 @@ fn detect_ffmpeg_inner() -> (Option<PathBuf>, Option<PathBuf>) {
 
 #[tauri::command]
 pub async fn detect_ffmpeg(
+    license: tauri::State<'_, SharedLicenseState>,
     state: tauri::State<'_, SharedVideoEditorState>,
 ) -> Result<FfmpegStatus, String> {
+    crate::store::require_module(&license, "video-editor").await?;
     let (ffmpeg, ffprobe) = tokio::task::spawn_blocking(detect_ffmpeg_inner)
         .await
         .map_err(|e| format!("Task failed: {}", e))?;
@@ -259,9 +262,11 @@ pub async fn detect_ffmpeg(
 
 #[tauri::command]
 pub async fn list_recordings(
+    license: tauri::State<'_, SharedLicenseState>,
     obs_state: tauri::State<'_, SharedObsState>,
     dir: Option<String>,
 ) -> Result<Vec<VideoFileInfo>, String> {
+    crate::store::require_module(&license, "video-editor").await?;
     let recording_dir = match dir {
         Some(d) if !d.is_empty() => d,
         _ => {
@@ -318,9 +323,11 @@ fn list_video_files(dir: &str) -> Result<Vec<VideoFileInfo>, String> {
 
 #[tauri::command]
 pub async fn remux_to_mp4(
+    license: tauri::State<'_, SharedLicenseState>,
     state: tauri::State<'_, SharedVideoEditorState>,
     source_path: String,
 ) -> Result<String, String> {
+    crate::store::require_module(&license, "video-editor").await?;
     let src = PathBuf::from(&source_path);
     if !src.exists() {
         return Err(format!("File not found: {}", source_path));
@@ -751,10 +758,12 @@ pub async fn pick_image_file() -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub async fn export_video(
+    license: tauri::State<'_, SharedLicenseState>,
     state: tauri::State<'_, SharedVideoEditorState>,
     app_handle: tauri::AppHandle,
     request: ExportRequest,
 ) -> Result<(), String> {
+    crate::store::require_module(&license, "video-editor").await?;
     let s = state.lock().await;
     let ffmpeg = s
         .ffmpeg_path

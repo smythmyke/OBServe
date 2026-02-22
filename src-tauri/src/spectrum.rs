@@ -1,4 +1,5 @@
 use crate::obs_state::SharedObsState;
+use crate::store::SharedLicenseState;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -43,11 +44,13 @@ impl SpectrumState {
 
 #[tauri::command]
 pub async fn start_spectrum(
+    license: tauri::State<'_, SharedLicenseState>,
     source_name: String,
     app_handle: AppHandle,
     obs_state: tauri::State<'_, SharedObsState>,
     spectrum_state: tauri::State<'_, SharedSpectrumState>,
 ) -> Result<(), String> {
+    crate::store::require_module(&license, "spectrum").await?;
     let state = obs_state.read().await;
     let input = state
         .inputs
@@ -85,8 +88,10 @@ pub async fn start_spectrum(
 
 #[tauri::command]
 pub async fn stop_spectrum(
+    license: tauri::State<'_, SharedLicenseState>,
     spectrum_state: tauri::State<'_, SharedSpectrumState>,
 ) -> Result<(), String> {
+    crate::store::require_module(&license, "spectrum").await?;
     let mut spec = spectrum_state.lock().await;
     if let Some(tx) = &spec.control_tx {
         let _ = tx.send(SpectrumCommand::Stop);
@@ -97,8 +102,10 @@ pub async fn stop_spectrum(
 
 #[tauri::command]
 pub async fn reset_lufs(
+    license: tauri::State<'_, SharedLicenseState>,
     spectrum_state: tauri::State<'_, SharedSpectrumState>,
 ) -> Result<(), String> {
+    crate::store::require_module(&license, "spectrum").await?;
     let _ = spectrum_state.lock().await;
     // LUFS reset is handled via the capture thread recreating the ebur128 instance
     // For now this is a no-op placeholder; the frontend can restart the spectrum

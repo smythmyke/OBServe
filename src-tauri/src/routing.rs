@@ -168,6 +168,30 @@ fn check_disconnected_devices(
 }
 
 fn check_monitoring_config(obs: &ObsState, recs: &mut Vec<RoutingRecommendation>) {
+    // Warn if mic/input sources have monitoring enabled (causes "I hear myself" feedback)
+    for input in obs.inputs.values() {
+        if !input.kind.contains("wasapi_input_capture") {
+            continue;
+        }
+        if input.monitor_type == "OBS_MONITORING_TYPE_MONITOR_ONLY"
+            || input.monitor_type == "OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT"
+        {
+            recs.push(RoutingRecommendation {
+                id: format!("mic_monitoring_{}", input.name),
+                severity: "warning".to_string(),
+                title: format!("'{}' has monitoring enabled", input.name),
+                detail: "Monitoring a microphone input causes you to hear yourself with delay. \
+                         This should almost always be set to Monitor Off."
+                    .to_string(),
+                action: Some(RoutingAction {
+                    action_type: "set_monitor_type".to_string(),
+                    input_name: input.name.clone(),
+                    params: json!({"monitorType": "OBS_MONITORING_TYPE_NONE"}),
+                }),
+            });
+        }
+    }
+
     let monitored: Vec<&str> = obs
         .inputs
         .values()

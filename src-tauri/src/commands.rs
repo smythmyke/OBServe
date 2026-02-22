@@ -12,8 +12,9 @@ use crate::obs_websocket::{ObsConnection, ObsStatus};
 use crate::preflight::{self, PreflightReport};
 use crate::presets::{self, Preset};
 use crate::routing::{self, RoutingRecommendation};
+use crate::store::SharedLicenseState;
 use crate::system_monitor::{self, DisplayInfo, SystemResources};
-use crate::vst_manager::{self, VstStatus};
+use crate::vst_manager::{self, VstCatalogWithStatus, VstPluginInfo, VstStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -761,6 +762,7 @@ pub async fn send_chat_message(
     obs_state: tauri::State<'_, SharedObsState>,
     undo_stack: tauri::State<'_, SharedUndoStack>,
     audio_metrics_state: tauri::State<'_, SharedAudioMetrics>,
+    license: tauri::State<'_, SharedLicenseState>,
     message: String,
     calibration_data: Option<String>,
 ) -> Result<FullChatResponse, String> {
@@ -771,6 +773,7 @@ pub async fn send_chat_message(
 
     let state_snapshot = obs_state.read().await.clone();
     let metrics_snapshot = audio_metrics_state.read().await.clone();
+    let license_snapshot = license.read().await.clone();
     let devices = tokio::task::spawn_blocking(audio::enumerate_audio_devices)
         .await
         .map_err(|e| format!("Task failed: {}", e))??;
@@ -782,6 +785,7 @@ pub async fn send_chat_message(
             &devices,
             &metrics_snapshot,
             calibration_data.as_deref(),
+            &license_snapshot,
         )
         .await?;
 
@@ -801,7 +805,7 @@ pub async fn send_chat_message(
 
     let conn = conn_state.lock().await;
     let results =
-        ai_actions::execute_actions(&backend_actions, &conn, &state_snapshot, &undo_stack)
+        ai_actions::execute_actions(&backend_actions, &conn, &state_snapshot, &undo_stack, &license_snapshot)
             .await;
 
     let pending: Vec<AiAction> = results
@@ -850,12 +854,16 @@ pub async fn confirm_dangerous_action(
 }
 
 #[tauri::command]
-pub async fn get_smart_presets() -> Result<Vec<Preset>, String> {
+pub async fn get_smart_presets(
+    license: tauri::State<'_, SharedLicenseState>,
+) -> Result<Vec<Preset>, String> {
+    crate::store::require_module(&license, "presets").await?;
     Ok(presets::get_presets())
 }
 
 #[tauri::command]
 pub async fn apply_preset(
+    license: tauri::State<'_, SharedLicenseState>,
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
     undo_stack: tauri::State<'_, SharedUndoStack>,
@@ -863,6 +871,7 @@ pub async fn apply_preset(
     mic_source: Option<String>,
     desktop_source: Option<String>,
 ) -> Result<Vec<ActionResult>, String> {
+    crate::store::require_module(&license, "presets").await?;
     let all_presets = presets::get_presets();
     let preset = all_presets
         .iter()
@@ -882,9 +891,10 @@ pub async fn apply_preset(
 
     let resolved = presets::resolve_preset_actions(&preset.actions, &mic, &desktop)?;
 
+    let license_snapshot = license.read().await.clone();
     let conn = conn_state.lock().await;
     let results =
-        ai_actions::execute_actions(&resolved, &conn, &state_snapshot, &undo_stack).await;
+        ai_actions::execute_actions(&resolved, &conn, &state_snapshot, &undo_stack, &license_snapshot).await;
 
     Ok(results.into_iter().map(|mut r| { r.pending_action = None; r }).collect())
 }
@@ -1047,13 +1057,37 @@ pub async fn get_audio_metrics(
 // --- VST Manager Commands ---
 
 #[tauri::command]
-pub async fn get_vst_status() -> Result<VstStatus, String> {
+pub async fn get_vst_status(
+    license: tauri::State<'_, SharedLicenseState>,
+) -> Result<VstStatus, String> {
+    crate::store::require_module(&license, "audio-fx").await?;
     Ok(vst_manager::get_vst_status())
 }
 
 #[tauri::command]
-pub async fn install_vsts(app_handle: tauri::AppHandle) -> Result<VstStatus, String> {
+pub async fn install_vsts(
+    license: tauri::State<'_, SharedLicenseState>,
+    app_handle: tauri::AppHandle,
+) -> Result<VstStatus, String> {
+    crate::store::require_module(&license, "audio-fx").await?;
     vst_manager::install_vsts(&app_handle)
+}
+
+#[tauri::command]
+pub async fn get_vst_catalog(
+    license: tauri::State<'_, SharedLicenseState>,
+) -> Result<Vec<VstCatalogWithStatus>, String> {
+    crate::store::require_module(&license, "audio-fx").await?;
+    Ok(vst_manager::get_vst_catalog())
+}
+
+#[tauri::command]
+pub async fn download_vst(
+    license: tauri::State<'_, SharedLicenseState>,
+    name: String,
+) -> Result<VstPluginInfo, String> {
+    crate::store::require_module(&license, "audio-fx").await?;
+    vst_manager::download_and_install_vst(&name).await
 }
 
 #[tauri::command]
@@ -1079,17 +1113,21 @@ pub async fn get_source_filter_kinds(
 
 #[tauri::command]
 pub async fn get_ducking_config(
+    license: tauri::State<'_, SharedLicenseState>,
     state: tauri::State<'_, SharedDuckingConfig>,
 ) -> Result<DuckingConfig, String> {
+    crate::store::require_module(&license, "ducking").await?;
     let config = state.read().await;
     Ok(config.clone())
 }
 
 #[tauri::command]
 pub async fn set_ducking_config(
+    license: tauri::State<'_, SharedLicenseState>,
     state: tauri::State<'_, SharedDuckingConfig>,
     config: DuckingConfig,
 ) -> Result<(), String> {
+    crate::store::require_module(&license, "ducking").await?;
     let mut current = state.write().await;
     *current = config;
     Ok(())
@@ -1327,9 +1365,11 @@ pub struct AutoCamResult {
 
 #[tauri::command]
 pub async fn auto_setup_cameras(
+    license: tauri::State<'_, SharedLicenseState>,
     conn_state: tauri::State<'_, SharedObsConnection>,
     obs_state: tauri::State<'_, SharedObsState>,
 ) -> Result<AutoCamResult, String> {
+    crate::store::require_module(&license, "camera").await?;
     let mut logs: Vec<String> = Vec::new();
     let devices = tokio::task::spawn_blocking(video_devices::enumerate_video_devices)
         .await

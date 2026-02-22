@@ -98,6 +98,27 @@ html, body {
   display: none;
 }
 
+/* ── Rack Bottom Cap ── */
+
+.rack-bottom-cap {
+  background: linear-gradient(to bottom, #1e1a16, #161310);
+  border-top: 1px solid #2a2620;
+  padding: 10px 32px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  margin-top: auto;
+  order: 999;
+}
+.rack-bottom-text {
+  font-size: 0.55rem;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: #3a3428;
+}
+
 /* ── Module Panel (dark brushed metal) ── */
 
 .module {
@@ -241,7 +262,9 @@ html, body {
 /* ── Title Bar Wrapper ── */
 
 .title-bar-wrapper {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 100;
   order: -2;
 }
 
@@ -1106,7 +1129,7 @@ button:disabled {
   box-shadow: 0 0 6px var(--amber-glow);
 }
 
-/* ── OBS Audio Mixer ── */
+/* ── OBServe Audio Mixer ── */
 
 .mixer-item {
   background: #0c0a06;
@@ -1205,6 +1228,78 @@ button:disabled {
   border-color: var(--red);
   color: var(--red);
   box-shadow: 0 0 6px rgba(204,68,68,0.2);
+}
+
+.mixer-mon-btn {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid #3a3428;
+  color: var(--cream-dim);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  min-width: auto;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.mixer-mon-btn:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+
+.mixer-mon-btn.mon-only {
+  border-color: var(--amber);
+  color: var(--amber);
+  box-shadow: 0 0 6px var(--amber-glow);
+}
+
+.mixer-mon-btn.mon-output {
+  border-color: var(--red);
+  color: var(--red);
+  box-shadow: 0 0 6px rgba(204,68,68,0.2);
+}
+
+.mixer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  margin-bottom: 8px;
+  background: linear-gradient(to bottom, #1a1714, #141210);
+  border: 1px solid #2a2620;
+  border-radius: 4px;
+}
+
+.monitor-preset-group {
+  display: flex;
+  gap: 6px;
+}
+
+.monitor-preset-btn {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid #3a3428;
+  color: var(--cream-dim);
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.monitor-preset-btn:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber);
+}
+
+.monitor-preset-btn.active-preset {
+  border-color: var(--amber);
+  color: var(--amber);
+  box-shadow: 0 0 8px var(--amber-glow);
 }
 
 .mixer-meter-row {
@@ -4684,4 +4779,386 @@ body.resizing-preview {
 }
 .ve-props-body .export-row input[type="range"] {
   flex: 1;
+}
+
+/* === Store Panel === */
+.store-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.store-close-btn {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 10px;
+}
+.store-tagline {
+  font-size: 10px;
+  color: var(--cream-dim);
+  letter-spacing: 0.5px;
+}
+.store-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.store-card {
+  background: linear-gradient(to bottom, #1e1a16, #12100e);
+  border: 1px solid #2a2620;
+  border-radius: 4px;
+  padding: 16px;
+  position: relative;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  cursor: pointer;
+}
+.store-card:hover {
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 8px var(--amber-glow);
+}
+.store-card.owned {
+  border-color: var(--green);
+}
+.store-card.owned:hover {
+  box-shadow: 0 0 8px rgba(90,170,90,0.3);
+}
+.store-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+.store-card.owned .store-card-name {
+  color: var(--green);
+}
+.store-card-desc {
+  font-size: 10px;
+  color: var(--cream-dim);
+  line-height: 1.4;
+  margin-bottom: 12px;
+  min-height: 28px;
+}
+.store-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.store-card-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--amber);
+  letter-spacing: 0.5px;
+}
+.store-card.owned .store-card-price {
+  color: var(--green);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.store-card-buy {
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  color: var(--amber);
+  padding: 5px 14px;
+  font-size: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.15s;
+}
+.store-card-buy:hover {
+  border-color: var(--amber);
+  box-shadow: 0 0 6px var(--amber-glow);
+  color: #fff;
+}
+.store-card-owned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+/* Store Activation */
+.store-activation {
+  border-top: 1px solid #2a2620;
+  padding-top: 16px;
+  margin-top: 8px;
+}
+.store-activation-header {
+  margin-bottom: 8px;
+}
+.store-activation-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--cream-dim);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+.store-activation-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.store-license-input {
+  flex: 1;
+  background: #0e0c0a;
+  border: 1px solid #2a2620;
+  border-radius: 3px;
+  color: var(--cream);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: monospace;
+  outline: none;
+}
+.store-license-input:focus {
+  border-color: var(--amber-dim);
+}
+.store-activation-status {
+  font-size: 10px;
+  margin-top: 6px;
+  min-height: 14px;
+}
+.store-activation-status.success {
+  color: var(--green);
+}
+.store-activation-status.error {
+  color: var(--red);
+}
+.store-license-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--cream-dim);
+}
+.store-deactivate-btn {
+  margin-left: auto;
+  font-size: 9px !important;
+  padding: 3px 10px !important;
+}
+
+/* Store button in toolbar */
+.store-btn {
+  color: var(--amber) !important;
+  border-color: var(--amber-dim) !important;
+}
+.store-btn.active {
+  background: var(--amber) !important;
+  color: #12100e !important;
+  border-color: var(--amber) !important;
+}
+
+/* Panel lock overlay */
+.panel-lock-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(14, 12, 12, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: inherit;
+  gap: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.panel-lock-overlay:hover {
+  background: rgba(14, 12, 12, 0.75);
+}
+.panel-lock-overlay.preview {
+  background: rgba(14, 12, 12, 0.15);
+  transition: background 0.3s;
+}
+.panel-lock-overlay.preview * {
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.panel-lock-icon {
+  font-size: 28px;
+  opacity: 0.6;
+}
+.panel-lock-name {
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.panel-lock-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--amber);
+}
+.panel-lock-cta {
+  font-size: 9px;
+  color: var(--cream-dim);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-top: 4px;
+}
+
+/* ── VST Browser ── */
+
+.vst-browser {
+  padding: 0 4px;
+}
+.vst-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.vst-browser-search {
+  flex: 1;
+  background: #0c0a06;
+  border: 1px solid #2a2620;
+  border-radius: 3px;
+  padding: 6px 10px;
+  color: var(--amber);
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.5);
+}
+.vst-browser-search:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: inset 1px 1px 3px rgba(0,0,0,0.5), 0 0 4px var(--amber-glow);
+}
+.vst-browser-search::placeholder {
+  color: #3a3428;
+}
+.vst-browser-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.vst-cat-pill {
+  background: #1a1714;
+  border: 1px solid #2a2620;
+  border-radius: 10px;
+  padding: 3px 10px;
+  color: var(--cream-dim);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.vst-cat-pill:hover {
+  border-color: var(--amber-dim);
+  color: var(--cream);
+}
+.vst-cat-pill.active {
+  background: var(--amber-dim);
+  border-color: var(--amber);
+  color: #fff;
+}
+.vst-browser-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.vst-browser-card {
+  background: linear-gradient(to bottom, #1e1a16, #12100e);
+  border: 1px solid #2a2620;
+  border-radius: 4px;
+  padding: 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.vst-browser-card:hover {
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 8px var(--amber-glow);
+}
+.vst-browser-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.vst-browser-card-cat {
+  display: inline-block;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #3a6b8a;
+  color: #e8e0d0;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.vst-browser-card-desc {
+  font-size: 10px;
+  color: var(--cream-dim);
+  line-height: 1.4;
+  margin-bottom: 10px;
+  min-height: 28px;
+}
+.vst-browser-install-btn {
+  display: block;
+  width: 100%;
+  background: linear-gradient(to bottom, #2a2620, #1a1714);
+  border: 1px solid var(--amber-dim);
+  border-radius: 3px;
+  color: var(--amber);
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.15s;
+}
+.vst-browser-install-btn:hover {
+  border-color: var(--amber);
+  box-shadow: 0 0 6px var(--amber-glow);
+  color: #fff;
+}
+.vst-browser-install-btn.installed {
+  background: rgba(90,170,90,0.15);
+  border-color: var(--green);
+  color: var(--green);
+  cursor: default;
+  pointer-events: none;
+}
+.vst-browser-install-btn.installing {
+  opacity: 0.6;
+  cursor: wait;
+  pointer-events: none;
+}
+.vst-browser-card.bundled {
+  border-color: rgba(90,170,90,0.3);
+}
+.vst-browser-grid::-webkit-scrollbar {
+  width: 6px;
+}
+.vst-browser-grid::-webkit-scrollbar-track {
+  background: #0c0a06;
+}
+.vst-browser-grid::-webkit-scrollbar-thumb {
+  background: #2a2620;
+  border-radius: 3px;
+}
+.vst-browser-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--amber-dim);
 }
