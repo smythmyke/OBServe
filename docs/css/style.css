@@ -342,18 +342,53 @@ section {
 
 .hero-screenshot {
   margin-top: 48px;
-  background: #0c0a06;
   border: 1px solid var(--amber-dim);
   border-radius: 4px;
-  height: 300px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--amber-dim);
-  font-size: 0.85rem;
+  overflow: hidden;
+  box-shadow: inset 2px 2px 8px rgba(0,0,0,0.6), 0 8px 32px rgba(0,0,0,0.5);
+}
+.hero-screenshot img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Screenshot Gallery ── */
+.screenshot-gallery {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 32px;
+}
+.screenshot-card {
+  border: 1px solid var(--amber-dim);
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0c0a06;
+  transition: border-color 0.3s, transform 0.3s;
+}
+.screenshot-card:hover {
+  border-color: var(--amber);
+  transform: translateY(-2px);
+}
+.screenshot-card img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.screenshot-label {
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  color: var(--amber);
   text-transform: uppercase;
-  letter-spacing: 2px;
-  box-shadow: inset 2px 2px 8px rgba(0,0,0,0.6);
+  letter-spacing: 1px;
+  text-align: center;
+  border-top: 1px solid var(--amber-dim);
+}
+@media (max-width: 640px) {
+  .screenshot-gallery {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── LED Indicator ── */
