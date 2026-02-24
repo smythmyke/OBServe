@@ -890,6 +890,167 @@ section {
   }
 }
 
+/* ── FAQ Accordion ── */
+.faq-list {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.faq-item {
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  margin-bottom: 8px;
+  background: var(--panel-bg);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+.faq-item:hover {
+  border-color: var(--amber-dim);
+}
+
+.faq-item.open {
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 10px var(--amber-glow);
+}
+
+.faq-question {
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--cream);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: left;
+  padding: 18px 20px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  transition: color 0.2s;
+}
+
+.faq-question:hover {
+  color: var(--amber);
+}
+
+.faq-toggle {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  color: var(--amber-dim);
+  transition: transform 0.3s, color 0.2s;
+}
+
+.faq-item.open .faq-toggle {
+  transform: rotate(45deg);
+  color: var(--amber);
+}
+
+.faq-answer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.4s ease, padding 0.3s ease;
+}
+
+.faq-item.open .faq-answer {
+  max-height: 600px;
+  padding: 0 20px 20px;
+}
+
+.faq-answer p,
+.faq-answer ul,
+.faq-answer ol {
+  font-size: 0.85rem;
+  color: var(--cream-dim);
+  line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.faq-answer p:last-child,
+.faq-answer ul:last-child,
+.faq-answer ol:last-child {
+  margin-bottom: 0;
+}
+
+.faq-answer ol,
+.faq-answer ul {
+  padding-left: 20px;
+}
+
+.faq-answer li {
+  margin-bottom: 4px;
+}
+
+.faq-answer code {
+  background: rgba(212,160,64,0.1);
+  border: 1px solid rgba(212,160,64,0.2);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.82rem;
+  color: var(--amber);
+}
+
+.faq-answer strong {
+  color: var(--cream);
+}
+
+/* ── Support Grid ── */
+.support-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.support-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 28px;
+  text-align: center;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.support-card:hover {
+  border-color: var(--amber-dim);
+  box-shadow: 0 0 12px var(--amber-glow);
+  transform: translateY(-2px);
+}
+
+.support-icon {
+  font-size: 2rem;
+  display: block;
+  margin-bottom: 14px;
+}
+
+.support-card h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--amber);
+  margin-bottom: 10px;
+}
+
+.support-card p {
+  font-size: 0.85rem;
+  color: var(--cream-dim);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.support-card .btn {
+  font-size: 0.7rem;
+  padding: 8px 18px;
+}
+
 /* ── Page-specific: Modules page featured ── */
 .featured-large .module-spotlight {
   padding: 32px;

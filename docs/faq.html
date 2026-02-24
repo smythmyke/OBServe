@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FAQ &amp; Support — OBServe</title>
+  <meta name="description" content="Frequently asked questions about OBServe — setup, licensing, troubleshooting, and support for the AI-powered OBS Studio companion.">
+  <link rel="icon" href="images/logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="index.html" class="header-logo">
+        <img src="images/logo.png" alt="OBServe icon">
+        <span class="gradient-text">OBServe</span>
+      </a>
+      <nav class="header-nav" id="nav">
+        <a href="index.html">Home</a>
+        <a href="modules.html">Modules</a>
+        <a href="faq.html" class="active">FAQ</a>
+        <a href="https://github.com/smythmyke/OBServe" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://smythmyke.gumroad.com/l/observe" class="btn btn-primary" target="_blank" rel="noopener">Download</a>
+      </nav>
+      <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- FAQ Hero -->
+  <section style="padding-top: 100px; padding-bottom: 40px;">
+    <div class="container">
+      <h2 class="section-title reveal">FAQ &amp; Support</h2>
+      <p class="section-subtitle reveal">Answers to common questions about setup, licensing, and troubleshooting.</p>
+    </div>
+  </section>
+
+  <!-- Getting Started -->
+  <section style="padding-top: 0;">
+    <div class="container">
+      <h2 class="section-title reveal"><span class="led green"></span> Getting Started</h2>
+      <div class="faq-list">
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            How do I connect OBServe to OBS Studio?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>OBServe connects automatically via WebSocket. Just make sure OBS Studio is running with the WebSocket server enabled:</p>
+            <ol>
+              <li>Open OBS Studio</li>
+              <li>Go to <strong>Tools &rarr; WebSocket Server Settings</strong></li>
+              <li>Check <strong>"Enable WebSocket Server"</strong></li>
+              <li>Set a port (default: 4455) and optionally a password</li>
+              <li>Click OK, then launch OBServe</li>
+            </ol>
+            <p>OBServe will detect OBS and connect within seconds. The connection status is shown in the system tray and on the dashboard.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            What version of OBS Studio do I need?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>OBServe requires <strong>OBS Studio 28.0 or later</strong>, which includes the built-in WebSocket v5 server. Earlier versions used a separate plugin (obs-websocket) with an incompatible protocol.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            Does OBServe work with Streamlabs Desktop (SLOBS)?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p><strong>No.</strong> OBServe is built specifically for OBS Studio and relies on the OBS WebSocket v5 protocol. Streamlabs Desktop uses a different internal architecture and does not expose the same WebSocket API. We recommend using the free, open-source OBS Studio for the best experience.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            What are the system requirements?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>OS:</strong> Windows 10 (64-bit) or later</li>
+              <li><strong>RAM:</strong> 4 GB minimum (8 GB recommended)</li>
+              <li><strong>Disk:</strong> ~15 MB for the app</li>
+              <li><strong>OBS Studio:</strong> Version 28.0+ with WebSocket enabled</li>
+              <li><strong>Internet:</strong> Required for AI features, license activation, and auto-updates</li>
+            </ul>
+            <p>OBServe is built with Tauri + Rust for minimal resource usage — it typically uses less than 50 MB of RAM.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Licensing & Modules -->
+  <section>
+    <div class="container">
+      <h2 class="section-title reveal"><span class="led amber"></span> Licensing &amp; Modules</h2>
+      <div class="faq-list">
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            How do I activate a license key?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>After purchasing a module, you'll receive a license key on the confirmation page and via email.</p>
+            <ol>
+              <li>Open OBServe and go to the <strong>Store</strong> tab</li>
+              <li>Paste your license key into the activation field</li>
+              <li>Click <strong>Activate</strong></li>
+            </ol>
+            <p>The module will unlock immediately. Your key is saved locally so you won't need to re-enter it.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            How many devices can I use my key on?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>Each license key can be activated on up to <strong>2 devices</strong>. This covers common scenarios like a desktop and a laptop. If you need to move your license to a new device, deactivate it on the old one first (Store tab &rarr; Deactivate), which frees up the device slot.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            What if I reinstall Windows or get a new PC?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>If you deactivate before reinstalling, the device slot is freed automatically. If you forgot to deactivate and have hit the 2-device limit, contact support with your purchase email and we'll reset your activation.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            I lost my license key. How do I recover it?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>Use the <strong>Restore Purchases</strong> option in the Store tab. Enter the email address you used at checkout and your license keys will be sent to that email. You can also check your original purchase confirmation email.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            Are modules one-time purchases or subscriptions?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p><strong>One-time purchases. No subscriptions, no recurring fees, ever.</strong> Each module is $4.99 and yours to keep. The All Modules Bundle is $29.99 — a 40% discount vs. buying all 10 individually. Future updates to modules you own are included at no extra cost.</p>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            How do I get a refund?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>We want you to be happy with your purchase. If a module doesn't work as expected, contact us within 14 days of purchase at the email below and we'll process a full refund — no questions asked.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Troubleshooting -->
+  <section>
+    <div class="container">
+      <h2 class="section-title reveal"><span class="led cyan"></span> Troubleshooting</h2>
+      <div class="faq-list">
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            OBServe can't connect to OBS. What should I check?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <ol>
+              <li>Confirm OBS Studio is running</li>
+              <li>Check that the WebSocket server is enabled in <strong>Tools &rarr; WebSocket Server Settings</strong></li>
+              <li>Make sure the port matches (default: 4455)</li>
+              <li>If you set a WebSocket password in OBS, enter the same password in OBServe's connection settings</li>
+              <li>Check that your firewall isn't blocking localhost connections on port 4455</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            My audio devices aren't showing up. What do I do?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>OBServe reads audio devices directly from Windows. Try these steps:</p>
+            <ul>
+              <li>Make sure the device is plugged in and recognized by Windows (check Sound settings)</li>
+              <li>Restart OBServe — devices are detected on launch</li>
+              <li>If a device was added while OBServe is running, it should be detected automatically via hotplug. If not, restart the app.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            The Video Editor says FFmpeg is not found. How do I fix this?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>The Video Editor module uses FFmpeg for export, remux, and caption burn-in. OBServe automatically detects FFmpeg from your OBS Studio installation (typically at <code>C:\Program Files\obs-studio\bin\64bit\ffmpeg.exe</code>).</p>
+            <p>If FFmpeg isn't found:</p>
+            <ul>
+              <li>Make sure OBS Studio is installed in its default location</li>
+              <li>Alternatively, install FFmpeg separately and add it to your system PATH</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            How do I update OBServe?
+            <span class="faq-toggle">+</span>
+          </button>
+          <div class="faq-answer">
+            <p>OBServe checks for updates automatically on launch. When an update is available, you'll see a notification with the option to download and install. Updates are free and include all improvements to the base app and any modules you own.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Contact & Support -->
+  <section>
+    <div class="container">
+      <h2 class="section-title reveal">Contact &amp; Support</h2>
+      <p class="section-subtitle reveal">Can't find your answer? We're here to help.</p>
+      <div class="support-grid reveal">
+        <div class="support-card">
+          <span class="support-icon">&#128172;</span>
+          <h3>GitHub Issues</h3>
+          <p>Report bugs, request features, or browse existing issues.</p>
+          <a href="https://github.com/smythmyke/OBServe/issues" class="btn btn-secondary" target="_blank" rel="noopener">Open an Issue</a>
+        </div>
+        <div class="support-card">
+          <span class="support-icon">&#9993;</span>
+          <h3>Email Support</h3>
+          <p>For license issues, refunds, or private inquiries.</p>
+          <a href="mailto:support@observe.audio" class="btn btn-secondary">support@observe.audio</a>
+        </div>
+        <div class="support-card">
+          <span class="support-icon">&#128214;</span>
+          <h3>GitHub Repository</h3>
+          <p>Browse source code, documentation, and release notes.</p>
+          <a href="https://github.com/smythmyke/OBServe" class="btn btn-secondary" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand">
+            <img src="images/logo.png" alt="OBServe">
+            <span class="gradient-text">OBServe</span>
+          </div>
+          <p class="footer-desc">AI-powered desktop companion for OBS Studio. Built with Tauri + Rust for minimal resource usage.</p>
+        </div>
+        <div>
+          <div class="footer-heading">Navigation</div>
+          <ul class="footer-links">
+            <li><a href="index.html">Home</a></li>
+            <li><a href="modules.html">Modules</a></li>
+            <li><a href="faq.html">FAQ</a></li>
+            <li><a href="https://github.com/smythmyke/OBServe" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://smythmyke.gumroad.com/l/observe" target="_blank" rel="noopener">Download</a></li>
+          </ul>
+        </div>
+        <div>
+          <div class="footer-heading">Built With</div>
+          <ul class="footer-links">
+            <li><a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a></li>
+            <li><a href="https://www.rust-lang.org" target="_blank" rel="noopener">Rust</a></li>
+            <li><a href="https://obsproject.com" target="_blank" rel="noopener">OBS Studio</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span class="footer-copyright">&copy; 2026 OBServe. All rights reserved.</span>
+        <span class="footer-fine-print">
+          OBS and OBS Studio are trademarks of the OBS Project. Airwindows plugins are MIT-licensed by Chris Johnson.
+        </span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+  <script>
+    // FAQ accordion toggle
+    document.querySelectorAll('.faq-question').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var item = this.parentElement;
+        var isOpen = item.classList.contains('open');
+        // Close all others in same list
+        item.parentElement.querySelectorAll('.faq-item.open').forEach(function(el) {
+          el.classList.remove('open');
+          el.querySelector('.faq-question').setAttribute('aria-expanded', 'false');
+        });
+        // Toggle this one
+        if (!isOpen) {
+          item.classList.add('open');
+          this.setAttribute('aria-expanded', 'true');
+        }
+      });
+    });
+  </script>
+</body>
+</html>
