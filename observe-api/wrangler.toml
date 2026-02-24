@@ -8,3 +8,11 @@ STRIPE_SUCCESS_URL = "https://observe-api.smythmyke.workers.dev/success"
 [[r2_buckets]]
 binding = "VST_BUCKET"
 bucket_name = "observe-vsts"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "f7024bf091b84fffabae7b63cb410f60"
+
+[[kv_namespaces]]
+binding = "DEVICE_KV"
+id = "758de66f0d224c4786ad1fb50e759d1d"

@@ -18,6 +18,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png", "devtools", "protocol-asset"] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -45,6 +48,7 @@ windows = { version = "0.58", features = [
   "Win32_Graphics_Gdi",
   "Win32_Media_MediaFoundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_Registry",
 ] }
 windows-core = "0.58"
 

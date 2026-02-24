@@ -119,10 +119,10 @@
 ### OBServe Pads — NEW (9 Phases)
 > MPC-inspired sample pad module in Audio tab. Record, edit, and perform sound samples live.
 > Paid module ($1.99). Full spec: `observe-pads-spec.md` in memory.
-- [ ] **Phase 1: Pad Grid & Basic Playback** — 4x4 pad grid, load files, drag-drop, Web Audio playback, retrigger, master volume, module gating
-- [ ] **Phase 2: Banks, Colors & Pad Config** — 4 banks (A-D, 64 pads), per-pad color/volume, play modes (one-shot/retrigger/toggle/hold/loop), mute groups, keyboard mapping, context menu
-- [ ] **Phase 3: Transport & Recording (Mic)** — transport bar (rec/play/stop), mic recording via getUserMedia, threshold-triggered recording, live waveform, auto-assign to pad
-- [ ] **Phase 4: Recording from Apps & System** — WASAPI app audio capture, desktop loopback, VB-Cable source, app selector dropdown, input monitor
+- [x] **Phase 1: Pad Grid & Basic Playback** — 4x4 pad grid, load files, drag-drop, Web Audio playback, retrigger, master volume, module gating
+- [x] **Phase 2: Banks, Colors & Pad Config** — 4 banks (A-D, 64 pads), per-pad color/volume, play modes (one-shot/retrigger/toggle/hold/loop), mute groups, keyboard mapping, context menu
+- [x] **Phase 3: Transport & Recording (Mic)** — transport bar (rec/play/stop), mic recording via getUserMedia, threshold-triggered recording, live waveform, auto-assign to pad
+- [x] **Phase 4: Recording from Apps & System** — WASAPI system audio loopback, VB-Cable capture, source dropdown, pad_capture.rs
 - [ ] **Phase 5: Sample Editor** — waveform display, trim (start/end handles), zoom, normalize, reverse, fade in/out, gain, pitch, pan, zero-crossing snap
 - [ ] **Phase 6: Per-Pad Effects** — 3 insert slots per pad (LPF, HPF, reverb, delay, bitcrusher), master send bus, non-destructive, bounce option
 - [ ] **Phase 7: Advanced Pad Modes** — 16 Levels (velocity/pitch/filter/decay spread), Note Repeat (musical rate retrigger), Full Level mode

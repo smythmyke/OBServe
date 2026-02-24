@@ -828,6 +828,34 @@ pub async fn pick_image_file() -> Result<Option<String>, String> {
     .map_err(|e| format!("Task failed: {}", e))?
 }
 
+// ---- Phase 4b: Audio File Picker ----
+
+#[tauri::command]
+pub async fn pick_audio_file() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let ps_script = r#"
+            Add-Type -AssemblyName System.Windows.Forms
+            $dialog = New-Object System.Windows.Forms.OpenFileDialog
+            $dialog.Filter = 'Audio files|*.wav;*.mp3;*.ogg;*.flac;*.aac;*.m4a;*.wma;*.aiff|All files|*.*'
+            $dialog.Title = 'Select Audio File'
+            if ($dialog.ShowDialog() -eq 'OK') { $dialog.FileName } else { '' }
+        "#;
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", ps_script])
+            .output()
+            .map_err(|e| format!("Failed to run file dialog: {}", e))?;
+
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
 // ---- Phase 5: Export Engine ----
 
 #[tauri::command]
@@ -1002,6 +1030,7 @@ async fn run_export(
 
     if !has_overlays && !has_captions && segments.len() == 1 {
         let seg = &segments[0];
+        let is_copy = request.video_codec == "copy";
         let mut cmd = tokio::process::Command::new(ffmpeg);
         cmd.args([
             "-y",
@@ -1015,15 +1044,17 @@ async fn run_export(
             &request.source_path,
         ]);
 
-        if request.video_codec == "libx264" || request.video_codec.contains("nvenc") || request.video_codec.contains("amf") || request.video_codec.contains("qsv") {
-            cmd.args(["-c:v", &request.video_codec, "-crf", crf]);
-        } else {
+        if is_copy {
             cmd.args(["-c", "copy"]);
+        } else {
+            cmd.args(["-c:v", &request.video_codec, "-crf", crf]);
         }
         if is_mute_all {
             cmd.args(["-an", "-movflags", "+faststart", &request.output_path]);
-        } else {
+        } else if !is_copy {
             cmd.args(["-c:a", "aac", "-movflags", "+faststart", &request.output_path]);
+        } else {
+            cmd.args(["-movflags", "+faststart", &request.output_path]);
         }
 
         return run_ffmpeg_with_progress(cmd, total_duration, state, cancel, app_handle).await;
@@ -1595,6 +1626,31 @@ pub async fn save_narration_audio(
     drop(s);
     std::fs::write(&path, &bytes)
         .map_err(|e| format!("Write narration audio failed: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+// ---- Pad Sample Save ----
+
+#[tauri::command]
+pub async fn save_pad_sample(audio_base64: String, filename: String) -> Result<String, String> {
+    use base64::Engine;
+    let data = if let Some(pos) = audio_base64.find(";base64,") {
+        &audio_base64[pos + 8..]
+    } else {
+        &audio_base64
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+    let samples_dir = dirs::data_local_dir()
+        .ok_or("Cannot find local app data dir")?
+        .join("com.observe.app")
+        .join("samples");
+    std::fs::create_dir_all(&samples_dir)
+        .map_err(|e| format!("Create samples dir failed: {}", e))?;
+    let path = samples_dir.join(filename);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("Write pad sample failed: {}", e))?;
     Ok(path.to_string_lossy().to_string())
 }
 

@@ -32,6 +32,23 @@ impl NarrationCaptureState {
     }
 }
 
+fn is_vb_cable_capture_device(name: &str, device_type: &str) -> bool {
+    let upper = name.to_uppercase();
+    device_type == "input"
+        && (upper.contains("CABLE OUTPUT") || upper.contains("VB-AUDIO VIRTUAL CABLE"))
+}
+
+fn is_vb_cable_render_device(name: &str, device_type: &str) -> bool {
+    let upper = name.to_uppercase();
+    device_type == "output"
+        && (upper.contains("CABLE INPUT") || upper.contains("VB-AUDIO VIRTUAL CABLE"))
+}
+
+fn is_obs_monitoring_vb_cable(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    upper.contains("CABLE INPUT") || upper.contains("VB-AUDIO VIRTUAL CABLE")
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VbCableStatus {
@@ -51,21 +68,43 @@ pub async fn check_vb_cable(
         .map_err(|e| format!("Task join error: {}", e))?
         .unwrap_or_default();
 
-    let cable_output = devices.iter().find(|d| {
-        let upper = d.name.to_uppercase();
-        upper.contains("CABLE OUTPUT") && d.device_type == "input"
-    });
+    let cable_output = devices
+        .iter()
+        .find(|d| is_vb_cable_capture_device(&d.name, &d.device_type));
 
     let installed = cable_output.is_some();
     let device_id = cable_output.map(|d| d.id.clone());
 
+    log::info!(
+        "check_vb_cable: installed={}, device_id={:?}, devices=[{}]",
+        installed,
+        device_id,
+        devices
+            .iter()
+            .map(|d| format!("{}({})", d.name, d.device_type))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let obs_monitoring_configured = if installed {
         match tokio::task::spawn_blocking(obs_config::read_obs_audio_config).await {
             Ok(Ok(config)) => {
-                let name_upper = config.monitoring_device_name.to_uppercase();
-                name_upper.contains("CABLE INPUT")
+                let configured = is_obs_monitoring_vb_cable(&config.monitoring_device_name);
+                log::info!(
+                    "check_vb_cable: OBS monitoring device='{}', configured={}",
+                    config.monitoring_device_name,
+                    configured
+                );
+                configured
             }
-            _ => false,
+            Ok(Err(e)) => {
+                log::warn!("check_vb_cable: read OBS config failed: {}", e);
+                false
+            }
+            Err(e) => {
+                log::warn!("check_vb_cable: spawn_blocking failed: {}", e);
+                false
+            }
         }
     } else {
         false
@@ -193,12 +232,10 @@ pub async fn configure_obs_monitoring_for_vbcable(
         .map_err(|e| format!("Task join error: {}", e))?
         .unwrap_or_default();
 
-    let cable_input = devices.iter().find(|d| {
-        let upper = d.name.to_uppercase();
-        upper.contains("CABLE INPUT") && d.device_type == "output"
-    });
-
-    let cable_input = cable_input.ok_or("CABLE Input device not found. Is VB-Cable installed?")?;
+    let cable_input = devices
+        .iter()
+        .find(|d| is_vb_cable_render_device(&d.name, &d.device_type))
+        .ok_or("CABLE Input device not found. Is VB-Cable installed?")?;
 
     let config = tokio::task::spawn_blocking(obs_config::read_obs_audio_config)
         .await
@@ -220,6 +257,58 @@ pub async fn configure_obs_monitoring_for_vbcable(
 }
 
 #[tauri::command]
+pub async fn auto_configure_obs_monitoring(
+    license: tauri::State<'_, SharedLicenseState>,
+    conn_state: tauri::State<'_, SharedObsConnection>,
+) -> Result<String, String> {
+    crate::store::require_module(&license, "narration-studio").await?;
+
+    let devices = tokio::task::spawn_blocking(audio::enumerate_audio_devices)
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+        .unwrap_or_default();
+
+    let cable_input = devices
+        .iter()
+        .find(|d| is_vb_cable_render_device(&d.name, &d.device_type))
+        .ok_or("VB-Cable output device not found")?;
+
+    let device_name = cable_input.name.clone();
+    let device_id = cable_input.id.clone();
+
+    log::info!(
+        "auto_configure_obs_monitoring: setting monitoring to '{}' ({})",
+        device_name,
+        device_id
+    );
+
+    let conn = conn_state.lock().await;
+    conn.send_request(
+        "SetProfileParameter",
+        Some(serde_json::json!({
+            "parameterCategory": "Audio",
+            "parameterName": "MonitoringDeviceName",
+            "parameterValue": device_name,
+        })),
+    )
+    .await?;
+
+    conn.send_request(
+        "SetProfileParameter",
+        Some(serde_json::json!({
+            "parameterCategory": "Audio",
+            "parameterName": "MonitoringDeviceId",
+            "parameterValue": device_id,
+        })),
+    )
+    .await?;
+    drop(conn);
+
+    log::info!("auto_configure_obs_monitoring: done");
+    Ok(format!("OBS monitoring set to '{}'", device_name))
+}
+
+#[tauri::command]
 pub async fn start_narration_capture(
     license: tauri::State<'_, SharedLicenseState>,
     conn_state: tauri::State<'_, SharedObsConnection>,
@@ -238,10 +327,7 @@ pub async fn start_narration_capture(
 
     let cable_output = devices
         .iter()
-        .find(|d| {
-            let upper = d.name.to_uppercase();
-            upper.contains("CABLE OUTPUT") && d.device_type == "input"
-        })
+        .find(|d| is_vb_cable_capture_device(&d.name, &d.device_type))
         .ok_or("CABLE Output device not found. Run Setup first.")?;
 
     let cable_device_id = cable_output.id.clone();
@@ -589,7 +675,7 @@ fn run_narration_capture(
     Ok(())
 }
 
-fn write_wav(path: &PathBuf, samples: &[f32], channels: u16, sample_rate: u32) -> Result<(), String> {
+pub(crate) fn write_wav(path: &PathBuf, samples: &[f32], channels: u16, sample_rate: u32) -> Result<(), String> {
     use std::io::Write;
 
     let bits_per_sample: u16 = 16;

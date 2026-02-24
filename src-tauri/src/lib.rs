@@ -7,6 +7,7 @@ mod ducking;
 mod gemini;
 mod narration_capture;
 mod obs_config;
+mod pad_capture;
 mod obs_launcher;
 mod obs_state;
 mod obs_websocket;
@@ -28,6 +29,7 @@ use ducking::SharedDuckingConfig;
 use gemini::SharedGeminiClient;
 use narration_capture::SharedNarrationCaptureState;
 use obs_state::SharedObsState;
+use pad_capture::SharedPadCaptureState;
 use obs_websocket::ObsConnection;
 use spectrum::SharedSpectrumState;
 use store::SharedLicenseState;
@@ -64,6 +66,10 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(video_editor::VideoEditorState::new())) as SharedVideoEditorState)
         .manage(Arc::new(RwLock::new(license_state)) as SharedLicenseState)
         .manage(Arc::new(Mutex::new(narration_capture::NarrationCaptureState::new())) as SharedNarrationCaptureState)
+        .manage(Arc::new(Mutex::new(pad_capture::PadCaptureState::new())) as SharedPadCaptureState)
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -171,6 +177,7 @@ pub fn run() {
             video_editor::delete_recording,
             video_editor::preview_edit,
             video_editor::pick_image_file,
+            video_editor::pick_audio_file,
             video_editor::export_video,
             video_editor::get_export_progress,
             video_editor::cancel_export,
@@ -183,15 +190,22 @@ pub fn run() {
             video_editor::generate_ass_file,
             video_editor::export_srt,
             video_editor::save_narration_audio,
+            video_editor::save_pad_sample,
             narration_capture::check_vb_cable,
             narration_capture::install_vb_cable,
             narration_capture::configure_obs_monitoring_for_vbcable,
+            narration_capture::auto_configure_obs_monitoring,
             narration_capture::start_narration_capture,
             narration_capture::stop_narration_capture,
+            pad_capture::get_pad_capture_sources,
+            pad_capture::start_pad_capture,
+            pad_capture::stop_pad_capture,
             store::get_store_catalog,
             store::get_license_state,
             store::activate_license_key,
             store::deactivate_license,
+            store::get_device_fingerprint,
+            store::get_stored_license_keys,
         ])
         .setup(|app| {
             tray::setup_tray(app.handle())?;

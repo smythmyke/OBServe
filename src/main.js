@@ -106,14 +106,35 @@ let suppressFilterRender = false;
 let pendingPresetId = null;
 let pendingHighlight = null; // { type: 'group'|'filter', groupId?, source?, filterName? }
 
+const PADS_STATE_KEY = 'observe-pads-state';
+const PAD_COLORS = [
+  '#4488ff','#44cc88','#ff6644','#cc44ff','#ffaa22','#44dddd','#ff4488','#88cc44',
+  '#6644ff','#ddaa44','#44aaff','#ff8844','#aa44cc','#44ff88','#ff4444','#8888ff',
+];
+function padsNewBank() {
+  return Array.from({length:16}, (_,i) => ({
+    id:i+1, filePath:null, audioBuffer:null, label:'', color:null,
+    volume:1.0, playMode:'retrigger', muteGroup:0,
+    gainNode:null, sourceNode:null, playing:false,
+  }));
+}
+const padState = {
+  audioCtx: null, masterGain: null, currentBank: 'A',
+  banks: { A: padsNewBank(), B: padsNewBank(), C: padsNewBank(), D: padsNewBank() },
+  selectedPad: null,
+  recStream: null, recAnalyser: null, recAudioCtx: null,
+  recMediaRecorder: null, recChunks: [], recording: false,
+  recTargetPad: null, recAnimId: null, recStartTime: null, recSourceId: null,
+};
+
 const VISIBILITY_MATRIX = {
   'audio': {
     'simple':   ['audio-devices', 'filters', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'pads', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'ai'],
   },
   'audio-video': {
     'simple':   ['audio-devices', 'filters', 'scenes', 'webcam', 'stream-record', 'video-editor', 'ai'],
-    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'video-editor', 'obs-info', 'system', 'ai'],
+    'advanced': ['audio-devices', 'filters', 'pro-spectrum', 'pads', 'mixer', 'ducking', 'app-capture', 'routing', 'preflight', 'scenes', 'webcam', 'stream-record', 'video-editor', 'obs-info', 'system', 'ai'],
   },
   'video': {
     'simple':   ['filters', 'scenes', 'webcam', 'stream-record', 'video-editor', 'ai'],
@@ -153,7 +174,7 @@ function applyPanelVisibility() {
           overlay.innerHTML = `
             <span class="panel-lock-icon">&#128274;</span>
             <span class="panel-lock-name">${label}</span>
-            <span class="panel-lock-price">$1.99</span>
+            <span class="panel-lock-price">$4.99</span>
             <span class="panel-lock-cta">Click to unlock in Store</span>`;
           overlay.addEventListener('click', () => showStorePanel());
           overlay.addEventListener('mouseenter', () => overlay.classList.add('preview'));
@@ -395,6 +416,7 @@ function setupEventListeners() {
   listen('obs://input-volume-meters', (e) => {
     for (const input of e.payload.inputs) {
       updateMixerMeter(input.inputName, input.channels);
+      updateAppCaptureMeter(input.inputName, input.channels);
     }
   });
 
@@ -3345,6 +3367,14 @@ async function applyRecommendedSetup() {
 
 let alertTimeout = null;
 
+function openExternal(url) {
+  if (window.__TAURI__) {
+    window.__TAURI__.opener.openUrl(url);
+  } else {
+    window.open(url, '_blank');
+  }
+}
+
 function showFrameDropAlert(msg) {
   const toast = $('#alert-toast');
   const msgEl = $('#alert-toast-msg');
@@ -3491,6 +3521,25 @@ $('#btn-toggle-record').addEventListener('click', () => {
   invoke('toggle_record').catch(err => showFrameDropAlert('Record toggle failed: ' + err));
 });
 
+document.addEventListener('keydown', (e) => {
+  if (!isConnected) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
+
+  // Ctrl+Shift+R → Toggle Record
+  if (e.ctrlKey && e.shiftKey && e.key === 'R') {
+    e.preventDefault();
+    invoke('toggle_record').catch(err => showFrameDropAlert('Record toggle failed: ' + err));
+    return;
+  }
+  // Ctrl+Shift+S → Toggle Stream
+  if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+    e.preventDefault();
+    invoke('toggle_stream').catch(err => showFrameDropAlert('Stream toggle failed: ' + err));
+    return;
+  }
+});
+
 // --- Live Captions ---
 
 const liveCaptions = {
@@ -3604,9 +3653,9 @@ function liveCaptionInit() {
 async function liveCaptionStart() {
   console.log('[LiveCaptions] start called');
   if (!isModuleOwned('narration-studio')) {
-    showToast('Narration Studio module required');
     const toggle = $('#live-captions-enabled');
     if (toggle) toggle.checked = false;
+    showStorePanel(); renderStoreCatalog();
     return;
   }
 
@@ -4220,16 +4269,20 @@ async function togglePresetDropdown() {
 
   const presets = await ensurePresetsLoaded();
   const vstsInstalled = vstStatus?.plugins?.some(p => p.installed) ?? false;
+  const presetsOwned = isModuleOwned('presets');
   let html = presets.map(p => {
     const isPro = p.pro;
-    const disabled = isPro && !vstsInstalled;
-    const disabledClass = disabled ? ' disabled' : '';
+    const vstDisabled = isPro && !vstsInstalled;
+    const locked = !presetsOwned;
+    const disabledClass = vstDisabled ? ' disabled' : '';
+    const lockedClass = locked ? ' module-locked' : '';
     const proBadge = isPro ? '<span class="pro-badge">PRO</span>' : '';
-    const tooltip = disabled ? ' title="VST plugins not installed"' : '';
-    return `<button class="sc-preset-option${disabledClass}" data-preset-id="${esc(p.id)}"${disabled ? ' disabled' : ''}${tooltip}>
+    const lockBadge = locked ? '<span class="module-lock-badge" data-open-store><span class="lock-icon">&#128274;</span> $4.99</span>' : '';
+    const tooltip = vstDisabled ? ' title="VST plugins not installed"' : '';
+    return `<button class="sc-preset-option${disabledClass}${lockedClass}" data-preset-id="${esc(p.id)}"${vstDisabled && !locked ? ' disabled' : ''}${tooltip}>
       <span class="sc-preset-icon">${p.icon}</span>
       <span class="sc-preset-info">
-        <span class="sc-preset-name">${esc(p.name)}${proBadge}</span>
+        <span class="sc-preset-name">${esc(p.name)}${proBadge}${lockBadge}</span>
         <span class="sc-preset-desc">${esc(p.description)}</span>
       </span>
     </button>`;
@@ -4262,7 +4315,13 @@ async function togglePresetDropdown() {
   dropdown.hidden = false;
 
   dropdown.querySelectorAll('.sc-preset-option[data-preset-id]:not([disabled])').forEach(opt => {
-    opt.addEventListener('click', () => {
+    opt.addEventListener('click', (e) => {
+      if (opt.classList.contains('module-locked') || e.target.closest('[data-open-store]')) {
+        dropdown.hidden = true;
+        showStorePanel();
+        renderStoreCatalog();
+        return;
+      }
       dropdown.hidden = true;
       handlePresetSelection(opt.dataset.presetId);
     });
@@ -4380,8 +4439,16 @@ async function replacePresetsAndApply(presetId) {
 }
 
 // Preset dropdown button
+{
+  const presetBtn = $('#btn-sc-presets');
+  if (presetBtn && !isModuleOwned('presets')) {
+    presetBtn.classList.add('locked-module');
+    presetBtn.insertAdjacentHTML('beforeend', ' <span class="module-lock-badge" data-open-store><span class="lock-icon">&#128274;</span> $4.99</span>');
+  }
+}
 $('#btn-sc-presets').addEventListener('click', (e) => {
   e.stopPropagation();
+  if (!isModuleOwned('presets')) { showStorePanel(); renderStoreCatalog(); return; }
   togglePresetDropdown();
 });
 
@@ -4443,9 +4510,16 @@ $('#btn-sc-cancel-group').addEventListener('click', () => {
 let vstBrowserCatalog = null;
 let vstBrowserCategory = 'All';
 
+{
+  const vstBtn = $('#btn-sc-browse-vsts');
+  if (vstBtn && !isModuleOwned('audio-fx')) {
+    vstBtn.classList.add('locked-module');
+    vstBtn.insertAdjacentHTML('beforeend', ' <span class="module-lock-badge" data-open-store><span class="lock-icon">&#128274;</span> $4.99</span>');
+  }
+}
 $('#btn-sc-browse-vsts').addEventListener('click', async () => {
   if (!isModuleOwned('audio-fx')) {
-    showFrameDropAlert('Audio FX module required — open Store to unlock');
+    showStorePanel(); renderStoreCatalog();
     return;
   }
   const chainList = $('#filters-chain-list');
@@ -4628,10 +4702,11 @@ async function retryConnect(settings, maxAttempts) {
       setConnectedUI(status);
       return;
     } catch (e) {
+      console.log('[Welcome] retryConnect attempt', attempt, 'of', maxAttempts, 'failed:', String(e));
       if (attempt === maxAttempts) {
+        console.log('[Welcome] all retries exhausted, showing welcome on fail');
         $('#btn-connect').disabled = false;
-        $('#connection-error').textContent = 'Could not connect to OBS after ' + maxAttempts + ' attempts';
-        $('#connection-error').hidden = false;
+        showWelcomeOnFail();
       }
     }
   }
@@ -4666,6 +4741,7 @@ const PANEL_LABELS = {
   'filters': 'Signal Chain',
   'pro-spectrum': 'Pro Spectrum',
   'webcam': 'Cameras',
+  'pads': 'OBServe Pads',
   'ai': 'AI Assistant',
   'store': 'Module Store',
 };
@@ -4677,10 +4753,10 @@ const PANEL_MODULE_MAP = {
   'ducking': 'ducking',
   'mixer': 'ducking',
   'webcam': 'camera',
+  'pads': 'sample-pad',
 };
 
 function isModuleOwned(moduleId) {
-  if (window.__TAURI__) return true;
   return licenseState.owned_modules &&
     (Array.isArray(licenseState.owned_modules)
       ? licenseState.owned_modules.includes(moduleId)
@@ -6602,7 +6678,8 @@ function initAppCapture() {
 }
 
 const debouncedSetAppCaptureVolume = debounce((inputName, volumeDb) => {
-  invoke('set_input_volume', { inputName, volumeDb }).catch(() => {});
+  scLog('App capture volume:', inputName, volumeDb.toFixed(1), 'dB');
+  invoke('set_input_volume', { inputName, volumeDb }).catch(e => scErr('App capture set volume failed:', e));
 }, 60);
 
 async function refreshAppCaptureProcesses() {
@@ -6634,6 +6711,28 @@ async function refreshAppCaptureProcesses() {
   }
 }
 
+function updateAppCaptureMeter(inputName, channels) {
+  const row = document.querySelector(`.app-capture-meter-row[data-input="${CSS.escape(inputName)}"]`);
+  if (!row) return;
+  let maxPeak = -100;
+  for (let i = 0; i < channels.length && i < 2; i++) {
+    const fill = row.querySelector(`.app-capture-meter-fill[data-ch="${i}"]`);
+    if (!fill) continue;
+    const db = channels[i].mag_db;
+    const pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+    fill.style.width = pct + '%';
+    fill.classList.toggle('level-green', db < -12);
+    fill.classList.toggle('level-amber', db >= -12 && db < -3);
+    fill.classList.toggle('level-red', db >= -3);
+    if (channels[i].peak_db > maxPeak) maxPeak = channels[i].peak_db;
+  }
+  const peakEl = row.querySelector('.app-capture-peak-db');
+  if (peakEl) {
+    peakEl.textContent = maxPeak <= -100 ? '-inf' : maxPeak.toFixed(1) + ' dB';
+    peakEl.classList.toggle('clip', maxPeak > -0.5);
+  }
+}
+
 function renderActiveCaptures() {
   const container = $('#app-capture-list');
   if (!container || !obsState) return;
@@ -6656,6 +6755,11 @@ function renderActiveCaptures() {
       <div class="app-capture-item-header">
         <span class="app-capture-item-name">${esc(c.name)}</span>
         <button class="app-capture-remove-btn" data-input="${esc(c.name)}">Remove</button>
+      </div>
+      <div class="app-capture-meter-row" data-input="${esc(c.name)}">
+        <div class="app-capture-meter"><div class="app-capture-meter-fill level-green" data-ch="0"></div></div>
+        <div class="app-capture-meter"><div class="app-capture-meter-fill level-green" data-ch="1"></div></div>
+        <span class="app-capture-peak-db">-inf</span>
       </div>
       <div class="app-capture-item-controls">
         <button class="app-capture-mute-btn${muted ? ' muted' : ''}" data-input="${esc(c.name)}">${muted ? 'Unmute' : 'Mute'}</button>
@@ -7485,6 +7589,691 @@ function veGenerateThumbnailHtml5(filePath) {
   });
 }
 
+// ── OBServe Pads ──
+
+const PADS_KEY_MAP = {
+  'm': 1, ',': 2, '.': 3, '/': 4,
+  'j': 5, 'k': 6, 'l': 7, ';': 8,
+  'u': 9, 'i': 10, 'o': 11, 'p': 12,
+  '7': 13, '8': 14, '9': 15, '0': 16,
+};
+
+function initPads() {
+  padsBuildGrid();
+  padsRestoreState();
+  padsInitTransport();
+  padsPopulateSources();
+  const srcSelect = document.getElementById('pads-source-select');
+  if (srcSelect) srcSelect.addEventListener('focus', () => padsPopulateSources());
+  const knob = document.getElementById('pads-master-knob');
+  if (knob) {
+    knob.addEventListener('input', () => {
+      const v = parseInt(knob.value, 10);
+      document.getElementById('pads-master-pct').textContent = v + '%';
+      if (padState.masterGain) padState.masterGain.gain.value = v / 100;
+      padsSaveState();
+    });
+  }
+  document.querySelectorAll('.pads-bank-btn').forEach(btn => {
+    btn.addEventListener('click', () => padsSwitchBank(btn.dataset.bank));
+  });
+  document.addEventListener('keydown', padsHandleKeyboard);
+}
+
+async function padsPopulateSources() {
+  const sel = document.getElementById('pads-source-select');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="mic">Microphone</option>';
+  try {
+    const sources = await invoke('get_pad_capture_sources');
+    for (const src of sources) {
+      const opt = document.createElement('option');
+      opt.value = src.id;
+      opt.textContent = src.label;
+      if (!src.available) {
+        opt.disabled = true;
+        opt.textContent += ' (not found)';
+      }
+      sel.appendChild(opt);
+    }
+  } catch (_) { /* module not purchased — keep just Microphone */ }
+  if (sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+}
+
+function padsBuildGrid() {
+  const grid = document.getElementById('pads-grid');
+  if (!grid) return;
+  const pads = padState.banks[padState.currentBank];
+  grid.innerHTML = '';
+  for (let row = 3; row >= 0; row--) {
+    for (let col = 0; col < 4; col++) {
+      const idx = row * 4 + col;
+      const pad = pads[idx];
+      const cell = document.createElement('div');
+      cell.className = 'pad-cell' + (pad.filePath ? ' loaded' : '')
+        + (padState.selectedPad === idx ? ' selected' : '');
+      cell.dataset.padIdx = idx;
+      const color = pad.color || PAD_COLORS[idx];
+      const surface = document.createElement('div');
+      surface.className = 'pad-surface';
+      surface.style.setProperty('--pad-color', pad.filePath ? color : '#333');
+      if (pad.filePath) {
+        const lbl = document.createElement('span');
+        lbl.className = 'pad-label';
+        lbl.textContent = pad.label || '';
+        surface.appendChild(lbl);
+        const badges = document.createElement('div');
+        badges.className = 'pad-badges';
+        if (pad.playMode && pad.playMode !== 'retrigger') {
+          const b = document.createElement('span');
+          b.className = 'pad-badge';
+          b.textContent = pad.playMode === 'one-shot' ? '1S' : pad.playMode === 'toggle' ? 'TG' : pad.playMode === 'hold' ? 'HD' : 'LP';
+          badges.appendChild(b);
+        }
+        if (pad.muteGroup > 0) {
+          const b = document.createElement('span');
+          b.className = 'pad-badge';
+          b.textContent = 'M' + pad.muteGroup;
+          badges.appendChild(b);
+        }
+        if (badges.children.length) cell.appendChild(badges);
+      } else {
+        const icon = document.createElement('span');
+        icon.className = 'pad-icon';
+        icon.textContent = '+';
+        surface.appendChild(icon);
+      }
+      const num = document.createElement('span');
+      num.className = 'pad-number';
+      num.textContent = pad.id;
+      cell.appendChild(surface);
+      cell.appendChild(num);
+      cell.addEventListener('mousedown', (e) => {
+        if (e.button === 0) {
+          padsSelectPad(idx);
+          padsTrigger(idx);
+        }
+      });
+      cell.addEventListener('mouseup', () => padsHandleMouseUp(idx));
+      cell.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        padsShowContextMenu(e.clientX, e.clientY, idx);
+      });
+      cell.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        cell.classList.add('pad-dragover');
+      });
+      cell.addEventListener('dragleave', () => cell.classList.remove('pad-dragover'));
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault();
+        cell.classList.remove('pad-dragover');
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0) {
+          const f = files[0];
+          if (f.path) padsLoadFile(idx, f.path);
+        }
+      });
+      grid.appendChild(cell);
+    }
+  }
+  padsUpdateBankIndicators();
+}
+
+function padsEnsureAudioCtx() {
+  if (padState.audioCtx) return;
+  padState.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  padState.masterGain = padState.audioCtx.createGain();
+  const knob = document.getElementById('pads-master-knob');
+  padState.masterGain.gain.value = knob ? parseInt(knob.value, 10) / 100 : 0.8;
+  padState.masterGain.connect(padState.audioCtx.destination);
+  for (const bankPads of Object.values(padState.banks)) {
+    for (const pad of bankPads) {
+      if (!pad.gainNode) {
+        pad.gainNode = padState.audioCtx.createGain();
+        pad.gainNode.gain.value = pad.volume;
+        pad.gainNode.connect(padState.masterGain);
+      }
+    }
+  }
+}
+
+async function padsLoadFile(padIdx, filePath) {
+  padsEnsureAudioCtx();
+  try {
+    const url = convertFileSrc(filePath);
+    console.log('[Pads] loading file:', filePath, 'url:', url);
+    const resp = await fetch(url);
+    console.log('[Pads] fetch status:', resp.status, 'size:', resp.headers.get('content-length'));
+    const buf = await resp.arrayBuffer();
+    console.log('[Pads] arrayBuffer size:', buf.byteLength);
+    const audioBuffer = await padState.audioCtx.decodeAudioData(buf);
+    console.log('[Pads] decoded:', audioBuffer.duration.toFixed(2) + 's', audioBuffer.numberOfChannels + 'ch');
+    const pad = padState.banks[padState.currentBank][padIdx];
+    pad.filePath = filePath;
+    pad.audioBuffer = audioBuffer;
+    const name = filePath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+    pad.label = name.length > 12 ? name.substring(0, 12) : name;
+    if (!pad.color) pad.color = PAD_COLORS[padIdx];
+    padsBuildGrid();
+    padsSaveState();
+    showToast('Loaded: ' + pad.label);
+  } catch (e) {
+    showToast('Failed to load audio: ' + e.message, 'error');
+  }
+}
+
+function padsTrigger(padIdx) {
+  const pads = padState.banks[padState.currentBank];
+  const pad = pads[padIdx];
+  console.log('[Pads] trigger pad', padIdx, 'hasBuffer:', !!pad.audioBuffer, 'file:', pad.filePath, 'ctxState:', padState.audioCtx?.state);
+  if (!pad.audioBuffer) return;
+  padsEnsureAudioCtx();
+  if (padState.audioCtx.state === 'suspended') padState.audioCtx.resume();
+  const mode = pad.playMode || 'retrigger';
+  if (mode === 'toggle' && pad.playing) {
+    padsStopPad(pad);
+    return;
+  }
+  if (mode === 'one-shot' && pad.playing) return;
+  if (pad.sourceNode && pad.playing) {
+    try { pad.sourceNode.stop(); } catch(_) {}
+  }
+  if (pad.muteGroup > 0) {
+    for (let i = 0; i < pads.length; i++) {
+      if (i !== padIdx && pads[i].muteGroup === pad.muteGroup && pads[i].playing) {
+        padsStopPad(pads[i]);
+      }
+    }
+  }
+  if (!pad.gainNode) {
+    pad.gainNode = padState.audioCtx.createGain();
+    pad.gainNode.gain.value = pad.volume;
+    pad.gainNode.connect(padState.masterGain);
+  }
+  const source = padState.audioCtx.createBufferSource();
+  source.buffer = pad.audioBuffer;
+  source.loop = (mode === 'loop');
+  source.connect(pad.gainNode);
+  source.start();
+  pad.sourceNode = source;
+  pad.playing = true;
+  source.onended = () => {
+    if (pad.sourceNode === source) pad.playing = false;
+  };
+  const cell = document.querySelector(`.pad-cell[data-pad-idx="${padIdx}"]`);
+  if (cell) {
+    cell.classList.add('pad-triggered');
+    setTimeout(() => cell.classList.remove('pad-triggered'), 150);
+  }
+}
+
+function padsStopPad(pad) {
+  if (pad.sourceNode && pad.playing) {
+    try { pad.sourceNode.stop(); } catch(_) {}
+  }
+  pad.playing = false;
+}
+
+function padsHandleMouseUp(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  if (pad.playMode === 'hold' && pad.playing) {
+    padsStopPad(pad);
+  }
+}
+
+const PADS_PLAY_MODES = [
+  { id: 'retrigger', label: 'Retrigger' },
+  { id: 'one-shot', label: 'One-Shot' },
+  { id: 'toggle', label: 'Toggle' },
+  { id: 'hold', label: 'Hold' },
+  { id: 'loop', label: 'Loop' },
+];
+
+function padsShowContextMenu(x, y, padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  const items = [
+    { label: 'Load Audio...', action: () => padsPickFile(padIdx) },
+  ];
+  if (pad.filePath) {
+    items.push({ label: 'Rename...', action: () => padsRename(padIdx) });
+    items.push({ label: 'Color...', action: () => padsPickColor(padIdx) });
+    items.push({ label: 'Volume...', action: () => padsSetVolume(padIdx) });
+    items.push({ type: 'separator' });
+    items.push({ type: 'header', label: 'Play Mode' });
+    for (const m of PADS_PLAY_MODES) {
+      items.push({ label: m.label, checked: pad.playMode === m.id, action: () => padsSetPlayMode(padIdx, m.id) });
+    }
+    items.push({ type: 'separator' });
+    items.push({ type: 'header', label: 'Mute Group' });
+    items.push({ label: 'None', checked: pad.muteGroup === 0, action: () => padsSetMuteGroup(padIdx, 0) });
+    for (let g = 1; g <= 8; g++) {
+      items.push({ label: 'Group ' + g, checked: pad.muteGroup === g, action: () => padsSetMuteGroup(padIdx, g) });
+    }
+    items.push({ type: 'separator' });
+    items.push({ label: 'Clear Pad', action: () => padsClear(padIdx) });
+  }
+  showContextMenu(x, y, items);
+}
+
+async function padsPickFile(padIdx) {
+  try {
+    const path = await invoke('pick_audio_file');
+    if (path) await padsLoadFile(padIdx, path);
+  } catch (e) {
+    showToast('File picker error: ' + e, 'error');
+  }
+}
+
+function padsClear(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  if (pad.sourceNode && pad.playing) {
+    try { pad.sourceNode.stop(); } catch(_) {}
+  }
+  pad.filePath = null;
+  pad.audioBuffer = null;
+  pad.label = '';
+  pad.color = null;
+  pad.sourceNode = null;
+  pad.playing = false;
+  padsBuildGrid();
+  padsSaveState();
+}
+
+function padsRename(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  const name = prompt('Pad label:', pad.label);
+  if (name === null) return;
+  pad.label = name.substring(0, 16);
+  padsBuildGrid();
+  padsSaveState();
+}
+
+function padsPickColor(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  const input = document.createElement('input');
+  input.type = 'color';
+  input.value = pad.color || PAD_COLORS[padIdx];
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.addEventListener('input', () => {
+    pad.color = input.value;
+    padsBuildGrid();
+    padsSaveState();
+  });
+  input.addEventListener('change', () => {
+    setTimeout(() => input.remove(), 50);
+  });
+  input.click();
+}
+
+function padsSetVolume(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  const cur = Math.round(pad.volume * 100);
+  const val = prompt('Pad volume (0-100):', cur);
+  if (val === null) return;
+  const n = Math.max(0, Math.min(100, parseInt(val, 10)));
+  if (isNaN(n)) return;
+  pad.volume = n / 100;
+  if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+  padsSaveState();
+}
+
+function padsSetPlayMode(padIdx, mode) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  if (pad.playing && pad.playMode === 'loop' && mode !== 'loop') {
+    padsStopPad(pad);
+  }
+  pad.playMode = mode;
+  padsBuildGrid();
+  padsSaveState();
+}
+
+function padsSetMuteGroup(padIdx, group) {
+  padState.banks[padState.currentBank][padIdx].muteGroup = group;
+  padsBuildGrid();
+  padsSaveState();
+}
+
+function padsSwitchBank(bankId) {
+  if (bankId === padState.currentBank) return;
+  const pads = padState.banks[padState.currentBank];
+  for (const pad of pads) {
+    if (pad.playing) padsStopPad(pad);
+  }
+  padState.currentBank = bankId;
+  padState.selectedPad = null;
+  document.querySelectorAll('.pads-bank-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.bank === bankId);
+  });
+  padsBuildGrid();
+  padsPreloadBuffers();
+  padsSaveState();
+}
+
+function padsUpdateBankIndicators() {
+  document.querySelectorAll('.pads-bank-btn').forEach(btn => {
+    const bid = btn.dataset.bank;
+    const hasContent = padState.banks[bid]?.some(p => p.filePath);
+    btn.classList.toggle('has-content', !!hasContent);
+    btn.classList.toggle('active', bid === padState.currentBank);
+  });
+}
+
+function padsHandleKeyboard(e) {
+  const panel = document.getElementById('pads-panel');
+  if (!panel || panel.hidden) return;
+  const tag = e.target.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if (e.key === ' ' || e.code === 'Space') {
+    e.preventDefault();
+    if (padState.recording) padsStopRecording();
+    else padsStartRecording();
+    return;
+  }
+  const padIdx = PADS_KEY_MAP[e.key.toLowerCase()];
+  if (padIdx !== undefined) {
+    e.preventDefault();
+    padsTrigger(padIdx - 1);
+  }
+}
+
+function padsSaveState() {
+  const pads = padState.banks[padState.currentBank];
+  const knob = document.getElementById('pads-master-knob');
+  const data = {
+    masterVol: knob ? parseInt(knob.value, 10) : 80,
+    currentBank: padState.currentBank,
+    banks: {},
+  };
+  for (const [bankId, bankPads] of Object.entries(padState.banks)) {
+    data.banks[bankId] = bankPads.map(p => ({
+      filePath: p.filePath, label: p.label, color: p.color, volume: p.volume,
+      playMode: p.playMode, muteGroup: p.muteGroup,
+    }));
+  }
+  localStorage.setItem(PADS_STATE_KEY, JSON.stringify(data));
+}
+
+function padsRestoreState() {
+  try {
+    const raw = localStorage.getItem(PADS_STATE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.masterVol != null) {
+      const knob = document.getElementById('pads-master-knob');
+      if (knob) {
+        knob.setValue(data.masterVol);
+        document.getElementById('pads-master-pct').textContent = data.masterVol + '%';
+      }
+    }
+    if (data.currentBank && padState.banks[data.currentBank]) {
+      padState.currentBank = data.currentBank;
+      document.querySelectorAll('.pads-bank-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.bank === padState.currentBank);
+      });
+    }
+    if (data.banks) {
+      for (const [bankId, saved] of Object.entries(data.banks)) {
+        if (!padState.banks[bankId]) continue;
+        for (let i = 0; i < saved.length && i < 16; i++) {
+          const pad = padState.banks[bankId][i];
+          pad.filePath = saved[i].filePath || null;
+          pad.label = saved[i].label || '';
+          pad.color = saved[i].color || null;
+          pad.volume = saved[i].volume ?? 1.0;
+          pad.playMode = saved[i].playMode || 'retrigger';
+          pad.muteGroup = saved[i].muteGroup || 0;
+        }
+      }
+    }
+    padsBuildGrid();
+    padsPreloadBuffers();
+  } catch(_) {}
+}
+
+async function padsPreloadBuffers() {
+  padsEnsureAudioCtx();
+  const pads = padState.banks[padState.currentBank];
+  let rebuilt = false;
+  for (const pad of pads) {
+    if (!pad.filePath) continue;
+    try {
+      const url = convertFileSrc(pad.filePath);
+      const resp = await fetch(url);
+      const buf = await resp.arrayBuffer();
+      pad.audioBuffer = await padState.audioCtx.decodeAudioData(buf);
+    } catch(_) {
+      pad.filePath = null;
+      pad.label = '';
+      pad.color = null;
+      rebuilt = true;
+    }
+  }
+  if (rebuilt) {
+    padsBuildGrid();
+    padsSaveState();
+  }
+}
+
+function padsSelectPad(idx) {
+  if (padState.selectedPad === idx) return;
+  const prev = document.querySelector('.pad-cell.selected');
+  if (prev) prev.classList.remove('selected');
+  padState.selectedPad = idx;
+  const cell = document.querySelector(`.pad-cell[data-pad-idx="${idx}"]`);
+  if (cell) cell.classList.add('selected');
+}
+
+function padsInitTransport() {
+  const recBtn = document.getElementById('pads-rec-btn');
+  const stopBtn = document.getElementById('pads-stop-btn');
+  if (!recBtn || !stopBtn) return;
+  recBtn.addEventListener('click', () => {
+    if (padState.recording) return;
+    padsStartRecording();
+  });
+  stopBtn.addEventListener('click', () => {
+    if (!padState.recording) return;
+    padsStopRecording();
+  });
+}
+
+async function padsStartRecording() {
+  if (padState.recording) return;
+  if (padState.selectedPad === null) {
+    showToast('Select a pad first (click one)', 'warning');
+    return;
+  }
+  const sourceId = document.getElementById('pads-source-select')?.value || 'mic';
+  padState.recSourceId = sourceId;
+  if (sourceId === 'mic') await padsStartMicRecording();
+  else await padsStartCaptureRecording(sourceId);
+}
+
+async function padsStartMicRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    padState.recStream = stream;
+    padState.recAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = padState.recAudioCtx.createMediaStreamSource(stream);
+    padState.recAnalyser = padState.recAudioCtx.createAnalyser();
+    padState.recAnalyser.fftSize = 2048;
+    source.connect(padState.recAnalyser);
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : 'audio/webm';
+    padState.recMediaRecorder = new MediaRecorder(stream, { mimeType });
+    padState.recChunks = [];
+    padState.recMediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) padState.recChunks.push(e.data);
+    };
+    padState.recMediaRecorder.start(1000);
+    padsSetRecordingUI(true);
+    padsDrawRecWaveform();
+  } catch (e) {
+    showToast('Mic access denied: ' + e.message, 'error');
+  }
+}
+
+async function padsStartCaptureRecording(sourceId) {
+  try {
+    await invoke('start_pad_capture', { sourceId });
+    padsSetRecordingUI(true);
+    padsDrawCaptureTimer();
+  } catch (e) {
+    showToast('Capture failed: ' + e, 'error');
+  }
+}
+
+function padsSetRecordingUI(on) {
+  if (on) {
+    padState.recording = true;
+    padState.recTargetPad = padState.selectedPad;
+    padState.recStartTime = Date.now();
+    const recBtn = document.getElementById('pads-rec-btn');
+    const stopBtn = document.getElementById('pads-stop-btn');
+    if (recBtn) recBtn.classList.add('recording');
+    if (stopBtn) stopBtn.disabled = false;
+    const status = document.getElementById('pads-rec-status');
+    if (status) status.textContent = 'Recording...';
+    const cell = document.querySelector(`.pad-cell[data-pad-idx="${padState.recTargetPad}"]`);
+    if (cell) cell.classList.add('recording');
+  } else {
+    padState.recording = false;
+    if (padState.recAnimId) { cancelAnimationFrame(padState.recAnimId); padState.recAnimId = null; }
+    padState.recStartTime = null;
+    const targetPad = padState.recTargetPad;
+    padState.recTargetPad = null;
+    padState.recSourceId = null;
+    const recBtn = document.getElementById('pads-rec-btn');
+    const stopBtn = document.getElementById('pads-stop-btn');
+    if (recBtn) recBtn.classList.remove('recording');
+    if (stopBtn) stopBtn.disabled = true;
+    const status = document.getElementById('pads-rec-status');
+    if (status) status.textContent = '';
+    const meterFill = document.getElementById('pads-meter-fill');
+    if (meterFill) meterFill.style.width = '0%';
+    if (targetPad !== null) {
+      const cell = document.querySelector(`.pad-cell[data-pad-idx="${targetPad}"]`);
+      if (cell) cell.classList.remove('recording');
+    }
+    const canvas = document.getElementById('pads-rec-waveform');
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+}
+
+async function padsStopRecording() {
+  if (!padState.recording) return;
+  const sourceId = padState.recSourceId || 'mic';
+  if (sourceId === 'mic') await padsStopMicRecording();
+  else await padsStopCaptureRecording();
+}
+
+async function padsStopMicRecording() {
+  if (!padState.recMediaRecorder) return;
+  const targetPad = padState.recTargetPad;
+  const recorder = padState.recMediaRecorder;
+  const chunks = padState.recChunks;
+  recorder.onstop = async () => {
+    try {
+      const blob = new Blob(chunks, { type: recorder.mimeType });
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      const filename = `pad_${Date.now()}.webm`;
+      const filePath = await invoke('save_pad_sample', { audioBase64: base64, filename });
+      await padsLoadFile(targetPad, filePath);
+      showToast('Recorded to pad ' + (padState.banks[padState.currentBank][targetPad]?.id || ''));
+    } catch (e) {
+      showToast('Save recording failed: ' + e.message, 'error');
+    }
+  };
+  recorder.stop();
+  if (padState.recStream) {
+    padState.recStream.getTracks().forEach(t => t.stop());
+    padState.recStream = null;
+  }
+  if (padState.recAudioCtx) {
+    padState.recAudioCtx.close().catch(() => {});
+    padState.recAudioCtx = null;
+    padState.recAnalyser = null;
+  }
+  padState.recChunks = [];
+  padsSetRecordingUI(false);
+}
+
+async function padsStopCaptureRecording() {
+  const targetPad = padState.recTargetPad;
+  padsSetRecordingUI(false);
+  try {
+    const wavPath = await invoke('stop_pad_capture');
+    await padsLoadFile(targetPad, wavPath);
+    showToast('Captured to pad ' + (padState.banks[padState.currentBank][targetPad]?.id || ''));
+  } catch (e) {
+    showToast('Capture stop failed: ' + e, 'error');
+  }
+}
+
+function padsDrawRecWaveform() {
+  if (!padState.recording || !padState.recAnalyser) return;
+  const canvas = document.getElementById('pads-rec-waveform');
+  const meterFill = document.getElementById('pads-meter-fill');
+  const status = document.getElementById('pads-rec-status');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const analyser = padState.recAnalyser;
+  const bufLen = analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufLen);
+  analyser.getByteTimeDomainData(dataArray);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#44cc88';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  const sliceWidth = canvas.width / bufLen;
+  let x = 0;
+  let sumSq = 0;
+  for (let i = 0; i < bufLen; i++) {
+    const v = dataArray[i] / 128.0;
+    const y = (v * canvas.height) / 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+    x += sliceWidth;
+    const s = v - 1.0;
+    sumSq += s * s;
+  }
+  ctx.stroke();
+  const rms = Math.sqrt(sumSq / bufLen);
+  const pct = Math.min(100, rms * 300);
+  if (meterFill) meterFill.style.width = pct + '%';
+  if (status && padState.recStartTime) {
+    const elapsed = Math.floor((Date.now() - padState.recStartTime) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s2 = elapsed % 60;
+    status.textContent = 'Recording ' + m + ':' + (s2 < 10 ? '0' : '') + s2;
+  }
+  padState.recAnimId = requestAnimationFrame(padsDrawRecWaveform);
+}
+
+function padsDrawCaptureTimer() {
+  if (!padState.recording) return;
+  const status = document.getElementById('pads-rec-status');
+  if (status && padState.recStartTime) {
+    const elapsed = Math.floor((Date.now() - padState.recStartTime) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s2 = elapsed % 60;
+    status.textContent = 'Capturing ' + m + ':' + (s2 < 10 ? '0' : '') + s2;
+  }
+  padState.recAnimId = requestAnimationFrame(padsDrawCaptureTimer);
+}
+
 async function initVideoEditor() {
   try {
     const status = await invoke('detect_ffmpeg');
@@ -7544,10 +8333,19 @@ async function initVideoEditor() {
   $('#btn-boundary-overtake')?.addEventListener('click', () => veSetOvertakeMode('overtake'));
   const narrTrackCanvas = $('#ve-narration-track-canvas');
   if (narrTrackCanvas) narrTrackCanvas.addEventListener('click', veNarrationTrackClick);
+  const narrLocked = !isModuleOwned('narration-studio');
   const narrBtn = $('#btn-ve-narrate');
-  if (narrBtn) narrBtn.classList.toggle('locked', !isModuleOwned('narration-studio'));
+  if (narrBtn) {
+    narrBtn.classList.toggle('locked-module', narrLocked);
+    const existingBadge = narrBtn.querySelector('.module-lock-badge');
+    if (narrLocked && !existingBadge) {
+      narrBtn.insertAdjacentHTML('beforeend', ' <span class="module-lock-badge" data-open-store><span class="lock-icon">&#128274;</span> $4.99</span>');
+    } else if (!narrLocked && existingBadge) {
+      existingBadge.remove();
+    }
+  }
   const capBtn = $('#btn-ve-captions-toggle');
-  if (capBtn) capBtn.classList.toggle('locked', !isModuleOwned('narration-studio'));
+  if (capBtn) capBtn.classList.toggle('locked-module', narrLocked);
   $('#ve-caption-theme')?.addEventListener('change', veOnThemeChange);
   $('#btn-ve-captions-toggle')?.addEventListener('click', veToggleCaptionEditor);
   $('#btn-ve-import-live-captions')?.addEventListener('click', () => {
@@ -7573,6 +8371,11 @@ async function initVideoEditor() {
   $('#btn-export-cancel')?.addEventListener('click', veCancelExport);
   $('#btn-export-close')?.addEventListener('click', () => { $('#export-modal').hidden = true; });
   $('#btn-export-browse')?.addEventListener('click', veExportBrowse);
+  $('#export-codec')?.addEventListener('change', () => {
+    const isCopy = $('#export-codec').value === 'copy';
+    const qRow = $('#export-quality-row');
+    if (qRow) qRow.hidden = isCopy;
+  });
   $('#export-audio-mode')?.addEventListener('change', () => {
     const mode = $('#export-audio-mode').value;
     const volRow = $('#export-narration-vol-row');
@@ -8334,7 +9137,7 @@ function veRemoveAllTakePlayback() {
 }
 
 function veToggleNarrationStrip() {
-  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
+  if (!isModuleOwned('narration-studio')) { showStorePanel(); renderStoreCatalog(); return; }
   const strip = $('#ve-narration-strip');
   if (!strip) return;
   strip.hidden = !strip.hidden;
@@ -8343,7 +9146,7 @@ function veToggleNarrationStrip() {
 }
 
 async function veStartNarration() {
-  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
+  if (!isModuleOwned('narration-studio')) { showStorePanel(); renderStoreCatalog(); return; }
   if (ve.narrating) return;
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
@@ -8378,14 +9181,33 @@ async function veStartNarration() {
     if (useStudio) {
       try {
         const status = await invoke('check_vb_cable');
-        if (!status.installed || !status.obsMonitoringConfigured) {
-          showToast('Run Narration Studio Setup first');
+        console.log('[Narration] check_vb_cable:', JSON.stringify(status));
+        if (!status.installed) {
+          showToast('VB-Cable not installed — run Narration Studio Setup');
+          console.warn('[Narration] VB-Cable not installed');
           stream.getTracks().forEach(t => t.stop());
           audioCtx.close();
           ve.narrationStream = null;
           ve.narrationAudioCtx = null;
           ve.narrationAnalyser = null;
           return;
+        }
+        if (!status.obsMonitoringConfigured) {
+          console.log('[Narration] OBS monitoring not configured for VB-Cable, auto-configuring...');
+          try {
+            const msg = await invoke('auto_configure_obs_monitoring');
+            console.log('[Narration] Auto-configure result:', msg);
+            showToast(msg);
+          } catch (cfgErr) {
+            console.error('[Narration] Auto-configure failed:', cfgErr);
+            showToast('Failed to configure OBS monitoring: ' + cfgErr);
+            stream.getTracks().forEach(t => t.stop());
+            audioCtx.close();
+            ve.narrationStream = null;
+            ve.narrationAudioCtx = null;
+            ve.narrationAnalyser = null;
+            return;
+          }
         }
         let micSource = null;
         if (obsState && obsState.inputs) {
@@ -8716,11 +9538,12 @@ function veRemoveNarrationPlayback() {
 
 async function veNarrationStudioSetup() {
   if (!isModuleOwned('narration-studio')) {
-    showToast('Open Store to unlock Narration Studio');
+    showStorePanel(); renderStoreCatalog();
     return;
   }
   try {
     const status = await invoke('check_vb_cable');
+    console.log('[Narration] Setup check_vb_cable:', JSON.stringify(status));
     if (!status.installed) {
       if (confirm('VB-Cable is required for high-quality narration capture.\n\nDownload and install VB-Cable? (Requires admin)')) {
         showToast('Downloading VB-Cable...');
@@ -8734,13 +9557,14 @@ async function veNarrationStudioSetup() {
       return;
     }
     if (!status.obsMonitoringConfigured) {
-      if (confirm('Set OBS monitoring output to VB-Cable?\n\nOBS must be closed for this change.')) {
-        try {
-          const msg = await invoke('configure_obs_monitoring_for_vbcable');
-          showToast(msg);
-        } catch (e) {
-          showToast('Configuration failed: ' + e);
-        }
+      console.log('[Narration] Setup: OBS monitoring not configured, auto-configuring...');
+      try {
+        const msg = await invoke('auto_configure_obs_monitoring');
+        console.log('[Narration] Setup auto-configure result:', msg);
+        showToast(msg);
+      } catch (e) {
+        console.error('[Narration] Setup auto-configure failed:', e);
+        showToast('Configuration failed: ' + e);
       }
       return;
     }
@@ -8789,7 +9613,7 @@ function veUpdateCaptionCount() {
 // ── Caption Editor ──
 
 function veToggleCaptionEditor() {
-  if (!isModuleOwned('narration-studio')) { showToast('Narration Studio module required — open Store to unlock'); return; }
+  if (!isModuleOwned('narration-studio')) { showStorePanel(); renderStoreCatalog(); return; }
   ve.captionEditorOpen = !ve.captionEditorOpen;
   const editor = $('#ve-caption-editor');
   if (editor) editor.hidden = !ve.captionEditorOpen;
@@ -9609,10 +10433,22 @@ async function renderStoreCatalog() {
 
   try {
     const catalog = await invoke('get_store_catalog');
+
+    // Check if bundle should show as owned (all 10 individual modules owned)
+    const individualModules = catalog.filter(m => m.id !== 'all-modules-bundle');
+    const allIndividualOwned = individualModules.every(m => m.owned);
+
     grid.innerHTML = catalog.map(m => {
-      const owned = m.owned;
+      const isBundle = m.id === 'all-modules-bundle';
+      const owned = isBundle ? allIndividualOwned : m.owned;
+      const cardClasses = [
+        'store-card',
+        owned ? 'owned' : '',
+        isBundle ? 'bundle' : '',
+      ].filter(Boolean).join(' ');
+
       return `
-        <div class="store-card ${owned ? 'owned' : ''}" data-module-id="${m.id}">
+        <div class="${cardClasses}" data-module-id="${m.id}">
           <div class="store-card-name">${m.name}</div>
           <div class="store-card-desc">${m.description}</div>
           <div class="store-card-footer">
@@ -9646,7 +10482,7 @@ async function renderStoreCatalog() {
         e.stopPropagation();
         const link = btn.dataset.stripeLink;
         if (link && !link.includes('PLACEHOLDER')) {
-          window.open(link, '_blank');
+          openExternal(link);
         } else {
           showFrameDropAlert('Store not yet configured — coming soon!');
         }
@@ -9660,6 +10496,7 @@ async function renderStoreCatalog() {
 async function activateLicense() {
   const keyInput = document.getElementById('store-license-key');
   const statusEl = document.getElementById('store-activation-status');
+  const activateBtn = document.getElementById('btn-activate-license');
   const input = keyInput?.value.trim();
   if (!input) {
     statusEl.textContent = 'Please enter an activation code';
@@ -9668,11 +10505,15 @@ async function activateLicense() {
   }
 
   try {
+    if (activateBtn) { activateBtn.disabled = true; activateBtn.textContent = 'Activating...'; }
     statusEl.textContent = 'Activating...';
     statusEl.className = 'store-activation-status';
 
+    const isPin = /^\d{4}$/.test(input);
     let key = input;
-    if (/^\d{4}$/.test(input)) {
+
+    if (isPin) {
+      // PIN activation — no device fingerprinting
       const resp = await fetch('https://observe-api.smythmyke.workers.dev/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -9683,9 +10524,41 @@ async function activateLicense() {
       key = data.key;
     }
 
+    // Local Ed25519 signature verification
     licenseState = await invoke('activate_license_key', { key });
+
+    // Device-bound server check (skip for PIN)
+    if (!isPin) {
+      let offlineFallback = false;
+      try {
+        const fingerprint = await invoke('get_device_fingerprint');
+        const resp = await fetch('https://observe-api.smythmyke.workers.dev/activate-key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key, fingerprint }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          if (resp.status === 403) {
+            // Device limit reached — undo local activation
+            await invoke('deactivate_license');
+            licenseState = { owned_modules: [], email: null, activated_at: null };
+            throw new Error(data.error || 'This key has been activated on 2 devices. Deactivate on another device first.');
+          }
+          throw new Error(data.error || 'Server activation failed');
+        }
+      } catch (e) {
+        if (e.message && e.message.includes('activated on 2 devices')) throw e;
+        if (e.message && e.message.includes('Server activation failed')) throw e;
+        // Network error — allow offline fallback
+        offlineFallback = true;
+      }
+      if (offlineFallback) {
+        showFrameDropAlert('Activated offline. Device registration will sync next time you connect.');
+      }
+    }
+
     cachedPresets = null;
-    // Refresh VST status and force install now that audio-fx module may be owned
     try {
       vstStatus = await invoke('install_vsts');
     } catch (_) {
@@ -9694,17 +10567,37 @@ async function activateLicense() {
     statusEl.textContent = 'License activated successfully!';
     statusEl.className = 'store-activation-status success';
     keyInput.value = '';
+    localStorage.setItem('observe_store_visited', '1');
+    updateStoreFirstRunIndicator();
     applyPanelVisibility();
     renderStoreCatalog();
     updateStoreLicenseInfo();
   } catch (e) {
     statusEl.textContent = String(e);
     statusEl.className = 'store-activation-status error';
+  } finally {
+    if (activateBtn) { activateBtn.disabled = false; activateBtn.textContent = 'Activate'; }
   }
 }
 
 async function deactivateLicense() {
+  if (!confirm('Are you sure you want to deactivate your license? You can re-activate later with the same key.')) return;
   try {
+    // Free device slot(s) on server before clearing locally
+    try {
+      const fingerprint = await invoke('get_device_fingerprint');
+      const keys = await invoke('get_stored_license_keys');
+      for (const k of keys) {
+        try {
+          await fetch('https://observe-api.smythmyke.workers.dev/deactivate-key', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: k, fingerprint }),
+          });
+        } catch (_) { /* server unreachable — best effort */ }
+      }
+    } catch (_) { /* fingerprint or key read failed — proceed with local deactivation */ }
+
     await invoke('deactivate_license');
     licenseState = { owned_modules: [], email: null, activated_at: null };
     cachedPresets = null;
@@ -9722,14 +10615,249 @@ async function deactivateLicense() {
   }
 }
 
+async function recoverLicense() {
+  const emailInput = document.getElementById('store-recovery-email');
+  const statusEl = document.getElementById('store-recovery-status');
+  const recoverBtn = document.getElementById('btn-recover-license');
+  const email = emailInput?.value.trim();
+  if (!email || !email.includes('@')) {
+    statusEl.textContent = 'Please enter a valid email address';
+    statusEl.className = 'store-activation-status error';
+    return;
+  }
+
+  try {
+    if (recoverBtn) { recoverBtn.disabled = true; recoverBtn.textContent = 'Sending...'; }
+    statusEl.textContent = '';
+    statusEl.className = 'store-activation-status';
+
+    const resp = await fetch('https://observe-api.smythmyke.workers.dev/recover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await resp.json();
+    statusEl.textContent = data.message || 'If an account exists with that email, a recovery email has been sent.';
+    statusEl.className = 'store-activation-status success';
+    emailInput.value = '';
+  } catch (e) {
+    statusEl.textContent = 'Recovery request failed — please try again later';
+    statusEl.className = 'store-activation-status error';
+  } finally {
+    if (recoverBtn) { recoverBtn.disabled = false; recoverBtn.textContent = 'Recover'; }
+  }
+}
+
+async function restorePurchases() {
+  const email = licenseState.email;
+  if (!email) {
+    showFrameDropAlert('No email associated with current license');
+    return;
+  }
+  const statusEl = document.getElementById('store-activation-status');
+  try {
+    if (statusEl) { statusEl.textContent = 'Sending recovery email...'; statusEl.className = 'store-activation-status'; }
+    const resp = await fetch('https://observe-api.smythmyke.workers.dev/recover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await resp.json();
+    if (statusEl) { statusEl.textContent = data.message || 'Recovery email sent'; statusEl.className = 'store-activation-status success'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Recovery request failed'; statusEl.className = 'store-activation-status error'; }
+  }
+}
+
+function updateStoreFirstRunIndicator() {
+  const btn = document.getElementById('btn-store');
+  if (!btn) return;
+  const modules = licenseState.owned_modules;
+  const count = Array.isArray(modules) ? modules.length : Object.keys(modules || {}).length;
+  const visited = localStorage.getItem('observe_store_visited');
+  if (count === 0 && !visited) {
+    btn.classList.add('first-run');
+  } else {
+    btn.classList.remove('first-run');
+  }
+}
+
 function initStore() {
-  document.getElementById('btn-store')?.addEventListener('click', toggleStorePanel);
+  document.getElementById('btn-store')?.addEventListener('click', () => {
+    localStorage.setItem('observe_store_visited', '1');
+    updateStoreFirstRunIndicator();
+    toggleStorePanel();
+  });
   document.getElementById('btn-store-close')?.addEventListener('click', hideStorePanel);
   document.getElementById('btn-activate-license')?.addEventListener('click', activateLicense);
   document.getElementById('btn-deactivate-license')?.addEventListener('click', deactivateLicense);
+  document.getElementById('btn-restore-purchases')?.addEventListener('click', restorePurchases);
   document.getElementById('store-license-key')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); activateLicense(); }
   });
+  document.getElementById('store-recovery-toggle')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const form = document.getElementById('store-recovery-form');
+    if (form) form.hidden = !form.hidden;
+  });
+  document.getElementById('btn-recover-license')?.addEventListener('click', recoverLicense);
+  document.getElementById('store-recovery-email')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); recoverLicense(); }
+  });
+  updateStoreFirstRunIndicator();
+
+  // Global delegate: any .module-lock-badge with [data-open-store] opens the Store
+  document.addEventListener('click', (e) => {
+    const badge = e.target.closest('[data-open-store]');
+    if (badge) {
+      e.preventDefault();
+      e.stopPropagation();
+      showStorePanel();
+      renderStoreCatalog();
+    }
+  });
+}
+
+// --- Welcome Modal ---
+
+const WELCOME_DISMISSED_KEY = 'observe-welcome-dismissed';
+
+function shouldShowWelcome() {
+  const dismissed = localStorage.getItem(WELCOME_DISMISSED_KEY);
+  const hasSettings = localStorage.getItem(SETTINGS_KEY);
+  console.log('[Welcome] shouldShow:', { dismissed: !!dismissed, hasSettings: !!hasSettings });
+  if (dismissed) return false;
+  if (hasSettings) return false;
+  return true;
+}
+
+function showWelcome() {
+  console.log('[Welcome] showWelcome called');
+  const overlay = $('#welcome-overlay');
+  console.log('[Welcome] overlay element:', overlay, 'hidden:', overlay?.hidden);
+  if (overlay) overlay.hidden = false;
+}
+
+function hideWelcome() {
+  console.log('[Welcome] hideWelcome called');
+  const overlay = $('#welcome-overlay');
+  console.log('[Welcome] overlay element:', overlay);
+  if (overlay) { overlay.hidden = true; console.log('[Welcome] overlay hidden set to true'); }
+  if ($('#welcome-dismiss-check')?.checked) {
+    localStorage.setItem(WELCOME_DISMISSED_KEY, '1');
+    console.log('[Welcome] dismissed permanently');
+  }
+}
+
+function showWelcomeOnFail() {
+  console.log('[Welcome] showWelcomeOnFail called');
+  const overlay = $('#welcome-overlay');
+  if (!overlay) { console.log('[Welcome] ERROR: overlay element not found!'); return; }
+  overlay.hidden = false;
+  const status = $('#welcome-connect-status');
+  if (status) {
+    status.textContent = 'Could not connect to OBS — check that OBS is running and WebSocket is enabled';
+    status.className = 'welcome-connect-status';
+  }
+  // Pre-fill password from saved settings
+  const settings = loadSettings();
+  const pwField = $('#welcome-password');
+  if (pwField && settings.password) {
+    pwField.value = settings.password;
+  }
+}
+
+async function welcomeConnect() {
+  const btn = $('#welcome-connect-btn');
+  const status = $('#welcome-connect-status');
+  const passwordInput = $('#welcome-password');
+  const password = passwordInput?.value.trim() || '';
+
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  status.textContent = '';
+  status.className = 'welcome-connect-status';
+
+  const settings = loadSettings();
+  settings.password = password;
+  saveSettings(settings);
+
+  $('#obs-password').value = password;
+
+  try {
+    const result = await invoke('connect_obs', {
+      host: settings.host || 'localhost',
+      port: settings.port || 4455,
+      password: password || null,
+    });
+    status.textContent = 'Connected!';
+    status.className = 'welcome-connect-status success';
+    setConnectedUI(result);
+    setTimeout(hideWelcome, 800);
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes('Authentication')) {
+      status.textContent = 'Authentication failed — check your password and try again';
+    } else if (msg.includes('Connection refused') || msg.includes('connect')) {
+      status.textContent = 'Could not reach OBS — make sure OBS is running with WebSocket enabled';
+    } else {
+      status.textContent = 'Connection failed: ' + msg;
+    }
+    status.className = 'welcome-connect-status';
+    btn.disabled = false;
+    btn.textContent = 'Connect to OBS';
+  }
+}
+
+function initWelcome(settings) {
+  console.log('[Welcome] initWelcome called');
+  const skipBtn = $('#welcome-skip-btn');
+  console.log('[Welcome] skip button element:', skipBtn);
+
+  $('#welcome-launch-obs')?.addEventListener('click', async () => {
+    const status = $('#welcome-obs-status');
+    try {
+      const result = await invoke('launch_obs', { minimize: false });
+      if (result.launched) {
+        status.textContent = 'OBS is launching...';
+      } else if (result.already_running) {
+        status.textContent = 'OBS is already running';
+      } else if (result.error) {
+        status.textContent = result.error;
+      }
+    } catch (e) {
+      status.textContent = 'Could not launch OBS — please open it manually';
+    }
+  });
+
+  $('#welcome-obs-running')?.addEventListener('click', () => {
+    const status = $('#welcome-obs-status');
+    status.textContent = 'Great — proceed to Step 2 below';
+  });
+
+  $('#welcome-connect-btn')?.addEventListener('click', welcomeConnect);
+
+  $('#welcome-password')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); welcomeConnect(); }
+  });
+
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      console.log('[Welcome] skip button clicked');
+      hideWelcome();
+    });
+    console.log('[Welcome] skip button listener bound');
+  } else {
+    console.log('[Welcome] WARNING: skip button not found in DOM!');
+  }
+
+  if (shouldShowWelcome()) {
+    console.log('[Welcome] showing welcome (first run)');
+    showWelcome();
+  } else {
+    console.log('[Welcome] skipping welcome, calling autoLaunchAndConnect');
+    autoLaunchAndConnect(settings);
+  }
 }
 
 // --- Maximize on launch ---
@@ -9752,6 +10880,7 @@ initCalibration();
 initDucking();
 initAppCapture();
 initProSpectrum();
+initPads();
 initVideoEditor();
 liveCaptionInit();
 initStore();
@@ -9781,4 +10910,24 @@ initStore();
   }
 })();
 
-autoLaunchAndConnect(initialSettings);
+initWelcome(initialSettings);
+
+// Auto-update check (5s after startup)
+setTimeout(async () => {
+  try {
+    if (!window.__TAURI__?.updater) return;
+    const update = await window.__TAURI__.updater.check();
+    if (update) {
+      const yes = confirm(`OBServe ${update.version} is available (you have ${update.currentVersion}).\n\n${update.body || 'Bug fixes and improvements.'}\n\nDownload and install now?`);
+      if (yes) {
+        showFrameDropAlert('Downloading update...');
+        await update.downloadAndInstall();
+        if (window.__TAURI__.process) {
+          await window.__TAURI__.process.relaunch();
+        }
+      }
+    }
+  } catch (e) {
+    console.log('Update check skipped:', e.message || e);
+  }
+}, 5000);

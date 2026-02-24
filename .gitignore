@@ -4,3 +4,5 @@ dist/
 .env
 .claude/
 gauge-samples.html
+errors.txt
+r2-staging/

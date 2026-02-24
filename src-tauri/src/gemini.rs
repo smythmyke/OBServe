@@ -265,6 +265,38 @@ Pro presets use these VST plugins for broadcast-quality audio:
 When users ask for professional audio quality, recommend Pro presets (if VSTs are installed).
 VST plugin parameters cannot be adjusted individually — they use factory defaults.
 
+### Adding Individual VST Filters
+You can add any installed Airwindows VST as an individual filter using `filterKind: "vst_filter"`.
+The `plugin_path` must be the full filesystem path to the DLL (shown in the VST status section below).
+
+**User request → VST plugin mapping:**
+| User says | Plugin | filterName suggestion | Notes |
+|-----------|--------|-----------------------|-------|
+| "add reverb", "reverb my voice", "room sound" | Verbity | "Reverb" | Lush stereo reverb |
+| "add warmth", "warm it up", "tape sound" | Tape | "Tape Warmth" | Analog tape saturation |
+| "add drive", "saturation", "grit" | PurestDrive | "Drive" | Clean saturation |
+| "de-ess", "fix sibilance", "S sounds" | DeEss | "De-Esser" | Sibilance reducer |
+| "add compression", "compress", "even out" | Pressure4 | "Compressor VST" | Pressure-style compressor |
+| "limiter", "prevent clipping" | BlockParty | "Limiter VST" | Loudness limiter |
+| "noise gate", "gate" | Gatelope | "Gate VST" | Gate with envelope shaping |
+| "channel strip" | CStrip | "Channel Strip" | Full channel strip |
+| "console sound", "console" | PurestConsoleChannel | "Console" | Console channel emulation |
+| "brightness", "air", "sparkle" | Air | "Air EQ" | Tilt EQ for brightness |
+| "low cut", "high pass", "remove rumble" | Capacitor | "High Pass" | High/low pass filter |
+| "density", "thick", "fatten" | Density | "Density" | Color saturation compressor |
+| "vinyl", "lo-fi", "vinyl sound" | ToVinyl4 | "Vinyl" | Vinyl mastering character |
+| "chorus", "widen" | Chorus | "Chorus" | Stereo chorus (downloadable) |
+| "delay", "echo" | TapeDelay | "Tape Delay" | Tape delay (downloadable) |
+
+Example action to add reverb:
+```json
+{"safety": "caution", "description": "Add Verbity reverb to mic", "action_type": "obs_request", "request_type": "CreateSourceFilter", "params": "{\"sourceName\": \"Mic/Aux\", \"filterName\": \"Reverb\", \"filterKind\": \"vst_filter\", \"filterSettings\": {\"plugin_path\": \"<FULL_PATH_TO_Verbity.dll>\"}}"}
+```
+Replace `<FULL_PATH_TO_Verbity.dll>` with the actual path from the VST status below. Use double-backslashes in the JSON string for Windows paths.
+
+**IMPORTANT:** VST filters require the "audio-fx" module to be owned. If not owned, do NOT add VST filters — suggest purchasing from the Store.
+Only use plugins that are shown as installed in the VST status section below. If a plugin is not installed, tell the user it's available for download in the VST Browser.
+
 ### Audio Calibration
 The app includes a Calibration Wizard that measures noise floor, speech levels, and dynamics,
 then applies optimized filters (noise suppression, noise gate, gain, compressor, limiter).
@@ -272,6 +304,49 @@ Filters created by calibration are prefixed "OBServe Cal".
 Filters created by presets are prefixed with the preset name (e.g. "Tutorial Noise Gate").
 When users mention calibration results, reference the measurements to explain filter choices.
 If a user asks to recalibrate, tell them to use the Calibrate button on their mic widget or type "calibrate" in chat.
+
+### Narration Studio (Module: narration-studio)
+OBServe includes a Narration Studio for recording high-quality post-processed narration audio.
+- Uses VB-Cable virtual audio device to capture OBS monitoring output (post-filter audio)
+- Supports Raw mode (direct mic) and Filtered mode (through OBS processing chain)
+- Multi-take recording: users record narration takes synced to video timeline
+- Users control this through the Narration panel in the Video Editor, not through AI chat
+- If asked about narration: explain the feature and direct them to the Video Editor panel
+- Requires the "narration-studio" module. If not owned, suggest purchasing from the Store.
+
+### Live Captions
+The Video Editor includes live speech-to-text captioning using the Web Speech API.
+- 6 caption themes: clean, bold_impact, neon, party, retro, handwritten
+- Creates an OBS text source (text_gdi_plus_v2) for live on-screen captions during recording
+- Can export caption history as SRT or ASS subtitle files
+- Can burn captions into video during export
+- Users control this through the Video Editor captions section
+- If asked about captions: explain the feature and direct them to the Video Editor panel
+- Live Captions are part of the Video Editor module ("video-editor")
+
+### OBServe Pads (Module: sample-pad)
+An MPC-style sample pad for triggering audio clips live during streams or recordings.
+- 16 pads per bank, multiple banks, keyboard shortcuts for triggering
+- Record audio from microphone or system audio (WASAPI loopback) directly onto pads
+- Web Audio API playback for zero-latency triggering
+- Users control this through the Pads panel, not through AI chat
+- If asked about pads or sound effects: explain the feature and direct them to the Pads panel
+- Requires the "sample-pad" module. If not owned, suggest purchasing from the Store.
+
+### Sidechain Ducking (Module: ducking)
+Automatic volume ducking — lowers music/desktop audio when the user speaks into the mic.
+- Configured through the Ducking panel with threshold, duck amount, attack/release settings
+- Also includes a Mixer panel for per-source volume and filter controls
+- Users control this through the Ducking and Mixer panels, not through AI chat
+- If asked about ducking or "lower music when I talk": explain the feature and direct them to the Ducking panel
+- Requires the "ducking" module. If not owned, suggest purchasing from the Store.
+
+### Camera Scene Auto-Detect (Module: camera)
+Automatically detects connected cameras and creates OBS scenes with video sources.
+- Creates DirectShow (dshow_input) sources for each detected camera
+- Users control this through the Webcam panel
+- If asked about camera setup: explain the feature and direct them to the Webcam panel
+- Requires the "camera" module. If not owned, suggest purchasing from the Store.
 
 ### Relative Adjustments
 When users say relative terms, apply these dB offsets to the CURRENT volume:
@@ -590,8 +665,12 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
     prompt.push_str("\n**IMPORTANT:** If the user requests a feature that requires an unowned module, do NOT attempt the action. Instead, explain that the feature requires the module and suggest purchasing it from the Store panel. Specifically:\n");
     prompt.push_str("- Smart Presets require the \"presets\" module\n");
     prompt.push_str("- Pro presets (VST-based) additionally require the \"audio-fx\" module for VST plugins\n");
-    prompt.push_str("- Video editor actions require the \"video-editor\" module\n");
-    prompt.push_str("- Sidechain ducking requires the \"ducking\" module\n\n");
+    prompt.push_str("- Individual VST filters (reverb, de-ess, etc.) require the \"audio-fx\" module\n");
+    prompt.push_str("- Video editor actions and live captions require the \"video-editor\" module\n");
+    prompt.push_str("- Sidechain ducking and mixer require the \"ducking\" module\n");
+    prompt.push_str("- Narration Studio requires the \"narration-studio\" module\n");
+    prompt.push_str("- OBServe Pads require the \"sample-pad\" module\n");
+    prompt.push_str("- Camera auto-detect requires the \"camera\" module\n\n");
 
     // Smart Presets & VST status
     let all_presets = crate::presets::get_presets();
@@ -601,16 +680,33 @@ ALWAYS use OBS controls, not Windows audio. OBS volume controls what goes into t
 
     if vst_status.installed {
         prompt.push_str(&format!(
-            "\n**Airwindows VSTs:** Installed ({}/{} plugins)\n",
-            vst_installed_count, vst_total
+            "\n**Airwindows VSTs:** Installed ({}/{} plugins), path: `{}`\n",
+            vst_installed_count, vst_total, vst_status.install_path
         ));
     } else if vst_installed_count > 0 {
         prompt.push_str(&format!(
-            "\n**Airwindows VSTs:** Partially installed ({}/{} plugins)\n",
-            vst_installed_count, vst_total
+            "\n**Airwindows VSTs:** Partially installed ({}/{} plugins), path: `{}`\n",
+            vst_installed_count, vst_total, vst_status.install_path
         ));
     } else {
-        prompt.push_str("\n**Airwindows VSTs:** Not installed — Pro presets unavailable\n");
+        prompt.push_str("\n**Airwindows VSTs:** Not installed — Pro presets and individual VST filters unavailable\n");
+    }
+
+    // List installed VST plugin paths for individual filter use
+    if vst_installed_count > 0 {
+        prompt.push_str("Installed VST plugins:\n");
+        for p in &vst_status.plugins {
+            if p.installed {
+                prompt.push_str(&format!("- {} → `{}`\n", p.name, p.full_path));
+            }
+        }
+        let not_installed: Vec<&str> = vst_status.plugins.iter()
+            .filter(|p| !p.installed)
+            .map(|p| p.name.as_str())
+            .collect();
+        if !not_installed.is_empty() {
+            prompt.push_str(&format!("Not installed (downloadable): {}\n", not_installed.join(", ")));
+        }
     }
 
     let presets_owned = license.owned_modules.contains("presets");

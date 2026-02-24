@@ -7,6 +7,60 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+
+  <!-- Welcome / Setup Modal -->
+  <div class="welcome-overlay" id="welcome-overlay" hidden>
+    <div class="welcome-modal">
+      <div class="welcome-header">
+        <h1 class="welcome-title"><span class="title-observe">OBServe</span> <span class="title-for">for</span> <span class="title-obs">OBS</span></h1>
+        <p class="welcome-subtitle">AI-powered companion for OBS Studio</p>
+      </div>
+
+      <!-- Step 1: Open OBS -->
+      <div class="welcome-step" id="welcome-step-1">
+        <div class="welcome-step-number">1</div>
+        <div class="welcome-step-content">
+          <h3>Open OBS Studio</h3>
+          <p>OBServe connects to OBS via WebSocket. Make sure OBS is running first.</p>
+          <div class="welcome-step-actions">
+            <button class="hw-btn" id="welcome-launch-obs">Open OBS</button>
+            <button class="btn-secondary" id="welcome-obs-running">OBS is already open</button>
+          </div>
+          <p class="welcome-step-status" id="welcome-obs-status"></p>
+        </div>
+      </div>
+
+      <!-- Step 2: WebSocket Setup -->
+      <div class="welcome-step" id="welcome-step-2">
+        <div class="welcome-step-number">2</div>
+        <div class="welcome-step-content">
+          <h3>Enable WebSocket Server</h3>
+          <p>In OBS, go to <b>Tools</b> &rarr; <b>WebSocket Server Settings</b></p>
+          <img src="images/obs-websocket-menu.png" class="welcome-screenshot" alt="OBS Tools menu showing WebSocket Server Settings">
+          <p>Click <b>Show Connect Info</b> and copy the <b>Server Password</b>:</p>
+          <img src="images/obs-websocket-password.png" class="welcome-screenshot" alt="OBS WebSocket Connect Info showing Server Password">
+          <div class="welcome-password-row">
+            <label>Password</label>
+            <input type="password" id="welcome-password" class="store-license-input" placeholder="Paste password here (or leave blank if none)">
+          </div>
+        </div>
+      </div>
+
+      <!-- Connect -->
+      <div class="welcome-connect-section">
+        <button class="hw-btn welcome-connect-btn" id="welcome-connect-btn">Connect to OBS</button>
+        <p class="welcome-connect-status" id="welcome-connect-status"></p>
+      </div>
+
+      <div class="welcome-footer">
+        <label class="welcome-dismiss-label">
+          <input type="checkbox" id="welcome-dismiss-check"> Don't show this again
+        </label>
+        <button class="btn-secondary welcome-skip-btn" id="welcome-skip-btn">Skip</button>
+      </div>
+    </div>
+  </div>
+
   <div class="rack-frame">
 
     <div class="wood-panel">
@@ -105,7 +159,7 @@
         <span class="mod-title">Module Store</span>
         <div class="store-header">
           <h2>Module Store</h2>
-          <span class="store-tagline">Unlock powerful modules &mdash; $1.99 each, one-time purchase</span>
+          <span class="store-tagline">Unlock powerful modules &mdash; $4.99 each, one-time purchase</span>
           <button class="btn-secondary store-close-btn" id="btn-store-close">&times; Close</button>
         </div>
         <div class="store-grid" id="store-grid"></div>
@@ -121,7 +175,18 @@
           <div class="store-license-info" id="store-license-info" hidden>
             <span id="store-license-email"></span>
             <span id="store-license-count"></span>
+            <button class="btn-secondary store-deactivate-btn" id="btn-restore-purchases">Restore Purchases</button>
             <button class="btn-secondary store-deactivate-btn" id="btn-deactivate-license">Deactivate</button>
+          </div>
+          <div class="store-recovery">
+            <a href="#" class="store-recovery-link" id="store-recovery-toggle">Forgot your license key?</a>
+            <div class="store-recovery-form" id="store-recovery-form" hidden>
+              <div class="store-activation-row">
+                <input type="email" id="store-recovery-email" class="store-license-input" placeholder="Enter your purchase email...">
+                <button class="hw-btn" id="btn-recover-license">Recover</button>
+              </div>
+              <p class="store-activation-status" id="store-recovery-status"></p>
+            </div>
           </div>
         </div>
       </section>
@@ -167,9 +232,10 @@
         <span class="mod-title">Stream &amp; Record</span>
         <h2>Stream &amp; Record</h2>
         <div class="stream-record-buttons">
-          <button class="sr-btn" id="btn-toggle-stream">Start Stream</button>
-          <button class="sr-btn" id="btn-toggle-record">Start Record</button>
+          <button class="sr-btn" id="btn-toggle-stream" title="Ctrl+Shift+S">Start Stream</button>
+          <button class="sr-btn" id="btn-toggle-record" title="Ctrl+Shift+R">Start Record</button>
         </div>
+        <div class="sr-shortcuts-hint">Ctrl+Shift+S Stream &nbsp;|&nbsp; Ctrl+Shift+R Record</div>
         <div class="stream-record-status">
           <span id="sr-stream-status" class="sr-status">Stream: Off</span>
           <span id="sr-record-status" class="sr-status">Record: Off</span>
@@ -500,6 +566,42 @@
           <span class="lufs-label">TP <span id="lufs-true-peak">--</span></span>
         </div>
         <div class="spectrum-knobs" id="spectrum-knobs"></div>
+      </section>
+
+      <section class="module panel" id="pads-panel" data-panel="pads" hidden>
+        <div class="mod-screw tl"></div><div class="mod-screw tr"></div>
+        <div class="mod-screw bl"></div><div class="mod-screw br"></div>
+        <span class="mod-title">PADS</span>
+        <div class="pads-toolbar">
+          <h2>Pads</h2>
+          <div class="pads-actions">
+            <div class="pads-bank-selector" id="pads-bank-selector">
+              <button class="pads-bank-btn active" data-bank="A">A</button>
+              <button class="pads-bank-btn" data-bank="B">B</button>
+              <button class="pads-bank-btn" data-bank="C">C</button>
+              <button class="pads-bank-btn" data-bank="D">D</button>
+            </div>
+            <div class="pads-master-vol">
+              <span class="pads-master-label">Vol</span>
+              <webaudio-knob id="pads-master-knob" min="0" max="100" step="1" value="80"
+                diameter="36" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+              <span class="pads-master-pct" id="pads-master-pct">80%</span>
+            </div>
+          </div>
+        </div>
+        <div class="pads-transport" id="pads-transport">
+          <button class="pads-transport-btn" id="pads-rec-btn" title="Record to selected pad">●</button>
+          <button class="pads-transport-btn" id="pads-stop-btn" title="Stop recording" disabled>■</button>
+          <select class="pads-source-select" id="pads-source-select">
+            <option value="mic">Microphone</option>
+          </select>
+          <canvas class="pads-rec-waveform" id="pads-rec-waveform" width="200" height="32"></canvas>
+          <div class="pads-input-meter" id="pads-input-meter">
+            <div class="pads-meter-fill" id="pads-meter-fill"></div>
+          </div>
+          <span class="pads-rec-status" id="pads-rec-status"></span>
+        </div>
+        <div class="pads-grid" id="pads-grid"></div>
       </section>
 
       <section class="module panel" id="mixer-panel" data-panel="mixer" hidden>
@@ -875,7 +977,7 @@
               <option value="mov">MOV</option>
             </select>
           </div>
-          <div class="export-row">
+          <div class="export-row" id="export-quality-row">
             <label>Quality</label>
             <select id="export-quality">
               <option value="high">High (CRF 18)</option>
@@ -886,6 +988,7 @@
           <div class="export-row">
             <label>Codec</label>
             <select id="export-codec">
+              <option value="copy">Copy (no re-encode, instant)</option>
               <option value="libx264">H.264 (CPU)</option>
               <option value="h264_nvenc">H.264 (NVENC)</option>
               <option value="h264_amf">H.264 (AMF)</option>

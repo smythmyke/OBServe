@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBServe — AI-Powered Desktop Companion for OBS Studio</title>
+  <meta name="description" content="OBServe monitors, detects, and auto-configures audio, video, and streaming settings for OBS Studio so you can focus on content, not troubleshooting.">
+  <link rel="icon" href="images/logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="index.html" class="header-logo">
+        <img src="images/logo.png" alt="OBServe icon">
+        <span class="gradient-text">OBServe</span>
+      </a>
+      <nav class="header-nav" id="nav">
+        <a href="index.html" class="active">Home</a>
+        <a href="modules.html">Modules</a>
+        <a href="https://github.com/smythmyke/OBServe" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/smythmyke/OBServe/releases" class="btn btn-primary">Download</a>
+      </nav>
+      <button class="hamburger" id="hamburger" aria-label="Toggle navigation">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-panel">
+        <div class="hero-screws">
+          <div class="hero-screw tl"></div>
+          <div class="hero-screw tr"></div>
+          <div class="hero-screw bl"></div>
+          <div class="hero-screw br"></div>
+        </div>
+        <img src="images/logo.png" alt="OBServe" class="hero-icon">
+        <h1 class="gradient-text">OBServe</h1>
+        <div class="amber-display">AI-Powered Desktop Companion for OBS Studio</div>
+        <p class="hero-subtitle">
+          Monitors, detects, and auto-configures audio, video, and streaming settings so you can focus on content, not troubleshooting.
+        </p>
+        <div class="hero-ctas">
+          <a href="https://github.com/smythmyke/OBServe/releases" class="btn btn-primary">Download for Windows</a>
+          <a href="modules.html" class="btn btn-secondary">View Modules</a>
+        </div>
+        <div class="hero-screenshot">App Screenshot Coming Soon</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Free Features -->
+  <section id="features">
+    <div class="container">
+      <h2 class="section-title reveal"><span class="led green"></span> Free Features</h2>
+      <p class="section-subtitle reveal">Everything you need to get started — included at no cost.</p>
+      <div class="features-grid">
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9889;</span>
+          <h3>Auto-Connect to OBS</h3>
+          <p>Instantly connects to OBS Studio via WebSocket. Detects running instances and authenticates automatically.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9834;</span>
+          <h3>Real-Time Audio Monitoring</h3>
+          <p>Live peak meters for every audio source. See levels at a glance with color-coded indicators.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9776;</span>
+          <h3>Signal Chain Management</h3>
+          <p>View and manage your audio signal chain — inputs, filters, and routing in one organized view.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#10003;</span>
+          <h3>Pre-Flight Checklist</h3>
+          <p>Run a comprehensive check before going live. Catches issues with resolution, bitrate, encoder, and audio.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9881;</span>
+          <h3>System Resource Monitoring</h3>
+          <p>Track CPU, GPU, RAM, and disk usage in real time. Know when your system is under load.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9723;</span>
+          <h3>Scene Management &amp; Preview</h3>
+          <p>Browse, switch, and preview OBS scenes. See what's live and what's next at a glance.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#10024;</span>
+          <h3>AI Assistant (Gemini)</h3>
+          <p>Natural language control of OBS. Ask questions, get recommendations, or issue commands in plain English.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#9210;</span>
+          <h3>Stream &amp; Record Controls</h3>
+          <p>Start, stop, and monitor streams and recordings directly from OBServe with real-time status.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#127911;</span>
+          <h3>App Audio Capture</h3>
+          <p>Capture audio from specific applications. Route game audio, Discord, and music independently.</p>
+        </div>
+        <div class="feature-card reveal">
+          <span class="feature-icon">&#8594;</span>
+          <h3>Audio Routing Recommendations</h3>
+          <p>Intelligent suggestions for optimal audio routing based on your detected devices and use case.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Featured Modules -->
+  <section id="modules">
+    <div class="container">
+      <h2 class="section-title reveal">Featured Modules</h2>
+      <p class="section-subtitle reveal">Unlock powerful capabilities with one-time purchases.</p>
+      <div class="featured-modules">
+        <div class="module-spotlight cyan reveal">
+          <div class="module-accent"></div>
+          <h3><span class="led cyan"></span> Pro Spectrum</h3>
+          <p>Professional-grade spectral analysis and loudness metering for broadcast-ready audio.</p>
+          <ul>
+            <li>Live FFT frequency analyzer</li>
+            <li>Integrated LUFS loudness metering</li>
+            <li>DAW-style processing mode</li>
+            <li>Real-time processing knobs</li>
+          </ul>
+          <span class="module-price">$1.99</span>
+        </div>
+        <div class="module-spotlight magenta reveal">
+          <div class="module-accent"></div>
+          <h3><span class="led magenta"></span> Video Review &amp; Editor</h3>
+          <p>Full post-production toolkit built right into OBServe — no separate editor needed.</p>
+          <ul>
+            <li>Trim, split, and rearrange clips</li>
+            <li>Text and image overlays</li>
+            <li>Multi-take narration recording</li>
+            <li>6 caption themes with burn-in</li>
+            <li>FFmpeg-powered export</li>
+          </ul>
+          <span class="module-price">$1.99</span>
+        </div>
+        <div class="module-spotlight amber reveal">
+          <div class="module-accent"></div>
+          <h3><span class="led amber"></span> Smart Presets</h3>
+          <p>One-click audio configurations optimized for your content type.</p>
+          <ul>
+            <li>9+ curated presets</li>
+            <li>Tutorial, Gaming, Podcast, ASMR</li>
+            <li>Music Production, Voiceover</li>
+            <li>Instant OBS configuration</li>
+          </ul>
+          <span class="module-price">$1.99</span>
+        </div>
+      </div>
+      <div style="text-align: center; margin-top: 32px;" class="reveal">
+        <a href="modules.html" class="btn btn-secondary">View All Modules &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- How It Works -->
+  <section id="how-it-works">
+    <div class="container">
+      <h2 class="section-title reveal">How It Works</h2>
+      <p class="section-subtitle reveal">Three steps to better content.</p>
+      <div class="steps reveal">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h3>Connect</h3>
+          <p>Launch OBServe alongside OBS Studio. It connects automatically via WebSocket — no configuration needed.</p>
+        </div>
+        <div class="step-connector">&rarr;</div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h3>Configure</h3>
+          <p>OBServe detects your devices, analyzes your setup, and recommends optimal settings. Apply them in one click.</p>
+        </div>
+        <div class="step-connector">&rarr;</div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h3>Create</h3>
+          <p>Focus on your content. OBServe monitors everything in real time and alerts you if anything needs attention.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Pricing -->
+  <section id="pricing">
+    <div class="container">
+      <h2 class="section-title reveal">Simple Pricing</h2>
+      <p class="section-subtitle reveal">No subscriptions. No recurring fees. Ever.</p>
+      <div class="pricing-display reveal">
+        <div class="amber-display">
+          Free base app + $1.99 per module, one-time purchase.
+        </div>
+        <p class="pricing-note">
+          The core app with 10+ features is completely free. Add premium modules only when you need them.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <div class="grip-ridges"></div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand">
+            <img src="images/logo.png" alt="OBServe">
+            <span class="gradient-text">OBServe</span>
+          </div>
+          <p class="footer-desc">AI-powered desktop companion for OBS Studio. Built with Tauri + Rust for minimal resource usage.</p>
+        </div>
+        <div>
+          <div class="footer-heading">Navigation</div>
+          <ul class="footer-links">
+            <li><a href="index.html">Home</a></li>
+            <li><a href="modules.html">Modules</a></li>
+            <li><a href="https://github.com/smythmyke/OBServe" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://github.com/smythmyke/OBServe/releases" target="_blank" rel="noopener">Download</a></li>
+          </ul>
+        </div>
+        <div>
+          <div class="footer-heading">Built With</div>
+          <ul class="footer-links">
+            <li><a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a></li>
+            <li><a href="https://www.rust-lang.org" target="_blank" rel="noopener">Rust</a></li>
+            <li><a href="https://obsproject.com" target="_blank" rel="noopener">OBS Studio</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span class="footer-copyright">&copy; 2025 OBServe. All rights reserved.</span>
+        <span class="footer-fine-print">
+          OBS and OBS Studio are trademarks of the OBS Project. Airwindows plugins are MIT-licensed by Chris Johnson.
+        </span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

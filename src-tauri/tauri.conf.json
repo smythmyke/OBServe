@@ -26,6 +26,14 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/smythmyke/OBServe/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5MzRCRDk3MEU2OTZGMkEKUldRcWIya09sNzAwNldXZStKM1JiZ1BoRmpEUXlEVW9VekhEWU5XNllyY2gwZ3N3T0hkQzV4d2gK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
