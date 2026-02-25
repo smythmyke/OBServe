@@ -115,7 +115,10 @@ function padsNewBank() {
   return Array.from({length:16}, (_,i) => ({
     id:i+1, filePath:null, audioBuffer:null, label:'', color:null,
     volume:1.0, playMode:'retrigger', muteGroup:0,
-    gainNode:null, sourceNode:null, playing:false,
+    gainNode:null, panNode:null, sourceNode:null, playing:false,
+    trimStart:0, trimEnd:1, pitch:1.0, pan:0,
+    effects: [null, null, null], sendLevel: 0,
+    _fxNodes: [null, null, null], _sendGain: null,
   }));
 }
 const padState = {
@@ -125,6 +128,12 @@ const padState = {
   recStream: null, recAnalyser: null, recAudioCtx: null,
   recMediaRecorder: null, recChunks: [], recording: false,
   recTargetPad: null, recAnimId: null, recStartTime: null, recSourceId: null,
+  padMode: 'normal',
+  _16lvlOriginal: null,
+  _noteRepeatInterval: null,
+  _noteRepeatPad: null,
+  _noteRepeatRate: 8,
+  _noteRepeatBPM: 120,
 };
 
 const VISIBILITY_MATRIX = {
@@ -7602,6 +7611,7 @@ function initPads() {
   padsBuildGrid();
   padsRestoreState();
   padsInitTransport();
+  padsInitEditor();
   padsPopulateSources();
   const srcSelect = document.getElementById('pads-source-select');
   if (srcSelect) srcSelect.addEventListener('focus', () => padsPopulateSources());
@@ -7618,6 +7628,62 @@ function initPads() {
     btn.addEventListener('click', () => padsSwitchBank(btn.dataset.bank));
   });
   document.addEventListener('keydown', padsHandleKeyboard);
+  document.addEventListener('keyup', padsHandleKeyup);
+  const nrBtn = document.getElementById('pads-mode-noterepeat');
+  if (nrBtn) nrBtn.addEventListener('click', () => padsToggleMode('noterepeat'));
+  const lvBtn = document.getElementById('pads-mode-16levels');
+  if (lvBtn) lvBtn.addEventListener('click', () => padsToggleMode('16levels'));
+  const flBtn = document.getElementById('pads-mode-fulllevel');
+  if (flBtn) flBtn.addEventListener('click', () => padsToggleMode('fulllevel'));
+  const rateSel = document.getElementById('pads-rate-select');
+  if (rateSel) rateSel.addEventListener('change', () => {
+    padState._noteRepeatRate = parseInt(rateSel.value, 10);
+    if (padState._noteRepeatInterval && padState._noteRepeatPad !== null) {
+      padsStartNoteRepeat(padState._noteRepeatPad);
+    }
+  });
+  const paramSel = document.getElementById('pads-16lvl-param');
+  if (paramSel) paramSel.addEventListener('change', () => {
+    if (padState.padMode === '16levels' && padState._16lvlOriginal) {
+      const srcIdx = padState.selectedPad;
+      const srcPad = padState._16lvlOriginal[srcIdx];
+      padsApply16LevelsSpread(srcPad, paramSel.value);
+    }
+  });
+  const saveBtn = document.getElementById('pads-save-btn');
+  if (saveBtn) saveBtn.addEventListener('click', padsSavePreset);
+  const saveasBtn = document.getElementById('pads-saveas-btn');
+  if (saveasBtn) saveasBtn.addEventListener('click', padsSavePresetAs);
+  const loadBtn = document.getElementById('pads-load-btn');
+  if (loadBtn) loadBtn.addEventListener('click', padsLoadPreset);
+  const menuBtn = document.getElementById('pads-preset-menu-btn');
+  if (menuBtn) menuBtn.addEventListener('click', (e) => {
+    const items = [
+      { label: 'Rename Preset...', action: padsRenamePreset, disabled: !padCurrentPresetPath },
+      { label: 'Delete Preset', action: padsDeletePreset, disabled: !padCurrentPresetPath },
+      { type: 'separator' },
+      { label: 'Export Zip...', action: padsExportZip },
+      { label: 'Import Zip...', action: padsImportZip },
+      { type: 'separator' },
+      { label: 'Sample Browser', action: padsToggleBrowser },
+    ];
+    showContextMenu(e.clientX, e.clientY, items);
+  });
+  const browserClose = document.getElementById('pads-browser-close');
+  if (browserClose) browserClose.addEventListener('click', padsCloseBrowser);
+  const grid = document.getElementById('pads-grid');
+  if (grid) {
+    grid.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    grid.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const path = e.dataTransfer.getData('text/pad-sample-path');
+      if (!path) return;
+      const cell = e.target.closest('.pad-cell');
+      if (!cell) return;
+      const idx = parseInt(cell.dataset.padIdx, 10);
+      if (!isNaN(idx)) padsLoadFile(idx, path);
+    });
+  }
 }
 
 async function padsPopulateSources() {
@@ -7692,10 +7758,22 @@ function padsBuildGrid() {
       cell.addEventListener('mousedown', (e) => {
         if (e.button === 0) {
           padsSelectPad(idx);
-          padsTrigger(idx);
+          if (padState.padMode === 'noterepeat') {
+            padsStartNoteRepeat(idx);
+          } else {
+            padsTrigger(idx);
+          }
         }
       });
-      cell.addEventListener('mouseup', () => padsHandleMouseUp(idx));
+      cell.addEventListener('mouseup', () => {
+        if (padState.padMode === 'noterepeat') padsStopNoteRepeat();
+        padsHandleMouseUp(idx);
+      });
+      cell.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        const p = padState.banks[padState.currentBank][idx];
+        if (p.filePath) padsOpenEditor(idx);
+      });
       cell.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -7728,12 +7806,31 @@ function padsEnsureAudioCtx() {
   const knob = document.getElementById('pads-master-knob');
   padState.masterGain.gain.value = knob ? parseInt(knob.value, 10) / 100 : 0.8;
   padState.masterGain.connect(padState.audioCtx.destination);
+  const sendInput = padState.audioCtx.createGain();
+  const sendConv = padState.audioCtx.createConvolver();
+  sendConv.buffer = padsGetIR(padState.audioCtx, 'medium');
+  const sendOut = padState.audioCtx.createGain();
+  sendOut.gain.value = 0.7;
+  sendInput.connect(sendConv);
+  sendConv.connect(sendOut);
+  sendOut.connect(padState.masterGain);
+  padState.sendBus = { input: sendInput, convolver: sendConv, output: sendOut };
+  if (!padState._workletReady) {
+    padState.audioCtx.audioWorklet.addModule('bitcrusher-processor.js')
+      .then(() => { padState._workletReady = true; })
+      .catch(() => { console.warn('[Pads] AudioWorklet not supported'); });
+  }
   for (const bankPads of Object.values(padState.banks)) {
     for (const pad of bankPads) {
       if (!pad.gainNode) {
         pad.gainNode = padState.audioCtx.createGain();
         pad.gainNode.gain.value = pad.volume;
         pad.gainNode.connect(padState.masterGain);
+      }
+      if (!pad.panNode) {
+        pad.panNode = padState.audioCtx.createStereoPanner();
+        pad.panNode.pan.value = pad.pan || 0;
+        pad.panNode.connect(pad.gainNode);
       }
     }
   }
@@ -7758,6 +7855,7 @@ async function padsLoadFile(padIdx, filePath) {
     if (!pad.color) pad.color = PAD_COLORS[padIdx];
     padsBuildGrid();
     padsSaveState();
+    padsAddRecentSample(filePath);
     showToast('Loaded: ' + pad.label);
   } catch (e) {
     showToast('Failed to load audio: ' + e.message, 'error');
@@ -7792,13 +7890,43 @@ function padsTrigger(padIdx) {
     pad.gainNode.gain.value = pad.volume;
     pad.gainNode.connect(padState.masterGain);
   }
+  if (padState.padMode === 'fulllevel') {
+    pad.gainNode.gain.value = 1.0;
+  }
+  if (!pad.panNode) {
+    pad.panNode = padState.audioCtx.createStereoPanner();
+    pad.panNode.pan.value = pad.pan || 0;
+    pad.panNode.connect(pad.gainNode);
+  }
+  padsRewireEffectChain(pad);
   const source = padState.audioCtx.createBufferSource();
   source.buffer = pad.audioBuffer;
   source.loop = (mode === 'loop');
-  source.connect(pad.gainNode);
-  source.start();
+  source.playbackRate.value = pad.pitch || 1.0;
+  if (padState.padMode === '16levels' && pad._16lvlFilter) {
+    const lpf = padState.audioCtx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = pad._16lvlFilter;
+    lpf.Q.value = 1;
+    source.connect(lpf);
+    lpf.connect(pad.panNode);
+  } else {
+    source.connect(pad.panNode);
+  }
+  const startOffset = (pad.trimStart || 0) * pad.audioBuffer.duration;
+  const duration = ((pad.trimEnd ?? 1) - (pad.trimStart || 0)) * pad.audioBuffer.duration;
+  if (mode === 'loop') {
+    source.loopStart = startOffset;
+    source.loopEnd = startOffset + duration;
+    source.start(0, startOffset);
+  } else {
+    source.start(0, startOffset, duration);
+  }
   pad.sourceNode = source;
   pad.playing = true;
+  pad._triggerTime = padState.audioCtx.currentTime;
+  pad._triggerOffset = startOffset;
+  pad._triggerDuration = duration;
   source.onended = () => {
     if (pad.sourceNode === source) pad.playing = false;
   };
@@ -7807,6 +7935,7 @@ function padsTrigger(padIdx) {
     cell.classList.add('pad-triggered');
     setTimeout(() => cell.classList.remove('pad-triggered'), 150);
   }
+  padsEdStartCursorIfEditing(padIdx);
 }
 
 function padsStopPad(pad) {
@@ -7837,6 +7966,7 @@ function padsShowContextMenu(x, y, padIdx) {
     { label: 'Load Audio...', action: () => padsPickFile(padIdx) },
   ];
   if (pad.filePath) {
+    items.push({ label: 'Edit...', action: () => padsOpenEditor(padIdx) });
     items.push({ label: 'Rename...', action: () => padsRename(padIdx) });
     items.push({ label: 'Color...', action: () => padsPickColor(padIdx) });
     items.push({ label: 'Volume...', action: () => padsSetVolume(padIdx) });
@@ -7871,12 +8001,24 @@ function padsClear(padIdx) {
   if (pad.sourceNode && pad.playing) {
     try { pad.sourceNode.stop(); } catch(_) {}
   }
+  for (let s = 0; s < 3; s++) padsDestroyFxNodes(pad, s);
+  if (pad._sendGain) {
+    try { pad._sendGain.disconnect(); } catch(_) {}
+    pad._sendGain = null;
+  }
   pad.filePath = null;
   pad.audioBuffer = null;
   pad.label = '';
   pad.color = null;
   pad.sourceNode = null;
   pad.playing = false;
+  pad.trimStart = 0;
+  pad.trimEnd = 1;
+  pad.pitch = 1.0;
+  pad.pan = 0;
+  pad.effects = [null, null, null];
+  pad.sendLevel = 0;
+  if (padsEditorState.open && padsEditorState.padIdx === padIdx) padsCloseEditor();
   padsBuildGrid();
   padsSaveState();
 }
@@ -7939,6 +8081,7 @@ function padsSetMuteGroup(padIdx, group) {
 
 function padsSwitchBank(bankId) {
   if (bankId === padState.currentBank) return;
+  if (padState.padMode !== 'normal') padsExitMode();
   const pads = padState.banks[padState.currentBank];
   for (const pad of pads) {
     if (pad.playing) padsStopPad(pad);
@@ -7967,21 +8110,190 @@ function padsHandleKeyboard(e) {
   if (!panel || panel.hidden) return;
   const tag = e.target.tagName.toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && padsEditorState.open) {
+    e.preventDefault();
+    padsUndoEditor();
+    return;
+  }
   if (e.key === ' ' || e.code === 'Space') {
     e.preventDefault();
     if (padState.recording) padsStopRecording();
     else padsStartRecording();
     return;
   }
+  if (e.repeat) return;
   const padIdx = PADS_KEY_MAP[e.key.toLowerCase()];
   if (padIdx !== undefined) {
     e.preventDefault();
-    padsTrigger(padIdx - 1);
+    const idx = padIdx - 1;
+    if (padState.padMode === 'noterepeat') {
+      padState._heldKey = e.key.toLowerCase();
+      padsStartNoteRepeat(idx);
+    } else {
+      padsTrigger(idx);
+    }
   }
 }
 
+function padsHandleKeyup(e) {
+  const panel = document.getElementById('pads-panel');
+  if (!panel || panel.hidden) return;
+  if (padState.padMode !== 'noterepeat') return;
+  if (e.key.toLowerCase() === padState._heldKey) {
+    padsStopNoteRepeat();
+    padState._heldKey = null;
+  }
+}
+
+// ── Advanced Pad Modes ──
+
+function padsToggleMode(mode) {
+  if (padState.padMode === mode) {
+    padsExitMode();
+    return;
+  }
+  if (padState.padMode !== 'normal') padsExitMode();
+  padState.padMode = mode;
+  if (mode === '16levels') padsEnter16Levels();
+  padsUpdateModeButtons();
+}
+
+function padsExitMode() {
+  if (padState.padMode === '16levels') padsExit16Levels();
+  if (padState.padMode === 'noterepeat') padsStopNoteRepeat();
+  if (padState.padMode === 'fulllevel') {
+    const pads = padState.banks[padState.currentBank];
+    for (const pad of pads) {
+      if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+    }
+  }
+  padState.padMode = 'normal';
+  padsUpdateModeButtons();
+}
+
+function padsUpdateModeButtons() {
+  const nr = document.getElementById('pads-mode-noterepeat');
+  const lv = document.getElementById('pads-mode-16levels');
+  const fl = document.getElementById('pads-mode-fulllevel');
+  const rateSel = document.getElementById('pads-rate-select');
+  const paramSel = document.getElementById('pads-16lvl-param');
+  if (nr) nr.classList.toggle('active', padState.padMode === 'noterepeat');
+  if (lv) lv.classList.toggle('active', padState.padMode === '16levels');
+  if (fl) fl.classList.toggle('active', padState.padMode === 'fulllevel');
+  if (rateSel) rateSel.hidden = padState.padMode !== 'noterepeat';
+  if (paramSel) paramSel.hidden = padState.padMode !== '16levels';
+}
+
+function padsEnter16Levels() {
+  if (padState.selectedPad === null) {
+    showToast('Select a loaded pad first', 'error');
+    padState.padMode = 'normal';
+    padsUpdateModeButtons();
+    return;
+  }
+  const srcPad = padState.banks[padState.currentBank][padState.selectedPad];
+  if (!srcPad.audioBuffer) {
+    showToast('Selected pad has no audio loaded', 'error');
+    padState.padMode = 'normal';
+    padsUpdateModeButtons();
+    return;
+  }
+  const bankPads = padState.banks[padState.currentBank];
+  padState._16lvlOriginal = bankPads.map(p => ({
+    filePath: p.filePath, audioBuffer: p.audioBuffer, label: p.label, color: p.color,
+    volume: p.volume, trimStart: p.trimStart, trimEnd: p.trimEnd, pitch: p.pitch,
+  }));
+  const param = document.getElementById('pads-16lvl-param')?.value || 'velocity';
+  padsApply16LevelsSpread(srcPad, param);
+}
+
+function padsApply16LevelsSpread(srcPad, param) {
+  const bankPads = padState.banks[padState.currentBank];
+  for (let i = 0; i < 16; i++) {
+    const pad = bankPads[i];
+    pad.audioBuffer = srcPad.audioBuffer;
+    pad.filePath = srcPad.filePath;
+    pad.color = srcPad.color;
+    pad._16lvlFilter = null;
+    switch (param) {
+      case 'velocity':
+        pad.volume = (i + 1) / 16;
+        pad.pitch = srcPad.pitch || 1.0;
+        pad.trimEnd = srcPad.trimEnd ?? 1;
+        pad.label = Math.round(pad.volume * 100) + '%';
+        if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+        break;
+      case 'pitch':
+        pad.volume = srcPad.volume;
+        pad.pitch = 0.5 + (i / 15) * 1.5;
+        pad.trimEnd = srcPad.trimEnd ?? 1;
+        pad.label = pad.pitch.toFixed(2) + 'x';
+        if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+        break;
+      case 'filter':
+        pad.volume = srcPad.volume;
+        pad.pitch = srcPad.pitch || 1.0;
+        pad.trimEnd = srcPad.trimEnd ?? 1;
+        pad._16lvlFilter = 200 + (i / 15) * 19800;
+        pad.label = pad._16lvlFilter < 1000
+          ? Math.round(pad._16lvlFilter) + 'Hz'
+          : (pad._16lvlFilter / 1000).toFixed(1) + 'k';
+        if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+        break;
+      case 'decay':
+        pad.volume = srcPad.volume;
+        pad.pitch = srcPad.pitch || 1.0;
+        pad.trimStart = srcPad.trimStart || 0;
+        pad.trimEnd = (srcPad.trimStart || 0) + (0.0625 + (i / 15) * 0.9375) * ((srcPad.trimEnd ?? 1) - (srcPad.trimStart || 0));
+        pad.label = Math.round(((pad.trimEnd - pad.trimStart) / ((srcPad.trimEnd ?? 1) - (srcPad.trimStart || 0))) * 100) + '%';
+        if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+        break;
+    }
+  }
+  padsBuildGrid();
+}
+
+function padsExit16Levels() {
+  if (!padState._16lvlOriginal) return;
+  const bankPads = padState.banks[padState.currentBank];
+  for (let i = 0; i < 16; i++) {
+    const saved = padState._16lvlOriginal[i];
+    const pad = bankPads[i];
+    pad.filePath = saved.filePath;
+    pad.audioBuffer = saved.audioBuffer;
+    pad.label = saved.label;
+    pad.color = saved.color;
+    pad.volume = saved.volume;
+    pad.trimStart = saved.trimStart;
+    pad.trimEnd = saved.trimEnd;
+    pad.pitch = saved.pitch;
+    pad._16lvlFilter = null;
+    if (pad.gainNode) pad.gainNode.gain.value = pad.volume;
+  }
+  padState._16lvlOriginal = null;
+  padsBuildGrid();
+}
+
+function padsStartNoteRepeat(padIdx) {
+  padsStopNoteRepeat();
+  padsSelectPad(padIdx);
+  padsTrigger(padIdx);
+  const rate = padState._noteRepeatRate;
+  const ms = (60000 / padState._noteRepeatBPM) / (rate / 4);
+  padState._noteRepeatPad = padIdx;
+  padState._noteRepeatInterval = setInterval(() => padsTrigger(padIdx), ms);
+}
+
+function padsStopNoteRepeat() {
+  if (padState._noteRepeatInterval) {
+    clearInterval(padState._noteRepeatInterval);
+    padState._noteRepeatInterval = null;
+  }
+  padState._noteRepeatPad = null;
+}
+
+let _padsDiskBackupTimer = null;
 function padsSaveState() {
-  const pads = padState.banks[padState.currentBank];
   const knob = document.getElementById('pads-master-knob');
   const data = {
     masterVol: knob ? parseInt(knob.value, 10) : 80,
@@ -7992,46 +8304,71 @@ function padsSaveState() {
     data.banks[bankId] = bankPads.map(p => ({
       filePath: p.filePath, label: p.label, color: p.color, volume: p.volume,
       playMode: p.playMode, muteGroup: p.muteGroup,
+      trimStart: p.trimStart || 0, trimEnd: p.trimEnd ?? 1,
+      pitch: p.pitch ?? 1.0, pan: p.pan || 0,
+      effects: p.effects || [null, null, null],
+      sendLevel: p.sendLevel || 0,
     }));
   }
-  localStorage.setItem(PADS_STATE_KEY, JSON.stringify(data));
+  const json = JSON.stringify(data);
+  localStorage.setItem(PADS_STATE_KEY, json);
+  clearTimeout(_padsDiskBackupTimer);
+  _padsDiskBackupTimer = setTimeout(() => {
+    invoke('save_pad_state_to_disk', { stateJson: json }).catch(() => {});
+  }, 5000);
 }
 
-function padsRestoreState() {
+async function padsRestoreState() {
   try {
-    const raw = localStorage.getItem(PADS_STATE_KEY);
+    let raw = localStorage.getItem(PADS_STATE_KEY);
+    if (!raw) {
+      try {
+        const disk = await invoke('load_pad_state_from_disk');
+        if (disk) raw = disk;
+      } catch (_) {}
+    }
     if (!raw) return;
     const data = JSON.parse(raw);
-    if (data.masterVol != null) {
-      const knob = document.getElementById('pads-master-knob');
-      if (knob) {
-        knob.setValue(data.masterVol);
-        document.getElementById('pads-master-pct').textContent = data.masterVol + '%';
-      }
-    }
-    if (data.currentBank && padState.banks[data.currentBank]) {
-      padState.currentBank = data.currentBank;
-      document.querySelectorAll('.pads-bank-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.bank === padState.currentBank);
-      });
-    }
-    if (data.banks) {
-      for (const [bankId, saved] of Object.entries(data.banks)) {
-        if (!padState.banks[bankId]) continue;
-        for (let i = 0; i < saved.length && i < 16; i++) {
-          const pad = padState.banks[bankId][i];
-          pad.filePath = saved[i].filePath || null;
-          pad.label = saved[i].label || '';
-          pad.color = saved[i].color || null;
-          pad.volume = saved[i].volume ?? 1.0;
-          pad.playMode = saved[i].playMode || 'retrigger';
-          pad.muteGroup = saved[i].muteGroup || 0;
-        }
-      }
-    }
-    padsBuildGrid();
-    padsPreloadBuffers();
+    padsApplyStateData(data);
   } catch(_) {}
+}
+
+function padsApplyStateData(data) {
+  if (data.masterVol != null) {
+    const knob = document.getElementById('pads-master-knob');
+    if (knob) {
+      knob.setValue(data.masterVol);
+      document.getElementById('pads-master-pct').textContent = data.masterVol + '%';
+    }
+  }
+  if (data.currentBank && padState.banks[data.currentBank]) {
+    padState.currentBank = data.currentBank;
+    document.querySelectorAll('.pads-bank-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.bank === padState.currentBank);
+    });
+  }
+  if (data.banks) {
+    for (const [bankId, saved] of Object.entries(data.banks)) {
+      if (!padState.banks[bankId]) continue;
+      for (let i = 0; i < saved.length && i < 16; i++) {
+        const pad = padState.banks[bankId][i];
+        pad.filePath = saved[i].filePath || null;
+        pad.label = saved[i].label || '';
+        pad.color = saved[i].color || null;
+        pad.volume = saved[i].volume ?? 1.0;
+        pad.playMode = saved[i].playMode || 'retrigger';
+        pad.muteGroup = saved[i].muteGroup || 0;
+        pad.trimStart = saved[i].trimStart || 0;
+        pad.trimEnd = saved[i].trimEnd ?? 1;
+        pad.pitch = saved[i].pitch ?? 1.0;
+        pad.pan = saved[i].pan || 0;
+        pad.effects = saved[i].effects || [null, null, null];
+        pad.sendLevel = saved[i].sendLevel || 0;
+      }
+    }
+  }
+  padsBuildGrid();
+  padsPreloadBuffers();
 }
 
 async function padsPreloadBuffers() {
@@ -8040,17 +8377,25 @@ async function padsPreloadBuffers() {
   let rebuilt = false;
   for (const pad of pads) {
     if (!pad.filePath) continue;
-    try {
-      const url = convertFileSrc(pad.filePath);
-      const resp = await fetch(url);
-      const buf = await resp.arrayBuffer();
-      pad.audioBuffer = await padState.audioCtx.decodeAudioData(buf);
-    } catch(_) {
+    let loaded = false;
+    for (const tryPath of [pad.filePath, pad._fallbackPath].filter(Boolean)) {
+      try {
+        const url = convertFileSrc(tryPath);
+        const resp = await fetch(url);
+        const buf = await resp.arrayBuffer();
+        pad.audioBuffer = await padState.audioCtx.decodeAudioData(buf);
+        if (pad.filePath !== tryPath) { pad.filePath = tryPath; rebuilt = true; }
+        loaded = true;
+        break;
+      } catch(_) {}
+    }
+    if (!loaded) {
       pad.filePath = null;
       pad.label = '';
       pad.color = null;
       rebuilt = true;
     }
+    delete pad._fallbackPath;
   }
   if (rebuilt) {
     padsBuildGrid();
@@ -8272,6 +8617,1203 @@ function padsDrawCaptureTimer() {
     status.textContent = 'Capturing ' + m + ':' + (s2 < 10 ? '0' : '') + s2;
   }
   padState.recAnimId = requestAnimationFrame(padsDrawCaptureTimer);
+}
+
+// ── Pads Phase 5: Sample Editor ──
+
+const padsEditorState = {
+  open: false,
+  padIdx: null,
+  undoStack: [],
+  zoom: 1,
+  scrollX: 0,
+  dragging: null,
+  cursorAnimId: null,
+};
+
+function padsOpenEditor(padIdx) {
+  const pad = padState.banks[padState.currentBank][padIdx];
+  if (!pad.audioBuffer) return;
+  padsEditorState.open = true;
+  padsEditorState.padIdx = padIdx;
+  padsEditorState.undoStack = [];
+  padsEditorState.zoom = 1;
+  padsEditorState.scrollX = 0;
+  const el = document.getElementById('pads-editor');
+  if (el) el.hidden = false;
+  const title = document.getElementById('pads-editor-title');
+  if (title) title.textContent = 'Editor: ' + (pad.label || 'Pad ' + pad.id);
+  const pitchKnob = document.getElementById('pads-ed-pitch');
+  if (pitchKnob) pitchKnob.setValue(Math.round((pad.pitch || 1.0) * 100));
+  const panKnob = document.getElementById('pads-ed-pan');
+  if (panKnob) panKnob.setValue(Math.round((pad.pan || 0) * 100));
+  const gainKnob = document.getElementById('pads-ed-gain');
+  if (gainKnob) gainKnob.setValue(0);
+  padsEdUpdateLabels();
+  padsEdSyncFx();
+  padsDrawEditorWaveform();
+  padsEdPositionHandles();
+}
+
+function padsCloseEditor() {
+  padsEditorState.open = false;
+  padsEditorState.padIdx = null;
+  padsEditorState.dragging = null;
+  if (padsEditorState.cursorAnimId) {
+    cancelAnimationFrame(padsEditorState.cursorAnimId);
+    padsEditorState.cursorAnimId = null;
+  }
+  const el = document.getElementById('pads-editor');
+  if (el) el.hidden = true;
+  const cursor = document.getElementById('pads-ed-cursor');
+  if (cursor) cursor.style.display = 'none';
+}
+
+function padsEdGetPad() {
+  if (padsEditorState.padIdx == null) return null;
+  return padState.banks[padState.currentBank][padsEditorState.padIdx];
+}
+
+function padsEdUpdateLabels() {
+  const pad = padsEdGetPad();
+  if (!pad) return;
+  const pitchVal = document.getElementById('pads-ed-pitch-val');
+  if (pitchVal) pitchVal.textContent = (pad.pitch || 1.0).toFixed(2) + 'x';
+  const panVal = document.getElementById('pads-ed-pan-val');
+  if (panVal) {
+    const p = pad.pan || 0;
+    panVal.textContent = p < -0.01 ? Math.round(p * 100) + 'L' : p > 0.01 ? Math.round(p * 100) + 'R' : 'C';
+  }
+  const gainVal = document.getElementById('pads-ed-gain-val');
+  const gainKnob = document.getElementById('pads-ed-gain');
+  if (gainVal && gainKnob) gainVal.textContent = parseFloat(gainKnob.value).toFixed(1) + ' dB';
+}
+
+function padsDrawEditorWaveform() {
+  const pad = padsEdGetPad();
+  const canvas = document.getElementById('pads-ed-waveform');
+  if (!pad || !pad.audioBuffer || !canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const w = rect.width;
+  const h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+  const data = pad.audioBuffer.getChannelData(0);
+  const totalSamples = data.length;
+  const zoom = padsEditorState.zoom;
+  const visibleSamples = totalSamples / zoom;
+  const scrollFrac = padsEditorState.scrollX;
+  const startSample = Math.floor(scrollFrac * (totalSamples - visibleSamples));
+  const samplesPerPx = visibleSamples / w;
+  const trimStartPx = ((pad.trimStart * totalSamples - startSample) / visibleSamples) * w;
+  const trimEndPx = ((pad.trimEnd * totalSamples - startSample) / visibleSamples) * w;
+  const mid = h / 2;
+  ctx.fillStyle = '#d4a040';
+  for (let px = 0; px < w; px++) {
+    const s0 = Math.floor(startSample + px * samplesPerPx);
+    const s1 = Math.floor(startSample + (px + 1) * samplesPerPx);
+    let min = 0, max = 0;
+    for (let s = s0; s < s1 && s < totalSamples; s++) {
+      if (s < 0) continue;
+      if (data[s] < min) min = data[s];
+      if (data[s] > max) max = data[s];
+    }
+    const y0 = mid - max * mid;
+    const y1 = mid - min * mid;
+    const inTrim = px >= trimStartPx && px <= trimEndPx;
+    ctx.globalAlpha = inTrim ? 1.0 : 0.2;
+    ctx.fillRect(px, y0, 1, Math.max(1, y1 - y0));
+  }
+  ctx.globalAlpha = 1.0;
+}
+
+function padsEdPositionHandles() {
+  const pad = padsEdGetPad();
+  const wrap = document.getElementById('pads-ed-waveform-wrap');
+  const startH = document.getElementById('pads-ed-handle-start');
+  const endH = document.getElementById('pads-ed-handle-end');
+  if (!pad || !wrap || !startH || !endH) return;
+  const w = wrap.clientWidth;
+  const totalSamples = pad.audioBuffer ? pad.audioBuffer.length : 1;
+  const zoom = padsEditorState.zoom;
+  const visibleSamples = totalSamples / zoom;
+  const scrollFrac = padsEditorState.scrollX;
+  const startSample = scrollFrac * (totalSamples - visibleSamples);
+  const trimStartPx = ((pad.trimStart * totalSamples - startSample) / visibleSamples) * w;
+  const trimEndPx = ((pad.trimEnd * totalSamples - startSample) / visibleSamples) * w;
+  startH.style.left = Math.max(0, Math.min(w - 6, trimStartPx)) + 'px';
+  startH.style.right = 'auto';
+  endH.style.left = Math.max(0, Math.min(w - 6, trimEndPx - 6)) + 'px';
+  endH.style.right = 'auto';
+}
+
+function padsFindZeroCrossing(data, sampleIdx, range) {
+  range = range || 256;
+  let best = sampleIdx;
+  let bestDist = range + 1;
+  for (let i = Math.max(0, sampleIdx - range); i < Math.min(data.length - 1, sampleIdx + range); i++) {
+    if ((data[i] >= 0 && data[i + 1] < 0) || (data[i] < 0 && data[i + 1] >= 0)) {
+      const dist = Math.abs(i - sampleIdx);
+      if (dist < bestDist) { bestDist = dist; best = i; }
+    }
+  }
+  return best;
+}
+
+function padsEdStartDrag(which, e) {
+  e.preventDefault();
+  padsEditorState.dragging = which;
+  const handle = document.getElementById(which === 'start' ? 'pads-ed-handle-start' : 'pads-ed-handle-end');
+  if (handle) handle.classList.add('dragging');
+}
+
+function padsEdOnMouseMove(e) {
+  if (!padsEditorState.dragging) return;
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  const wrap = document.getElementById('pads-ed-waveform-wrap');
+  if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const w = rect.width;
+  const totalSamples = pad.audioBuffer.length;
+  const zoom = padsEditorState.zoom;
+  const visibleSamples = totalSamples / zoom;
+  const scrollFrac = padsEditorState.scrollX;
+  const startSample = scrollFrac * (totalSamples - visibleSamples);
+  let sampleIdx = Math.floor(startSample + (x / w) * visibleSamples);
+  sampleIdx = Math.max(0, Math.min(totalSamples - 1, sampleIdx));
+  const data = pad.audioBuffer.getChannelData(0);
+  sampleIdx = padsFindZeroCrossing(data, sampleIdx);
+  let frac = sampleIdx / totalSamples;
+  frac = Math.max(0, Math.min(1, frac));
+  if (padsEditorState.dragging === 'start') {
+    pad.trimStart = Math.min(frac, pad.trimEnd - 0.005);
+  } else {
+    pad.trimEnd = Math.max(frac, pad.trimStart + 0.005);
+  }
+  padsDrawEditorWaveform();
+  padsEdPositionHandles();
+}
+
+function padsEdOnMouseUp() {
+  if (!padsEditorState.dragging) return;
+  const handle = document.getElementById(padsEditorState.dragging === 'start' ? 'pads-ed-handle-start' : 'pads-ed-handle-end');
+  if (handle) handle.classList.remove('dragging');
+  padsEditorState.dragging = null;
+  padsSaveState();
+}
+
+function padsPushUndo(pad) {
+  const numCh = pad.audioBuffer.numberOfChannels;
+  const len = pad.audioBuffer.length;
+  const sr = pad.audioBuffer.sampleRate;
+  const channels = [];
+  for (let c = 0; c < numCh; c++) {
+    channels.push(new Float32Array(pad.audioBuffer.getChannelData(c)));
+  }
+  padsEditorState.undoStack.push({ channels, len, sr, numCh });
+  if (padsEditorState.undoStack.length > 10) padsEditorState.undoStack.shift();
+}
+
+function padsUndoEditor() {
+  const pad = padsEdGetPad();
+  if (!pad || padsEditorState.undoStack.length === 0) return;
+  const snap = padsEditorState.undoStack.pop();
+  const newBuf = padState.audioCtx.createBuffer(snap.numCh, snap.len, snap.sr);
+  for (let c = 0; c < snap.numCh; c++) {
+    newBuf.getChannelData(c).set(snap.channels[c]);
+  }
+  pad.audioBuffer = newBuf;
+  padsDrawEditorWaveform();
+  padsEdPositionHandles();
+  showToast('Undo applied');
+}
+
+function padsEdNormalize() {
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  padsPushUndo(pad);
+  const numCh = pad.audioBuffer.numberOfChannels;
+  let peak = 0;
+  for (let c = 0; c < numCh; c++) {
+    const d = pad.audioBuffer.getChannelData(c);
+    for (let i = 0; i < d.length; i++) {
+      const abs = Math.abs(d[i]);
+      if (abs > peak) peak = abs;
+    }
+  }
+  if (peak === 0) return;
+  const scale = 1.0 / peak;
+  const newBuf = padState.audioCtx.createBuffer(numCh, pad.audioBuffer.length, pad.audioBuffer.sampleRate);
+  for (let c = 0; c < numCh; c++) {
+    const src = pad.audioBuffer.getChannelData(c);
+    const dst = newBuf.getChannelData(c);
+    for (let i = 0; i < src.length; i++) dst[i] = src[i] * scale;
+  }
+  pad.audioBuffer = newBuf;
+  padsDrawEditorWaveform();
+  showToast('Normalized');
+}
+
+function padsEdReverse() {
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  padsPushUndo(pad);
+  const numCh = pad.audioBuffer.numberOfChannels;
+  const newBuf = padState.audioCtx.createBuffer(numCh, pad.audioBuffer.length, pad.audioBuffer.sampleRate);
+  for (let c = 0; c < numCh; c++) {
+    const src = pad.audioBuffer.getChannelData(c);
+    const dst = newBuf.getChannelData(c);
+    for (let i = 0; i < src.length; i++) dst[i] = src[src.length - 1 - i];
+  }
+  pad.audioBuffer = newBuf;
+  padsDrawEditorWaveform();
+  showToast('Reversed');
+}
+
+function padsEdFadeIn() {
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  padsPushUndo(pad);
+  const numCh = pad.audioBuffer.numberOfChannels;
+  const sr = pad.audioBuffer.sampleRate;
+  const trimStartSample = Math.floor(pad.trimStart * pad.audioBuffer.length);
+  const trimEndSample = Math.floor(pad.trimEnd * pad.audioBuffer.length);
+  const trimLen = trimEndSample - trimStartSample;
+  const fadeLen = Math.min(Math.floor(trimLen * 0.1), Math.floor(sr * 0.5));
+  const newBuf = padState.audioCtx.createBuffer(numCh, pad.audioBuffer.length, sr);
+  for (let c = 0; c < numCh; c++) {
+    const src = pad.audioBuffer.getChannelData(c);
+    const dst = newBuf.getChannelData(c);
+    dst.set(src);
+    for (let i = 0; i < fadeLen; i++) {
+      const gain = i / fadeLen;
+      dst[trimStartSample + i] *= gain;
+    }
+  }
+  pad.audioBuffer = newBuf;
+  padsDrawEditorWaveform();
+  showToast('Fade in applied');
+}
+
+function padsEdFadeOut() {
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  padsPushUndo(pad);
+  const numCh = pad.audioBuffer.numberOfChannels;
+  const sr = pad.audioBuffer.sampleRate;
+  const trimEndSample = Math.floor(pad.trimEnd * pad.audioBuffer.length);
+  const trimStartSample = Math.floor(pad.trimStart * pad.audioBuffer.length);
+  const trimLen = trimEndSample - trimStartSample;
+  const fadeLen = Math.min(Math.floor(trimLen * 0.1), Math.floor(sr * 0.5));
+  const newBuf = padState.audioCtx.createBuffer(numCh, pad.audioBuffer.length, sr);
+  for (let c = 0; c < numCh; c++) {
+    const src = pad.audioBuffer.getChannelData(c);
+    const dst = newBuf.getChannelData(c);
+    dst.set(src);
+    for (let i = 0; i < fadeLen; i++) {
+      const gain = 1.0 - (i / fadeLen);
+      dst[trimEndSample - fadeLen + i] *= gain;
+    }
+  }
+  pad.audioBuffer = newBuf;
+  padsDrawEditorWaveform();
+  showToast('Fade out applied');
+}
+
+function padsEdApplyGain() {
+  const pad = padsEdGetPad();
+  const gainKnob = document.getElementById('pads-ed-gain');
+  if (!pad || !pad.audioBuffer || !gainKnob) return;
+  const dB = parseFloat(gainKnob.value);
+  if (dB === 0) return;
+  padsPushUndo(pad);
+  const scale = Math.pow(10, dB / 20);
+  const numCh = pad.audioBuffer.numberOfChannels;
+  const newBuf = padState.audioCtx.createBuffer(numCh, pad.audioBuffer.length, pad.audioBuffer.sampleRate);
+  for (let c = 0; c < numCh; c++) {
+    const src = pad.audioBuffer.getChannelData(c);
+    const dst = newBuf.getChannelData(c);
+    for (let i = 0; i < src.length; i++) dst[i] = Math.max(-1, Math.min(1, src[i] * scale));
+  }
+  pad.audioBuffer = newBuf;
+  gainKnob.setValue(0);
+  padsEdUpdateLabels();
+  padsDrawEditorWaveform();
+  showToast('Gain ' + (dB > 0 ? '+' : '') + dB.toFixed(1) + ' dB applied');
+}
+
+function padsEdOnWheel(e) {
+  if (!padsEditorState.open) return;
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const oldZoom = padsEditorState.zoom;
+    if (e.deltaY < 0) {
+      padsEditorState.zoom = Math.min(16, oldZoom * 1.5);
+    } else {
+      padsEditorState.zoom = Math.max(1, oldZoom / 1.5);
+    }
+    if (padsEditorState.zoom <= 1) padsEditorState.scrollX = 0;
+    padsDrawEditorWaveform();
+    padsEdPositionHandles();
+  } else if (padsEditorState.zoom > 1) {
+    e.preventDefault();
+    const step = 0.05;
+    padsEditorState.scrollX += e.deltaY > 0 ? step : -step;
+    padsEditorState.scrollX = Math.max(0, Math.min(1, padsEditorState.scrollX));
+    padsDrawEditorWaveform();
+    padsEdPositionHandles();
+  }
+}
+
+function padsEdAnimateCursor() {
+  const pad = padsEdGetPad();
+  const cursor = document.getElementById('pads-ed-cursor');
+  if (!pad || !pad.playing || !cursor || !padState.audioCtx) {
+    if (cursor) cursor.style.display = 'none';
+    padsEditorState.cursorAnimId = null;
+    return;
+  }
+  const elapsed = padState.audioCtx.currentTime - (pad._triggerTime || 0);
+  const progress = elapsed / (pad._triggerDuration || pad.audioBuffer.duration);
+  if (progress > 1) {
+    cursor.style.display = 'none';
+    padsEditorState.cursorAnimId = null;
+    return;
+  }
+  const trimStartFrac = pad.trimStart || 0;
+  const trimEndFrac = pad.trimEnd ?? 1;
+  const currentFrac = trimStartFrac + progress * (trimEndFrac - trimStartFrac);
+  const wrap = document.getElementById('pads-ed-waveform-wrap');
+  if (wrap) {
+    const totalSamples = pad.audioBuffer.length;
+    const zoom = padsEditorState.zoom;
+    const visibleSamples = totalSamples / zoom;
+    const scrollFrac = padsEditorState.scrollX;
+    const startSample = scrollFrac * (totalSamples - visibleSamples);
+    const px = ((currentFrac * totalSamples - startSample) / visibleSamples) * wrap.clientWidth;
+    cursor.style.display = 'block';
+    cursor.style.left = Math.max(0, Math.min(wrap.clientWidth, px)) + 'px';
+  }
+  padsEditorState.cursorAnimId = requestAnimationFrame(padsEdAnimateCursor);
+}
+
+function padsEdStartCursorIfEditing(padIdx) {
+  if (padsEditorState.open && padsEditorState.padIdx === padIdx) {
+    if (padsEditorState.cursorAnimId) cancelAnimationFrame(padsEditorState.cursorAnimId);
+    padsEditorState.cursorAnimId = requestAnimationFrame(padsEdAnimateCursor);
+  }
+}
+
+function padsInitEditor() {
+  const closeBtn = document.getElementById('pads-ed-close');
+  if (closeBtn) closeBtn.addEventListener('click', padsCloseEditor);
+  const normBtn = document.getElementById('pads-ed-normalize');
+  if (normBtn) normBtn.addEventListener('click', padsEdNormalize);
+  const revBtn = document.getElementById('pads-ed-reverse');
+  if (revBtn) revBtn.addEventListener('click', padsEdReverse);
+  const fadeInBtn = document.getElementById('pads-ed-fadein');
+  if (fadeInBtn) fadeInBtn.addEventListener('click', padsEdFadeIn);
+  const fadeOutBtn = document.getElementById('pads-ed-fadeout');
+  if (fadeOutBtn) fadeOutBtn.addEventListener('click', padsEdFadeOut);
+  const undoBtn = document.getElementById('pads-ed-undo');
+  if (undoBtn) undoBtn.addEventListener('click', padsUndoEditor);
+  const gainKnob = document.getElementById('pads-ed-gain');
+  if (gainKnob) {
+    gainKnob.addEventListener('change', () => {
+      padsEdUpdateLabels();
+      padsEdApplyGain();
+    });
+    gainKnob.addEventListener('input', padsEdUpdateLabels);
+  }
+  const pitchKnob = document.getElementById('pads-ed-pitch');
+  if (pitchKnob) {
+    pitchKnob.addEventListener('input', () => {
+      const pad = padsEdGetPad();
+      if (!pad) return;
+      pad.pitch = parseInt(pitchKnob.value, 10) / 100;
+      padsEdUpdateLabels();
+      padsSaveState();
+    });
+  }
+  const panKnob = document.getElementById('pads-ed-pan');
+  if (panKnob) {
+    panKnob.addEventListener('input', () => {
+      const pad = padsEdGetPad();
+      if (!pad) return;
+      pad.pan = parseInt(panKnob.value, 10) / 100;
+      if (pad.panNode) pad.panNode.pan.value = pad.pan;
+      padsEdUpdateLabels();
+      padsSaveState();
+    });
+  }
+  const startHandle = document.getElementById('pads-ed-handle-start');
+  const endHandle = document.getElementById('pads-ed-handle-end');
+  if (startHandle) startHandle.addEventListener('mousedown', (e) => padsEdStartDrag('start', e));
+  if (endHandle) endHandle.addEventListener('mousedown', (e) => padsEdStartDrag('end', e));
+  document.addEventListener('mousemove', padsEdOnMouseMove);
+  document.addEventListener('mouseup', padsEdOnMouseUp);
+  const waveWrap = document.getElementById('pads-ed-waveform-wrap');
+  if (waveWrap) waveWrap.addEventListener('wheel', padsEdOnWheel, { passive: false });
+  document.querySelectorAll('.pads-ed-fx-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      padsSetEffect(parseInt(sel.dataset.slot), sel.value);
+    });
+  });
+  const sendKnob = document.getElementById('pads-ed-send');
+  if (sendKnob) {
+    sendKnob.addEventListener('input', () => {
+      const pad = padsEdGetPad();
+      if (!pad) return;
+      const val = parseInt(sendKnob.value, 10);
+      pad.sendLevel = val / 100;
+      const label = document.getElementById('pads-ed-send-val');
+      if (label) label.textContent = val + '%';
+      if (pad.sendLevel > 0 && padState.sendBus) {
+        if (!pad._sendGain) {
+          pad._sendGain = padState.audioCtx.createGain();
+        }
+        pad._sendGain.gain.value = pad.sendLevel;
+        padsRewireEffectChain(pad);
+      } else if (pad.sendLevel === 0 && pad._sendGain) {
+        try { pad._sendGain.disconnect(); } catch(_) {}
+        pad._sendGain = null;
+      }
+      padsSaveState();
+    });
+  }
+  const bounceBtn = document.getElementById('pads-ed-bounce');
+  if (bounceBtn) bounceBtn.addEventListener('click', padsEdBounce);
+}
+
+// ── Pads Phase 6: Per-Pad Effects ──
+
+const PADS_IR_CONFIGS = {
+  small:  { duration: 0.5, decay: 3 },
+  medium: { duration: 1.5, decay: 2.5 },
+  large:  { duration: 3.0, decay: 2 },
+};
+let _padsIRBuffers = {};
+
+function padsGetIR(audioCtx, size) {
+  if (_padsIRBuffers[size]) return _padsIRBuffers[size];
+  const cfg = PADS_IR_CONFIGS[size] || PADS_IR_CONFIGS.medium;
+  const rate = audioCtx.sampleRate;
+  const len = Math.floor(cfg.duration * rate);
+  const buf = audioCtx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-cfg.decay * i / len);
+    }
+  }
+  _padsIRBuffers[size] = buf;
+  return buf;
+}
+
+const PADS_FX_DEFAULTS = {
+  lowpass:     { freq: 1000, q: 1.0 },
+  highpass:    { freq: 200, q: 1.0 },
+  reverb:      { wet: 30, ir: 'medium' },
+  delay:       { time: 250, feedback: 30 },
+  bitcrusher:  { bits: 8, reduction: 1 },
+};
+
+function padsCreateFxNodes(pad, slotIdx) {
+  const fx = pad.effects[slotIdx];
+  if (!fx || !padState.audioCtx) return null;
+  const ctx = padState.audioCtx;
+  let result = null;
+  switch (fx.type) {
+    case 'lowpass':
+    case 'highpass': {
+      const filter = ctx.createBiquadFilter();
+      filter.type = fx.type === 'lowpass' ? 'lowpass' : 'highpass';
+      filter.frequency.value = fx.params.freq;
+      filter.Q.value = fx.params.q;
+      result = { input: filter, output: filter, nodes: [filter] };
+      break;
+    }
+    case 'reverb': {
+      const dry = ctx.createGain();
+      const wet = ctx.createGain();
+      const conv = ctx.createConvolver();
+      const splitter = ctx.createGain();
+      conv.buffer = padsGetIR(ctx, fx.params.ir || 'medium');
+      const wetVal = (fx.params.wet || 30) / 100;
+      dry.gain.value = 1 - wetVal;
+      wet.gain.value = wetVal;
+      const merger = ctx.createGain();
+      splitter.connect(dry);
+      splitter.connect(conv);
+      conv.connect(wet);
+      dry.connect(merger);
+      wet.connect(merger);
+      result = { input: splitter, output: merger, nodes: [splitter, dry, wet, conv, merger] };
+      break;
+    }
+    case 'delay': {
+      const input = ctx.createGain();
+      const delayNode = ctx.createDelay(2.0);
+      const fb = ctx.createGain();
+      const wet = ctx.createGain();
+      const merger = ctx.createGain();
+      delayNode.delayTime.value = (fx.params.time || 250) / 1000;
+      fb.gain.value = (fx.params.feedback || 30) / 100;
+      wet.gain.value = 0.5;
+      input.connect(merger);
+      input.connect(delayNode);
+      delayNode.connect(fb);
+      fb.connect(delayNode);
+      delayNode.connect(wet);
+      wet.connect(merger);
+      result = { input: input, output: merger, nodes: [input, delayNode, fb, wet, merger] };
+      break;
+    }
+    case 'bitcrusher': {
+      if (!padState._workletReady) return null;
+      const worklet = new AudioWorkletNode(ctx, 'bitcrusher-processor');
+      worklet.parameters.get('bits').value = fx.params.bits || 8;
+      worklet.parameters.get('reduction').value = fx.params.reduction || 1;
+      result = { input: worklet, output: worklet, nodes: [worklet] };
+      break;
+    }
+  }
+  pad._fxNodes[slotIdx] = result;
+  return result;
+}
+
+function padsDestroyFxNodes(pad, slotIdx) {
+  const slot = pad._fxNodes[slotIdx];
+  if (!slot) return;
+  if (slot.nodes) {
+    for (const n of slot.nodes) {
+      try { n.disconnect(); } catch(_) {}
+    }
+  }
+  pad._fxNodes[slotIdx] = null;
+}
+
+function padsRewireEffectChain(pad) {
+  if (!pad.panNode || !pad.gainNode) return;
+  try { pad.panNode.disconnect(); } catch(_) {}
+  for (let s = 0; s < 3; s++) {
+    const slot = pad._fxNodes[s];
+    if (slot && slot.output) {
+      try { slot.output.disconnect(); } catch(_) {}
+    }
+  }
+  if (pad._sendGain) {
+    try { pad._sendGain.disconnect(); } catch(_) {}
+  }
+  for (let s = 0; s < 3; s++) {
+    padsDestroyFxNodes(pad, s);
+    if (pad.effects[s]) padsCreateFxNodes(pad, s);
+  }
+  let prev = pad.panNode;
+  for (let s = 0; s < 3; s++) {
+    const slot = pad._fxNodes[s];
+    if (slot) {
+      prev.connect(slot.input);
+      prev = slot.output;
+    }
+  }
+  prev.connect(pad.gainNode);
+  if (pad.sendLevel > 0 && padState.sendBus) {
+    if (!pad._sendGain) {
+      pad._sendGain = padState.audioCtx.createGain();
+    }
+    pad._sendGain.gain.value = pad.sendLevel;
+    prev.connect(pad._sendGain);
+    pad._sendGain.connect(padState.sendBus.input);
+  }
+}
+
+function padsEdRenderFxParams(slotIdx) {
+  const container = document.querySelector(`.pads-ed-fx-params[data-slot="${slotIdx}"]`);
+  if (!container) return;
+  container.innerHTML = '';
+  const pad = padsEdGetPad();
+  if (!pad) return;
+  const fx = pad.effects[slotIdx];
+  if (!fx) return;
+  const p = fx.params;
+  switch (fx.type) {
+    case 'lowpass':
+    case 'highpass': {
+      const fLabel = document.createElement('label');
+      fLabel.textContent = 'Freq';
+      const fSlider = document.createElement('input');
+      fSlider.type = 'range'; fSlider.min = '0'; fSlider.max = '100'; fSlider.step = '1';
+      fSlider.value = String(Math.round(Math.log(p.freq / 20) / Math.log(20000 / 20) * 100));
+      fSlider.addEventListener('input', () => {
+        const v = Math.round(20 * Math.pow(20000 / 20, parseInt(fSlider.value) / 100));
+        p.freq = v;
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[0]) slot.nodes[0].frequency.value = v;
+        padsSaveState();
+      });
+      const qLabel = document.createElement('label');
+      qLabel.textContent = 'Q';
+      const qSlider = document.createElement('input');
+      qSlider.type = 'range'; qSlider.min = '1'; qSlider.max = '200'; qSlider.step = '1';
+      qSlider.value = String(Math.round(p.q * 10));
+      qSlider.addEventListener('input', () => {
+        const v = parseInt(qSlider.value) / 10;
+        p.q = v;
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[0]) slot.nodes[0].Q.value = v;
+        padsSaveState();
+      });
+      container.append(fLabel, fSlider, qLabel, qSlider);
+      break;
+    }
+    case 'reverb': {
+      const wLabel = document.createElement('label');
+      wLabel.textContent = 'Wet';
+      const wSlider = document.createElement('input');
+      wSlider.type = 'range'; wSlider.min = '0'; wSlider.max = '100'; wSlider.step = '1';
+      wSlider.value = String(p.wet);
+      wSlider.addEventListener('input', () => {
+        p.wet = parseInt(wSlider.value);
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes) {
+          slot.nodes[1].gain.value = 1 - p.wet / 100;
+          slot.nodes[2].gain.value = p.wet / 100;
+        }
+        padsSaveState();
+      });
+      const irLabel = document.createElement('label');
+      irLabel.textContent = 'IR';
+      const irSel = document.createElement('select');
+      for (const sz of ['small', 'medium', 'large']) {
+        const opt = document.createElement('option');
+        opt.value = sz; opt.textContent = sz;
+        if (p.ir === sz) opt.selected = true;
+        irSel.appendChild(opt);
+      }
+      irSel.addEventListener('change', () => {
+        p.ir = irSel.value;
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[3]) {
+          slot.nodes[3].buffer = padsGetIR(padState.audioCtx, p.ir);
+        }
+        padsSaveState();
+      });
+      container.append(wLabel, wSlider, irLabel, irSel);
+      break;
+    }
+    case 'delay': {
+      const tLabel = document.createElement('label');
+      tLabel.textContent = 'Time';
+      const tSlider = document.createElement('input');
+      tSlider.type = 'range'; tSlider.min = '10'; tSlider.max = '1000'; tSlider.step = '10';
+      tSlider.value = String(p.time);
+      tSlider.addEventListener('input', () => {
+        p.time = parseInt(tSlider.value);
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[1]) slot.nodes[1].delayTime.value = p.time / 1000;
+        padsSaveState();
+      });
+      const fbLabel = document.createElement('label');
+      fbLabel.textContent = 'FB';
+      const fbSlider = document.createElement('input');
+      fbSlider.type = 'range'; fbSlider.min = '0'; fbSlider.max = '90'; fbSlider.step = '1';
+      fbSlider.value = String(p.feedback);
+      fbSlider.addEventListener('input', () => {
+        p.feedback = parseInt(fbSlider.value);
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[2]) slot.nodes[2].gain.value = p.feedback / 100;
+        padsSaveState();
+      });
+      container.append(tLabel, tSlider, fbLabel, fbSlider);
+      break;
+    }
+    case 'bitcrusher': {
+      const bLabel = document.createElement('label');
+      bLabel.textContent = 'Bits';
+      const bSlider = document.createElement('input');
+      bSlider.type = 'range'; bSlider.min = '1'; bSlider.max = '16'; bSlider.step = '1';
+      bSlider.value = String(p.bits);
+      bSlider.addEventListener('input', () => {
+        p.bits = parseInt(bSlider.value);
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[0] && slot.nodes[0].parameters) {
+          slot.nodes[0].parameters.get('bits').value = p.bits;
+        }
+        padsSaveState();
+      });
+      const rLabel = document.createElement('label');
+      rLabel.textContent = 'Reduce';
+      const rSlider = document.createElement('input');
+      rSlider.type = 'range'; rSlider.min = '1'; rSlider.max = '32'; rSlider.step = '1';
+      rSlider.value = String(p.reduction);
+      rSlider.addEventListener('input', () => {
+        p.reduction = parseInt(rSlider.value);
+        const slot = pad._fxNodes[slotIdx];
+        if (slot && slot.nodes[0] && slot.nodes[0].parameters) {
+          slot.nodes[0].parameters.get('reduction').value = p.reduction;
+        }
+        padsSaveState();
+      });
+      container.append(bLabel, bSlider, rLabel, rSlider);
+      break;
+    }
+  }
+}
+
+function padsSetEffect(slotIdx, type) {
+  const pad = padsEdGetPad();
+  if (!pad) return;
+  if (!type) {
+    pad.effects[slotIdx] = null;
+  } else {
+    pad.effects[slotIdx] = { type, params: { ...PADS_FX_DEFAULTS[type] } };
+  }
+  padsRewireEffectChain(pad);
+  padsEdRenderFxParams(slotIdx);
+  padsSaveState();
+}
+
+function padsEdSyncFx() {
+  const pad = padsEdGetPad();
+  for (let s = 0; s < 3; s++) {
+    const sel = document.querySelector(`.pads-ed-fx-select[data-slot="${s}"]`);
+    if (sel) sel.value = pad && pad.effects[s] ? pad.effects[s].type : '';
+    padsEdRenderFxParams(s);
+  }
+  const sendKnob = document.getElementById('pads-ed-send');
+  const sendVal = document.getElementById('pads-ed-send-val');
+  if (sendKnob && pad) {
+    sendKnob.setValue(Math.round((pad.sendLevel || 0) * 100));
+    if (sendVal) sendVal.textContent = Math.round((pad.sendLevel || 0) * 100) + '%';
+  }
+}
+
+function padsCreateOfflineFxChain(offCtx, fx, pad) {
+  const nodes = [];
+  for (const slot of fx) {
+    if (!slot) continue;
+    const p = slot.params;
+    switch (slot.type) {
+      case 'lowpass':
+      case 'highpass': {
+        const f = offCtx.createBiquadFilter();
+        f.type = slot.type; f.frequency.value = p.freq; f.Q.value = p.q;
+        nodes.push({ input: f, output: f });
+        break;
+      }
+      case 'reverb': {
+        const dry = offCtx.createGain();
+        const wet = offCtx.createGain();
+        const conv = offCtx.createConvolver();
+        const splitter = offCtx.createGain();
+        const merger = offCtx.createGain();
+        conv.buffer = padsGetIR(offCtx, p.ir || 'medium');
+        dry.gain.value = 1 - (p.wet || 30) / 100;
+        wet.gain.value = (p.wet || 30) / 100;
+        splitter.connect(dry); splitter.connect(conv);
+        conv.connect(wet); dry.connect(merger); wet.connect(merger);
+        nodes.push({ input: splitter, output: merger });
+        break;
+      }
+      case 'delay': {
+        const inp = offCtx.createGain();
+        const del = offCtx.createDelay(2.0);
+        const fb = offCtx.createGain();
+        const w = offCtx.createGain();
+        const m = offCtx.createGain();
+        del.delayTime.value = (p.time || 250) / 1000;
+        fb.gain.value = (p.feedback || 30) / 100;
+        w.gain.value = 0.5;
+        inp.connect(m); inp.connect(del);
+        del.connect(fb); fb.connect(del); del.connect(w); w.connect(m);
+        nodes.push({ input: inp, output: m });
+        break;
+      }
+    }
+  }
+  return nodes;
+}
+
+async function padsEdBounce() {
+  const pad = padsEdGetPad();
+  if (!pad || !pad.audioBuffer) return;
+  const hasEffects = pad.effects.some(e => e !== null);
+  if (!hasEffects) { showToast('No effects to bounce', 'error'); return; }
+  const buf = pad.audioBuffer;
+  const trimS = pad.trimStart || 0;
+  const trimE = pad.trimEnd ?? 1;
+  const startSample = Math.floor(trimS * buf.length);
+  const endSample = Math.floor(trimE * buf.length);
+  const trimLen = endSample - startSample;
+  if (trimLen <= 0) return;
+  const tailSamples = Math.floor(buf.sampleRate * 2);
+  const offLen = trimLen + tailSamples;
+  const offCtx = new OfflineAudioContext(buf.numberOfChannels, offLen, buf.sampleRate);
+  _padsIRBuffers = {};
+  const source = offCtx.createBufferSource();
+  source.buffer = buf;
+  source.playbackRate.value = pad.pitch || 1.0;
+  const gain = offCtx.createGain();
+  gain.gain.value = pad.volume;
+  const fxChain = padsCreateOfflineFxChain(offCtx, pad.effects, pad);
+  let prev = source;
+  for (const node of fxChain) {
+    prev.connect(node.input);
+    prev = node.output;
+  }
+  prev.connect(gain);
+  gain.connect(offCtx.destination);
+  source.start(0, trimS * buf.duration, (trimE - trimS) * buf.duration);
+  try {
+    const rendered = await offCtx.startRendering();
+    let actualEnd = rendered.length;
+    const threshold = 0.001;
+    for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+      const d = rendered.getChannelData(ch);
+      for (let i = d.length - 1; i >= trimLen; i--) {
+        if (Math.abs(d[i]) > threshold) {
+          actualEnd = Math.max(actualEnd, i + 1);
+          break;
+        }
+      }
+    }
+    actualEnd = Math.min(actualEnd, rendered.length);
+    if (actualEnd < rendered.length) {
+      const trimmedBuf = padState.audioCtx.createBuffer(rendered.numberOfChannels, actualEnd, rendered.sampleRate);
+      for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
+        trimmedBuf.copyToChannel(rendered.getChannelData(ch).subarray(0, actualEnd), ch);
+      }
+      pad.audioBuffer = trimmedBuf;
+    } else {
+      pad.audioBuffer = rendered;
+    }
+    pad.trimStart = 0;
+    pad.trimEnd = 1;
+    pad.effects = [null, null, null];
+    pad.sendLevel = 0;
+    padsRewireEffectChain(pad);
+    padsEdSyncFx();
+    padsDrawEditorWaveform();
+    padsEdPositionHandles();
+    padsSaveState();
+    showToast('Bounced');
+  } catch (e) {
+    console.error('[Pads] Bounce failed:', e);
+    showToast('Bounce failed', 'error');
+  }
+}
+
+// ── Pads Phase 8: Persistence & Presets ──
+
+let padCurrentPresetName = null;
+let padCurrentPresetPath = null;
+
+function padsSerializePreset(name) {
+  const knob = document.getElementById('pads-master-knob');
+  const preset = {
+    version: 1,
+    name: name || 'Untitled',
+    createdAt: new Date().toISOString(),
+    masterVol: knob ? parseInt(knob.value, 10) : 80,
+    banks: {},
+  };
+  for (const [bankId, bankPads] of Object.entries(padState.banks)) {
+    preset.banks[bankId] = bankPads.map(p => {
+      const fileName = p.filePath ? p.filePath.split(/[\\/]/).pop() : null;
+      return {
+        sampleFile: fileName,
+        originalPath: p.filePath || null,
+        label: p.label || '',
+        color: p.color || null,
+        volume: p.volume ?? 1.0,
+        playMode: p.playMode || 'retrigger',
+        muteGroup: p.muteGroup || 0,
+        trimStart: p.trimStart || 0,
+        trimEnd: p.trimEnd ?? 1,
+        pitch: p.pitch ?? 1.0,
+        pan: p.pan || 0,
+        effects: p.effects || [null, null, null],
+        sendLevel: p.sendLevel || 0,
+      };
+    });
+  }
+  return JSON.stringify(preset, null, 2);
+}
+
+function padsCollectAudioPaths() {
+  const paths = new Set();
+  for (const bankPads of Object.values(padState.banks)) {
+    for (const p of bankPads) {
+      if (p.filePath) paths.add(p.filePath);
+    }
+  }
+  return [...paths];
+}
+
+async function padsSavePreset() {
+  if (padCurrentPresetPath) {
+    const json = padsSerializePreset(padCurrentPresetName);
+    try {
+      await invoke('save_pad_preset', { presetJson: json, path: padCurrentPresetPath });
+      showToast('Preset saved');
+    } catch (e) { showToast('Save failed: ' + e, 'error'); }
+  } else {
+    padsSavePresetAs();
+  }
+}
+
+async function padsSavePresetAs() {
+  const name = prompt('Preset name:', padCurrentPresetName || 'My Sounds');
+  if (!name) return;
+  try {
+    const path = await invoke('browse_save_location', {
+      defaultName: name + '.obpad',
+      filter: 'OBServe Pad Preset (*.obpad)|*.obpad',
+    });
+    if (!path) return;
+    const json = padsSerializePreset(name);
+    await invoke('save_pad_preset', { presetJson: json, path });
+    padCurrentPresetName = name;
+    padCurrentPresetPath = path;
+    padsUpdatePresetDisplay();
+    showToast('Preset saved: ' + name);
+  } catch (e) { showToast('Save failed: ' + e, 'error'); }
+}
+
+async function padsLoadPreset() {
+  try {
+    const path = await invoke('pick_audio_file');
+    if (!path || !path.endsWith('.obpad')) {
+      if (path) showToast('Please select an .obpad file', 'error');
+      return;
+    }
+    const json = await invoke('load_pad_preset', { path });
+    const preset = JSON.parse(json);
+    const presetDir = path.replace(/[\\/][^\\/]+$/, '');
+    padsApplyPreset(preset, presetDir);
+    padCurrentPresetName = preset.name || path.split(/[\\/]/).pop().replace(/\.obpad$/, '');
+    padCurrentPresetPath = path;
+    padsUpdatePresetDisplay();
+    showToast('Loaded: ' + padCurrentPresetName);
+  } catch (e) { showToast('Load failed: ' + e, 'error'); }
+}
+
+function padsApplyPreset(preset, presetDir) {
+  if (preset.masterVol != null) {
+    const knob = document.getElementById('pads-master-knob');
+    if (knob) {
+      knob.setValue(preset.masterVol);
+      document.getElementById('pads-master-pct').textContent = preset.masterVol + '%';
+    }
+  }
+  if (preset.banks) {
+    for (const [bankId, saved] of Object.entries(preset.banks)) {
+      if (!padState.banks[bankId]) continue;
+      for (let i = 0; i < saved.length && i < 16; i++) {
+        const pad = padState.banks[bankId][i];
+        const s = saved[i];
+        pad.label = s.label || '';
+        pad.color = s.color || null;
+        pad.volume = s.volume ?? 1.0;
+        pad.playMode = s.playMode || 'retrigger';
+        pad.muteGroup = s.muteGroup || 0;
+        pad.trimStart = s.trimStart || 0;
+        pad.trimEnd = s.trimEnd ?? 1;
+        pad.pitch = s.pitch ?? 1.0;
+        pad.pan = s.pan || 0;
+        pad.effects = s.effects || [null, null, null];
+        pad.sendLevel = s.sendLevel || 0;
+        pad.audioBuffer = null;
+        if (s.originalPath) {
+          pad.filePath = s.originalPath;
+          if (s.sampleFile && presetDir) {
+            pad._fallbackPath = presetDir + '/' + s.sampleFile;
+          }
+        } else if (s.sampleFile && presetDir) {
+          pad.filePath = presetDir + '/' + s.sampleFile;
+        } else {
+          pad.filePath = null;
+        }
+      }
+    }
+  }
+  padsBuildGrid();
+  padsPreloadBuffers();
+  padsSaveState();
+}
+
+async function padsRenamePreset() {
+  if (!padCurrentPresetPath) return;
+  const name = prompt('New name:', padCurrentPresetName || '');
+  if (!name) return;
+  try {
+    const newPath = await invoke('rename_pad_preset', { path: padCurrentPresetPath, newName: name });
+    padCurrentPresetName = name;
+    padCurrentPresetPath = newPath;
+    padsUpdatePresetDisplay();
+    showToast('Renamed to: ' + name);
+  } catch (e) { showToast('Rename failed: ' + e, 'error'); }
+}
+
+async function padsDeletePreset() {
+  if (!padCurrentPresetPath) return;
+  if (!confirm('Delete preset "' + (padCurrentPresetName || 'this preset') + '"?')) return;
+  try {
+    await invoke('delete_pad_preset', { path: padCurrentPresetPath });
+    showToast('Preset deleted');
+    padCurrentPresetName = null;
+    padCurrentPresetPath = null;
+    padsUpdatePresetDisplay();
+  } catch (e) { showToast('Delete failed: ' + e, 'error'); }
+}
+
+function padsUpdatePresetDisplay() {
+  const el = document.getElementById('pads-preset-name');
+  if (el) el.textContent = padCurrentPresetName || 'No preset';
+}
+
+async function padsExportZip() {
+  const name = padCurrentPresetName || 'MyPreset';
+  try {
+    const zipPath = await invoke('browse_save_location', {
+      defaultName: name + '.zip',
+      filter: 'Zip Archive (*.zip)|*.zip',
+    });
+    if (!zipPath) return;
+    const json = padsSerializePreset(name);
+    const paths = padsCollectAudioPaths();
+    await invoke('export_pad_preset_zip', { presetJson: json, audioPaths: paths, zipPath });
+    showToast('Exported: ' + name + '.zip');
+  } catch (e) { showToast('Export failed: ' + e, 'error'); }
+}
+
+async function padsImportZip() {
+  try {
+    const zipPath = await invoke('pick_audio_file');
+    if (!zipPath || !zipPath.endsWith('.zip')) {
+      if (zipPath) showToast('Please select a .zip file', 'error');
+      return;
+    }
+    const result = await invoke('import_pad_preset_zip', { zipPath });
+    const preset = JSON.parse(result.presetJson);
+    padsApplyPreset(preset, result.sampleDir);
+    padCurrentPresetName = preset.name || 'Imported';
+    padCurrentPresetPath = null;
+    padsUpdatePresetDisplay();
+    showToast('Imported: ' + padCurrentPresetName);
+  } catch (e) { showToast('Import failed: ' + e, 'error'); }
+}
+
+const PADS_RECENT_KEY = 'observe-pads-recent';
+function padsAddRecentSample(path) {
+  try {
+    let recent = JSON.parse(localStorage.getItem(PADS_RECENT_KEY) || '[]');
+    recent = recent.filter(p => p !== path);
+    recent.unshift(path);
+    if (recent.length > 20) recent.length = 20;
+    localStorage.setItem(PADS_RECENT_KEY, JSON.stringify(recent));
+  } catch (_) {}
+}
+
+function padsGetRecentSamples() {
+  try {
+    return JSON.parse(localStorage.getItem(PADS_RECENT_KEY) || '[]');
+  } catch (_) { return []; }
+}
+
+let _padsBrowserPath = null;
+
+function padsToggleBrowser() {
+  const el = document.getElementById('pads-browser');
+  if (!el) return;
+  if (el.hidden) padsOpenBrowser();
+  else padsCloseBrowser();
+}
+
+function padsOpenBrowser() {
+  const el = document.getElementById('pads-browser');
+  if (!el) return;
+  el.hidden = false;
+  padsRefreshBrowser(_padsBrowserPath);
+}
+
+function padsCloseBrowser() {
+  const el = document.getElementById('pads-browser');
+  if (el) el.hidden = true;
+}
+
+async function padsRefreshBrowser(path) {
+  _padsBrowserPath = path || null;
+  const pathEl = document.getElementById('pads-browser-path');
+  const listEl = document.getElementById('pads-browser-list');
+  if (!listEl) return;
+  if (pathEl) pathEl.textContent = path || 'Samples';
+  listEl.innerHTML = '<div style="padding:8px;color:#666;font-size:10px">Loading...</div>';
+  try {
+    const entries = await invoke('list_samples_directory', { path: path || null });
+    listEl.innerHTML = '';
+    if (path) {
+      const parent = path.replace(/[\\/][^\\/]+$/, '');
+      const upEl = document.createElement('div');
+      upEl.className = 'pads-browser-entry dir';
+      upEl.textContent = '.. (up)';
+      upEl.addEventListener('click', () => padsRefreshBrowser(parent !== path ? parent : null));
+      listEl.appendChild(upEl);
+    }
+    const recent = padsGetRecentSamples();
+    if (!path && recent.length > 0) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'padding:4px 8px;font-size:9px;color:#665544;text-transform:uppercase;letter-spacing:1px';
+      hdr.textContent = 'Recent';
+      listEl.appendChild(hdr);
+      for (const rp of recent.slice(0, 5)) {
+        const name = rp.split(/[\\/]/).pop();
+        const el = document.createElement('div');
+        el.className = 'pads-browser-entry';
+        el.textContent = name;
+        el.title = rp;
+        el.draggable = true;
+        el.addEventListener('dblclick', () => {
+          if (padState.selectedPad != null) padsLoadFile(padState.selectedPad, rp);
+        });
+        el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/pad-sample-path', rp); });
+        listEl.appendChild(el);
+      }
+      const sep = document.createElement('div');
+      sep.style.cssText = 'border-bottom:1px solid #2a2620;margin:4px 0';
+      listEl.appendChild(sep);
+    }
+    for (const entry of entries) {
+      const el = document.createElement('div');
+      el.className = 'pads-browser-entry' + (entry.isDir ? ' dir' : '');
+      el.textContent = entry.isDir ? entry.name + '/' : entry.name;
+      el.title = entry.path;
+      if (entry.isDir) {
+        el.addEventListener('click', () => padsRefreshBrowser(entry.path));
+      } else {
+        el.draggable = true;
+        el.addEventListener('dblclick', () => {
+          if (padState.selectedPad != null) padsLoadFile(padState.selectedPad, entry.path);
+        });
+        el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/pad-sample-path', entry.path); });
+      }
+      listEl.appendChild(el);
+    }
+    if (entries.length === 0 && !path) {
+      listEl.innerHTML += '<div style="padding:8px;color:#666;font-size:10px">No samples yet</div>';
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div style="padding:8px;color:#cc4444;font-size:10px">Error: ' + e + '</div>';
+  }
 }
 
 async function initVideoEditor() {

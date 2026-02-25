@@ -1,6 +1,6 @@
 use crate::audio;
 use crate::store::SharedLicenseState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -36,6 +36,30 @@ pub struct PadCaptureSource {
     pub label: String,
     pub source_type: String,
     pub available: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PadPresetEntry {
+    pub name: String,
+    pub path: String,
+    pub modified_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedPreset {
+    pub preset_json: String,
+    pub sample_dir: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
 }
 
 impl PadCaptureState {
@@ -405,6 +429,337 @@ fn run_pad_capture(
     );
 
     Ok(())
+}
+
+fn app_data_dir() -> PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("com.observe.app")
+}
+
+fn presets_dir() -> PathBuf {
+    let dir = app_data_dir().join("presets");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn samples_dir() -> PathBuf {
+    let dir = app_data_dir().join("samples");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac", "aiff", "aif", "m4a", "wma", "webm"];
+
+#[tauri::command]
+pub async fn save_pad_state_to_disk(
+    license: tauri::State<'_, SharedLicenseState>,
+    state_json: String,
+) -> Result<(), String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let path = app_data_dir().join("pads-state.json");
+    tokio::task::spawn_blocking(move || {
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        std::fs::write(&path, &state_json)
+            .map_err(|e| format!("Failed to write pads state: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn load_pad_state_from_disk(
+    license: tauri::State<'_, SharedLicenseState>,
+) -> Result<Option<String>, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let path = app_data_dir().join("pads-state.json");
+    tokio::task::spawn_blocking(move || {
+        if path.exists() {
+            match std::fs::read_to_string(&path) {
+                Ok(s) => Ok(Some(s)),
+                Err(e) => Err(format!("Failed to read pads state: {}", e)),
+            }
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn save_pad_preset(
+    license: tauri::State<'_, SharedLicenseState>,
+    preset_json: String,
+    path: String,
+) -> Result<(), String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let path = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, &preset_json)
+            .map_err(|e| format!("Failed to save preset: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn load_pad_preset(
+    license: tauri::State<'_, SharedLicenseState>,
+    path: String,
+) -> Result<String, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let path = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to load preset: {}", e))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn list_pad_presets(
+    license: tauri::State<'_, SharedLicenseState>,
+) -> Result<Vec<PadPresetEntry>, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let dir = presets_dir();
+    tokio::task::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => return Ok(entries),
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("obpad") {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let modified_at = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs().to_string())
+                    .unwrap_or_default();
+                entries.push(PadPresetEntry {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    modified_at,
+                });
+            }
+        }
+        entries.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn delete_pad_preset(
+    license: tauri::State<'_, SharedLicenseState>,
+    path: String,
+) -> Result<(), String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let path = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let ps_path = path.replace('\'', "''");
+        let script = format!(
+            r#"Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')"#,
+            ps_path
+        );
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .map_err(|e| format!("PowerShell error: {}", e))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("Delete failed: {}", stderr.trim()))
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn rename_pad_preset(
+    license: tauri::State<'_, SharedLicenseState>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let old_path = PathBuf::from(&path);
+    let new_path = old_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(format!("{}.obpad", new_name));
+    let new_path_str = new_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        std::fs::rename(&old_path, &new_path)
+            .map_err(|e| format!("Rename failed: {}", e))?;
+        Ok(new_path_str)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn export_pad_preset_zip(
+    license: tauri::State<'_, SharedLicenseState>,
+    preset_json: String,
+    audio_paths: Vec<String>,
+    zip_path: String,
+) -> Result<(), String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::create(&zip_path)
+            .map_err(|e| format!("Cannot create zip: {}", e))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("preset.obpad", options)
+            .map_err(|e| format!("Zip write error: {}", e))?;
+        std::io::Write::write_all(&mut zip, preset_json.as_bytes())
+            .map_err(|e| format!("Zip write error: {}", e))?;
+
+        for audio_path in &audio_paths {
+            let src = PathBuf::from(audio_path);
+            if !src.exists() {
+                continue;
+            }
+            let file_name = src
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown.wav");
+            zip.start_file(file_name, options)
+                .map_err(|e| format!("Zip write error: {}", e))?;
+            let data = std::fs::read(&src)
+                .map_err(|e| format!("Read audio file error: {}", e))?;
+            std::io::Write::write_all(&mut zip, &data)
+                .map_err(|e| format!("Zip write error: {}", e))?;
+        }
+
+        zip.finish().map_err(|e| format!("Zip finish error: {}", e))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn import_pad_preset_zip(
+    license: tauri::State<'_, SharedLicenseState>,
+    zip_path: String,
+) -> Result<ImportedPreset, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&zip_path)
+            .map_err(|e| format!("Cannot open zip: {}", e))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| format!("Invalid zip: {}", e))?;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let extract_dir = samples_dir().join(format!("imported_{}", timestamp));
+        let _ = std::fs::create_dir_all(&extract_dir);
+
+        let mut preset_json = String::new();
+
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i)
+                .map_err(|e| format!("Zip entry error: {}", e))?;
+            let name = entry.name().to_string();
+            if name == "preset.obpad" {
+                use std::io::Read;
+                entry.read_to_string(&mut preset_json)
+                    .map_err(|e| format!("Read preset error: {}", e))?;
+            } else {
+                let safe_name = PathBuf::from(&name)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(name.clone());
+                let out_path = extract_dir.join(&safe_name);
+                let mut out_file = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("Extract error: {}", e))?;
+                std::io::copy(&mut entry, &mut out_file)
+                    .map_err(|e| format!("Extract error: {}", e))?;
+            }
+        }
+
+        if preset_json.is_empty() {
+            return Err("No preset.obpad found in zip".into());
+        }
+
+        Ok(ImportedPreset {
+            preset_json,
+            sample_dir: extract_dir.to_string_lossy().to_string(),
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn list_samples_directory(
+    license: tauri::State<'_, SharedLicenseState>,
+    path: Option<String>,
+) -> Result<Vec<SampleEntry>, String> {
+    crate::store::require_module(&license, "sample-pad").await?;
+    let dir = path.map(PathBuf::from).unwrap_or_else(samples_dir);
+    tokio::task::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => return Err(format!("Cannot read directory: {}", e)),
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let meta = entry.metadata().ok();
+            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if is_dir {
+                entries.push(SampleEntry {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    is_dir: true,
+                    size_bytes: 0,
+                });
+            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                    entries.push(SampleEntry {
+                        name,
+                        path: path.to_string_lossy().to_string(),
+                        is_dir: false,
+                        size_bytes,
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| {
+            b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[cfg(not(windows))]

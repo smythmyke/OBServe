@@ -601,7 +601,119 @@
           </div>
           <span class="pads-rec-status" id="pads-rec-status"></span>
         </div>
-        <div class="pads-grid" id="pads-grid"></div>
+        <div class="pads-preset-bar" id="pads-preset-bar">
+          <span class="pads-preset-name" id="pads-preset-name">No preset</span>
+          <button class="pads-preset-btn" id="pads-save-btn" title="Save">Save</button>
+          <button class="pads-preset-btn" id="pads-saveas-btn" title="Save As">Save As</button>
+          <button class="pads-preset-btn" id="pads-load-btn" title="Load">Load</button>
+          <button class="pads-preset-btn" id="pads-preset-menu-btn" title="More">&#9881;</button>
+        </div>
+        <div class="pads-editor" id="pads-editor" hidden>
+          <div class="pads-editor-toolbar">
+            <span class="pads-editor-title" id="pads-editor-title">Editor</span>
+            <button class="pads-preset-btn" id="pads-ed-normalize">Normalize</button>
+            <button class="pads-preset-btn" id="pads-ed-reverse">Reverse</button>
+            <button class="pads-preset-btn" id="pads-ed-fadein">Fade In</button>
+            <button class="pads-preset-btn" id="pads-ed-fadeout">Fade Out</button>
+            <button class="pads-preset-btn" id="pads-ed-undo">Undo</button>
+            <div class="pads-ed-knob-group">
+              <label>Gain</label>
+              <webaudio-knob id="pads-ed-gain" min="-12" max="12" step="0.5" value="0"
+                diameter="30" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+              <span id="pads-ed-gain-val">0 dB</span>
+            </div>
+            <div class="pads-ed-knob-group">
+              <label>Pitch</label>
+              <webaudio-knob id="pads-ed-pitch" min="50" max="200" step="1" value="100"
+                diameter="30" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+              <span id="pads-ed-pitch-val">1.00x</span>
+            </div>
+            <div class="pads-ed-knob-group">
+              <label>Pan</label>
+              <webaudio-knob id="pads-ed-pan" min="-100" max="100" step="1" value="0"
+                diameter="30" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+              <span id="pads-ed-pan-val">C</span>
+            </div>
+            <button class="pads-browser-close" id="pads-ed-close">&times;</button>
+          </div>
+          <div class="pads-ed-fx-bar" id="pads-ed-fx-bar">
+            <span class="pads-editor-title">FX</span>
+            <div class="pads-ed-fx-slot" data-slot="0">
+              <select class="pads-ed-fx-select" data-slot="0">
+                <option value="">—</option>
+                <option value="lowpass">Low-Pass</option>
+                <option value="highpass">High-Pass</option>
+                <option value="reverb">Reverb</option>
+                <option value="delay">Delay</option>
+                <option value="bitcrusher">Crush</option>
+              </select>
+              <div class="pads-ed-fx-params" data-slot="0"></div>
+            </div>
+            <div class="pads-ed-fx-slot" data-slot="1">
+              <select class="pads-ed-fx-select" data-slot="1">
+                <option value="">—</option>
+                <option value="lowpass">Low-Pass</option>
+                <option value="highpass">High-Pass</option>
+                <option value="reverb">Reverb</option>
+                <option value="delay">Delay</option>
+                <option value="bitcrusher">Crush</option>
+              </select>
+              <div class="pads-ed-fx-params" data-slot="1"></div>
+            </div>
+            <div class="pads-ed-fx-slot" data-slot="2">
+              <select class="pads-ed-fx-select" data-slot="2">
+                <option value="">—</option>
+                <option value="lowpass">Low-Pass</option>
+                <option value="highpass">High-Pass</option>
+                <option value="reverb">Reverb</option>
+                <option value="delay">Delay</option>
+                <option value="bitcrusher">Crush</option>
+              </select>
+              <div class="pads-ed-fx-params" data-slot="2"></div>
+            </div>
+            <div class="pads-ed-knob-group">
+              <label>Send</label>
+              <webaudio-knob id="pads-ed-send" min="0" max="100" step="1" value="0"
+                diameter="30" colors="#d4a040;#0c0a06;#2a2620"></webaudio-knob>
+              <span id="pads-ed-send-val">0%</span>
+            </div>
+            <button class="pads-preset-btn" id="pads-ed-bounce">Bounce</button>
+          </div>
+          <div class="pads-ed-waveform-wrap" id="pads-ed-waveform-wrap">
+            <canvas class="pads-ed-waveform" id="pads-ed-waveform" height="100"></canvas>
+            <div class="pads-ed-handle start" id="pads-ed-handle-start"></div>
+            <div class="pads-ed-handle end" id="pads-ed-handle-end"></div>
+            <div class="pads-ed-cursor" id="pads-ed-cursor"></div>
+          </div>
+        </div>
+        <div class="pads-grid-area">
+          <div class="pads-utilities" id="pads-utilities">
+            <button class="pads-util-btn" id="pads-mode-noterepeat" title="Note Repeat">NoteRpt</button>
+            <select class="pads-rate-select" id="pads-rate-select" title="Repeat rate" hidden>
+              <option value="4">1/4</option>
+              <option value="8" selected>1/8</option>
+              <option value="12">1/8T</option>
+              <option value="16">1/16</option>
+              <option value="24">1/16T</option>
+              <option value="32">1/32</option>
+            </select>
+            <button class="pads-util-btn" id="pads-mode-16levels" title="16 Levels">16 Lvl</button>
+            <select class="pads-16lvl-param" id="pads-16lvl-param" title="16 Levels parameter" hidden>
+              <option value="velocity">Velocity</option>
+              <option value="pitch">Pitch</option>
+              <option value="filter">Filter</option>
+              <option value="decay">Decay</option>
+            </select>
+            <button class="pads-util-btn" id="pads-mode-fulllevel" title="Full Level">FullLvl</button>
+          </div>
+          <div class="pads-grid" id="pads-grid"></div>
+        </div>
+        <div class="pads-browser" id="pads-browser" hidden>
+          <div class="pads-browser-header"><span>Samples</span>
+            <button class="pads-browser-close" id="pads-browser-close">&times;</button></div>
+          <div class="pads-browser-path" id="pads-browser-path"></div>
+          <div class="pads-browser-list" id="pads-browser-list"></div>
+        </div>
       </section>
 
       <section class="module panel" id="mixer-panel" data-panel="mixer" hidden>

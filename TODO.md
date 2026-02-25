@@ -1,7 +1,7 @@
 # OBServe — Master TODO
 
 > Single source of truth for what's done and what's next.
-> Updated: 2026-02-22
+> Updated: 2026-02-24
 
 ## Completed Work
 
@@ -118,15 +118,15 @@
 
 ### OBServe Pads — NEW (9 Phases)
 > MPC-inspired sample pad module in Audio tab. Record, edit, and perform sound samples live.
-> Paid module ($1.99). Full spec: `observe-pads-spec.md` in memory.
+> Paid module ($4.99). Full spec: `observe-pads-spec.md` in memory.
 - [x] **Phase 1: Pad Grid & Basic Playback** — 4x4 pad grid, load files, drag-drop, Web Audio playback, retrigger, master volume, module gating
 - [x] **Phase 2: Banks, Colors & Pad Config** — 4 banks (A-D, 64 pads), per-pad color/volume, play modes (one-shot/retrigger/toggle/hold/loop), mute groups, keyboard mapping, context menu
 - [x] **Phase 3: Transport & Recording (Mic)** — transport bar (rec/play/stop), mic recording via getUserMedia, threshold-triggered recording, live waveform, auto-assign to pad
 - [x] **Phase 4: Recording from Apps & System** — WASAPI system audio loopback, VB-Cable capture, source dropdown, pad_capture.rs
-- [ ] **Phase 5: Sample Editor** — waveform display, trim (start/end handles), zoom, normalize, reverse, fade in/out, gain, pitch, pan, zero-crossing snap
-- [ ] **Phase 6: Per-Pad Effects** — 3 insert slots per pad (LPF, HPF, reverb, delay, bitcrusher), master send bus, non-destructive, bounce option
-- [ ] **Phase 7: Advanced Pad Modes** — 16 Levels (velocity/pitch/filter/decay spread), Note Repeat (musical rate retrigger), Full Level mode
-- [ ] **Phase 8: Persistence & Presets** — auto-save, .obpad preset files, export/import bank as zip, sample browser panel
+- [x] **Phase 5: Sample Editor** — waveform display, trim (start/end handles), zoom, normalize, reverse, fade in/out, gain, pitch, pan, zero-crossing snap
+- [x] **Phase 6: Per-Pad Effects** — 3 insert slots per pad (LPF, HPF, reverb, delay, bitcrusher), master send bus, non-destructive, bounce option
+- [x] **Phase 7: Advanced Pad Modes** — 16 Levels (velocity/pitch/filter/decay spread), Note Repeat (musical rate retrigger), Full Level mode
+- [x] **Phase 8: Persistence & Presets** — auto-save, .obpad preset files, export/import bank as zip, sample browser panel
 - [ ] **Phase 9: Sound Store & OBS Routing** — bundled CC0 starter pack (~35 sounds), sound pack marketplace (R2 + Stripe), OBS audio routing toggle
 
 ### Live Narration-to-Text Captions (Base) — DONE
@@ -230,10 +230,22 @@
 - [ ] **V18: Gesture Actions** — hand gestures trigger OBS actions (thumbs up = overlay, wave = scene switch)
 - [ ] **V19: AI Visual Advisor** — AI analyzes webcam quality, suggests lighting/framing/color improvements
 
+### MIDI Controller Support — NEW
+> Physical MIDI hardware integration for hands-on control of OBS and OBServe.
+> Potential paid module. Rust-side via `midir` crate (WebView2 has no Web MIDI API).
+- [ ] **MIDI device discovery** — enumerate connected MIDI devices, auto-detect known controllers
+- [ ] **Pads integration** — trigger OBServe Pads samples from physical MIDI pads (Launchpad, APC Mini, MPD)
+- [ ] **Mixer mapping** — map MIDI faders/knobs to OBS audio source volumes (X-Touch, nanoKONTROL)
+- [ ] **Scene switching** — map MIDI buttons to OBS scene changes
+- [ ] **LED feedback** — send LED/color data back to controllers to reflect pad state, levels, active scene
+- [ ] **Mapping UI** — learn mode (press MIDI control → assign function), save/load mappings
+- [ ] **Motorized fader sync** — send volume position to motorized faders (X-Touch) when source changes
+
 ### Product / Business
-- [ ] Tier gating (Free/Pro/Streamer feature gates)
-- [ ] Installer / distribution packaging
-- [ ] Auto-update mechanism
+- [x] Module store with Stripe payments
+- [x] Installer / distribution packaging (NSIS via CI/CD)
+- [x] Auto-update mechanism (tauri-plugin-updater)
+- [ ] Resend API key for email delivery (license recovery emails)
 
 ---
 
