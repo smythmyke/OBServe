@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://smythmyke.github.io/OBServe/sitemap.xml
